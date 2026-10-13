@@ -63,7 +63,7 @@ static const sysinfo_model_t MODELS[] = {
 		.cs43131 = false,
 		.ak4493 = true,
 		.remap_list = true,
-		.tap_wake = false,
+		.tap_wake = true, // stock hiby_player drives the same gt9xx gesture_sw node
 		.one_flank = false,
 		// Like the R3 Pro II's: KEY_NEXTSONG is the key that goes back,
 		// confirmed on the device.
