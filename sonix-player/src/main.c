@@ -64,6 +64,7 @@
 #include "src/system/device/power.h"
 #include "src/system/streaming/radio.h"
 #include "src/system/device/screenshot.h"
+#include "src/system/device/bootanim.h"
 #include "src/system/device/sysinfo.h"
 #include "src/system/net/tls.h"
 #include "src/system/device/system.h"
@@ -1933,6 +1934,9 @@ static lv_display_t *try_panned_display(void) {
 	log_w = (int32_t)fb_var.xres;
 	log_h = (int32_t)fb_var.yres;
 	const sysinfo_model_t *model = sysinfo_model();
+	if (model && model->boot_animation) {
+		bootanim_play((uint16_t *)fb_mem, (int)fb_var.xres, (int)fb_var.yres);
+	}
 	if (model && model->panel_width * 2 == log_w * 3 && model->panel_height * 2 == log_h * 3) {
 		size_t size = (size_t)model->panel_width * (size_t)model->panel_height * 2;
 		scale_page = malloc(size);

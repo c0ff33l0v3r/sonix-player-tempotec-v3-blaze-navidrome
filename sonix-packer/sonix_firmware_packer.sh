@@ -564,6 +564,21 @@ build_one() {
 	# ==========================================================================
 	step "[$MODEL_NAME] removing the stock interface's folders"
 
+	# TempoTec's boot animation is the one stock resource the player plays
+	# (bootanim.h). It is kept out of git, so it travels from the rootfs it is
+	# in to where the player looks, ahead of the litegui folder it is deleted with.
+	if [ "$MODEL_DIR" = "BLAZE" ]; then
+		ANIM_SRC="$SQUASH_DIR/usr/resource/litegui/boot_animation/en_2025"
+		ANIM_DST="$SQUASH_DIR/usr/resource/sonix/boot_animation"
+		if [ -f "$ANIM_SRC/0.png" ]; then
+			mkdir -p "$ANIM_DST"
+			cp "$ANIM_SRC"/*.png "$ANIM_DST/"
+			say "    boot animation: $(ls "$ANIM_DST" | wc -l) frames kept"
+		else
+			warn "no boot animation in the stock rootfs; the player will skip it."
+		fi
+	fi
+
 	TRIM=("${STOCK_UI_DIRS[@]}")
 	[ "$MODEL_DIR" != "BLAZE" ] || TRIM+=("${BLAZE_TRIM[@]}")
 	for dir in "${TRIM[@]}"; do

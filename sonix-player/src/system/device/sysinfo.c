@@ -35,6 +35,7 @@ static const sysinfo_model_t MODELS[] = {
 		.one_flank = false,
 		.media_keys_swapped = true,
 		.one_boot_logo = false,
+		.boot_animation = false,
 	},
 	{
 		.name = "HiBy R1",
@@ -50,6 +51,7 @@ static const sysinfo_model_t MODELS[] = {
 		.one_flank = true,
 		.media_keys_swapped = false,
 		.one_boot_logo = false,
+		.boot_animation = false,
 	},
 	{
 		// Charger in the AXP2101 PMIC; AK4493SEQ DAC with 3.5 mm and 4.4 mm.
@@ -71,6 +73,7 @@ static const sysinfo_model_t MODELS[] = {
 		// TempoTec's own logo is /etc/logo.jpeg. logo1 and logo2 are HiBy's,
 		// left over from the base firmware and sized for other panels.
 		.one_boot_logo = true,
+		.boot_animation = true,
 	},
 };
 
