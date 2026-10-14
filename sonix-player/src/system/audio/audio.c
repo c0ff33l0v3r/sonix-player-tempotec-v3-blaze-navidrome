@@ -3124,6 +3124,44 @@ static int bluetooth_decimation(int sample_rate, int channels, int out_bits, boo
 	return sink_rate ? decimate_factor_for(sample_rate, (int)sink_rate) : 1;
 }
 
+// How long the DAC's volume stays at mute at the start of a DSD track: the
+// codec driver's own sequence (mute, amplifier cycle, unmute) ends 0.56 s after
+// the stream opens, and the volume ramp back up is the codec's.
+#define DSD_UNMUTE_AFTER_MS 800
+
+// DoP silence after the last frame of a track: `ms` of it, the marker carrying
+// on from `last_marker`. Left-justified 32-bit words, as the decoder makes them.
+static void dop_silence_tail(snd_pcm_t **pcm, int channels, int rate, snd_pcm_uframes_t *period_size,
+							 uint32_t last_marker, int ms) {
+	if (ms <= 0 || !*pcm) {
+		return;
+	}
+	long frames_left = (long)rate * ms / 1000;
+	enum { CHUNK = 4096 };
+	int32_t *chunk = malloc(sizeof(int32_t) * CHUNK * (size_t)channels);
+	if (!chunk) {
+		return;
+	}
+	uint32_t marker = last_marker;
+	while (frames_left > 0) {
+		long n = frames_left < CHUNK ? frames_left : CHUNK;
+		for (long i = 0; i < n; i++) {
+			marker = marker == 0x05 ? 0xFA : 0x05;
+			int32_t word = (int32_t)(((marker << 16) | (0x69u << 8) | 0x69u) << 8);
+			for (int c = 0; c < channels; c++) {
+				chunk[i * channels + c] = word;
+			}
+		}
+		snd_pcm_sframes_t written = pcm_write_recover(pcm, chunk, (snd_pcm_uframes_t)n, channels, rate, 32, period_size);
+		if (written < 0 || !*pcm) {
+			break;
+		}
+		frames_left -= n;
+	}
+	free(chunk);
+	fprintf(stderr, "audio[%ld]: DSD silence tail done (%d ms)\n", log_ms(), ms);
+}
+
 static void play_decoded_file(const char *filepath, decode_format_t format) {
 	decoder_t *dec = decoder_open(filepath, format);
 	if (!dec) {
@@ -3242,10 +3280,23 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// The DAC has to be told before the stream starts, or the first periods
 	// reach it while it is still reading the words as PCM -- which at DoP
 	// levels is a bang.
+	bool dsd_muted = false;			 // the DAC's volume is held down for the start of a DSD track
+	long dsd_unmute_at = 0;			 // log_ms() at which it comes back
+	uint32_t dsd_last_marker = 0x05; // the DoP marker of the last frame written
 	if (passthrough) {
 		// Any held PCM goes first: a DAC about to switch to DSD must not still
 		// have the previous track's PCM tail queued.
 		gapless_release();
+		// The codec driver unmutes, mutes and unmutes again around the switch
+		// to DSD (and cycles the amplifier half a second in): measured as two
+		// clicks at the start of every DSD track. The DAC's own volume is held
+		// at mute across it, which the driver's mute bits do not touch, and
+		// brought back with the codec's ramp once the sequence is done (see
+		// DSD_UNMUTE_AFTER_MS in the loop).
+		if (config_get_int("audio", "dsd_start_mute", 1)) {
+			alsa_suspend_mute();
+			dsd_muted = true;
+		}
 		set_dac_dop(1);
 	}
 
@@ -3294,6 +3345,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		return;
 	}
 	track_started();
+	dsd_unmute_at = log_ms() + DSD_UNMUTE_AFTER_MS;
 
 	// From here, how long this track takes to start coming out is timed.
 	bt_start_probe_arm(pcm_handle);
@@ -3340,6 +3392,10 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 
 	while (1) {
 		loop_turns++;
+		if (dsd_muted && log_ms() >= dsd_unmute_at) {
+			dsd_muted = false;
+			alsa_suspend_restore();
+		}
 		pthread_mutex_lock(&audio_mutex);
 		if (audio_command == AUDIO_CMD_STOP || play_request) {
 			pthread_mutex_unlock(&audio_mutex);
@@ -3815,6 +3871,10 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 
 		bt_seek_probe_report(pcm_handle);
 		bt_start_probe_note(pcm_handle, written, out_rate);
+		if (passthrough && out_bits == 32 && frames_read > 0) {
+			// The marker is the top byte of a left-justified DoP word.
+			dsd_last_marker = ((uint32_t)((int32_t *)buffer)[(frames_read - 1) * channels] >> 24) & 0xFF;
+		}
 
 		// The position moves by INPUT frames: at 1.5x, one period written to
 		// the card is a period and a half of the book. Scaled by how much of
@@ -3832,6 +3892,13 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	pthread_mutex_lock(&audio_mutex);
 	mark_stopped_unless_replaced();
 	pthread_mutex_unlock(&audio_mutex);
+
+	// A track left inside the start window (a skip in the first second) must
+	// not leave the DAC at mute.
+	if (dsd_muted) {
+		dsd_muted = false;
+		alsa_suspend_restore();
+	}
 
 	// The track ended on its own, gapless is on and nothing special happened:
 	// the PCM stays open with its queue inside and the next track appends to
@@ -3864,7 +3931,35 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			if (snd_pcm_state(pcm_handle) == SND_PCM_STATE_PREPARED) {
 				snd_pcm_start(pcm_handle);
 			}
-			pcm_drain_bounded(pcm_handle);
+			// A DSD stream that simply stops is a click. After the last frame the
+			// ring still holds music from three quarters of a second ago, and a
+			// drain lets the card play on into it until the next period
+			// interrupt, before the driver mutes the DAC. So the stream ends in
+			// DSD silence (0x69 under a marker that keeps alternating) and is
+			// stopped by hand while that silence is still playing, the way a
+			// skip stops it in the middle of the music.
+			if (passthrough && out_bits == 32 && channels == 2) {
+				int tail_ms = (int)config_get_int("audio", "dsd_tail_ms", 300);
+				dop_silence_tail(&pcm_handle, channels, out_rate, &period_size, dsd_last_marker, tail_ms);
+				if (tail_ms > 0) {
+					// Half the tail is left when the card says so; the position
+					// it reports can run a period behind, so that is still
+					// silence ahead of it, not the end.
+					snd_pcm_sframes_t stop_at = (snd_pcm_sframes_t)out_rate * (tail_ms / 2) / 1000;
+					for (int waited = 0; waited < 3000; waited += 5) {
+						snd_pcm_sframes_t left = 0;
+						if (snd_pcm_delay(pcm_handle, &left) < 0 || left <= stop_at) {
+							break;
+						}
+						usleep(5 * 1000);
+					}
+					snd_pcm_drop(pcm_handle);
+				} else {
+					pcm_drain_bounded(pcm_handle);
+				}
+			} else {
+				pcm_drain_bounded(pcm_handle);
+			}
 		} else {
 			snd_pcm_drop(pcm_handle);
 			}
