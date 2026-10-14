@@ -28,6 +28,7 @@ void axpcharge_set(bool limit_voltage, bool limit_current) {
 }
 void axpcharge_tick(void) {}
 bool axpcharge_holding(void) { return false; }
+void axp_charge_boot_done(bool done) { (void)done; }
 
 #else
 
@@ -219,5 +220,11 @@ void axpcharge_tick(void) {
 }
 
 bool axpcharge_holding(void) { return holding; }
+
+// REG07h, a byte of the PMIC's data buffer; the power-on source (REG20h) is
+// read by the scripts.
+#define AXP_REG_SEEN 0x07
+
+void axp_charge_boot_done(bool done) { axp_write(AXP_REG_SEEN, done ? 1 : 0); }
 
 #endif /* HOST_BUILD */

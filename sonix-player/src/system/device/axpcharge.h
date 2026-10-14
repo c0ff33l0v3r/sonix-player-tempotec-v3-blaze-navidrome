@@ -34,4 +34,11 @@ void axpcharge_tick(void);
 // the cable is in and nothing more goes into the battery. As of the last tick.
 bool axpcharge_holding(void);
 
+// The one byte of the PMIC's data buffer (REG07h) that the charging screen
+// reads: 1 once the player has started (so a restart of it is not taken for
+// the cable having lit the device), 0 at power-off. sonix_player.sh and
+// sonix_charge look at it together with the PMIC's power-on source. No-op on
+// the host.
+void axp_charge_boot_done(bool done);
+
 #endif /* AXPCHARGE_H */

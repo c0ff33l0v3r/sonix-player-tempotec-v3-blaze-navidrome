@@ -929,6 +929,8 @@ void power_quiet_audio_for_shutdown(void) {
 	audio_quiet_output_for_power_off();
 }
 
+#define CHARGE_SCREEN_BIN "/usr/bin/sonix_charge"
+
 void power_shutdown(void) {
 	// Where the music had got to, before anything else stops. The player's own
 	// poll writes this only every ten seconds while playing and on a change of
@@ -936,6 +938,9 @@ void power_shutdown(void) {
 	// position seeked to while paused, which changes no state at all, would
 	// never be written.
 	device_state_remember_flush();
+
+	// Off means off: the next start by the cable is the charging screen again.
+	axp_charge_boot_done(false);
 
 	// The time goes into the RTC before anything else, exactly as the stock
 	// player does on its way out: whatever the clock has learned since it was
@@ -974,6 +979,19 @@ void power_shutdown(void) {
 	// unmounted.
 	storage_release_for_shutdown();
 	sync();
+
+	// With the cable in nothing would light the device again by itself, and
+	// the stock player stays on a charging screen then: this process becomes
+	// sonix_charge (a battery, the red LED, the power button), which is what
+	// "off" looks like on a cable. Where the image does not have it, or the
+	// cable is not in, the power goes.
+	if (usb_vbus_present() && access(CHARGE_SCREEN_BIN, X_OK) == 0) {
+		power_screen_off();
+		for (int fd = 3; fd < 1024; fd++) {
+			close(fd); // the input devices must be free for it
+		}
+		execl(CHARGE_SCREEN_BIN, CHARGE_SCREEN_BIN, (char *)NULL);
+	}
 
 	int rc = system("poweroff");
 	(void)rc;
@@ -1388,6 +1406,16 @@ void power_set_wake_hook(bool (*cb)(void)) { g_wake_hook = cb; }
 static bool g_panel_lit_dark;
 static uint32_t g_panel_lit_until;
 
+// A blank or unblank blocks this thread for up to half a second (the touch
+// controller resets inside the write), and presses made meanwhile pile up in
+// one flag. Left there, the timer would read it as a fresh press and flip the
+// screen straight back: the "fade out" of a wake that mashing never gets past.
+static void drop_presses_made_during_transition(void) {
+	pthread_mutex_lock(&g_lock);
+	g_power_button_pending = false;
+	pthread_mutex_unlock(&g_lock);
+}
+
 static void panel_blank_now(void) {
 	if (!g_panel_lit_dark) {
 		return;
@@ -1481,6 +1509,7 @@ void power_screen_off(void) {
 	// seconds of clock, not however long was left on the slow timer.
 	clock_remember();
 
+	drop_presses_made_during_transition();
 	fprintf(stderr, "power: screen off\n");
 }
 
@@ -1650,6 +1679,7 @@ void power_screen_on(void) {
 
 	led_set_standby(false);
 
+	drop_presses_made_during_transition();
 	fprintf(stderr, "power: screen on (brightness=%ld)\n", g_cfg.brightness);
 }
 
@@ -1730,6 +1760,16 @@ static void power_timer_cb(lv_timer_t *timer) {
 	}
 	g_usb_present_last = usb_now;
 	g_usb_present_known = true;
+
+	// A cable plugged or pulled lights the screen, like the power button does,
+	// and counts as activity so the idle timer does not blank it again at once.
+	if (usb_changed && !g_screen_on) {
+		power_screen_on();
+		power_notify_activity();
+		lv_display_trigger_activity(g_disp);
+		now = lv_tick_get();
+		input_idle = input_idle_ms(now); // read before the wake: stale, would blank it again below
+	}
 
 	// The automatic shutdown is a shutdown timer, and behaves like one: it is
 	// held at zero for as long as the screen is on or the player is doing
@@ -1919,6 +1959,9 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 	g_last_button_activity_ms = now;
 	g_last_playing_ms = now;
 	g_ignore_button_until = now;
+
+	// Started: a later restart of the player is not a charge-only start.
+	axp_charge_boot_done(true);
 
 	g_last_active_boot_ms = boottime_ms(); // the wall-clock idle marker starts now
 

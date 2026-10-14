@@ -5,6 +5,7 @@ HOST_BIN = sonix_player_host
 TARGET_BIN = sonix_player
 # Built from launcher/, see "sonix_launch" below.
 LAUNCH_BIN = sonix_launch
+CHARGE_BIN = sonix_charge
 
 # The unstripped copy of the target binary, kept beside the stripped one.
 #
@@ -282,7 +283,7 @@ build_host/lvgl/%.o: $(LVGL_DIR)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(HOST_CFLAGS) -c $< -o $@
 
-target: $(TARGET_BIN) $(LAUNCH_BIN) compile_commands.json
+target: $(TARGET_BIN) $(LAUNCH_BIN) $(CHARGE_BIN) compile_commands.json
 
 $(TARGET_BIN): $(TARGET_OBJS)
 	$(TARGET_LD) -o $@ $(TARGET_OBJS) $(TARGET_LDFLAGS)
@@ -308,6 +309,20 @@ $(LAUNCH_BIN): launcher/sonix_launch.c $(CROSS_CC)
 	$(CROSS_CC) $(LAUNCH_CFLAGS) -o $@ $<
 	@if [ -x "$(CROSS_STRIP)" ]; then $(CROSS_STRIP) $@; fi
 	@echo "sonix_launch: $$(wc -c < $@) bytes"
+
+# ---------------------------------------------------------------------------
+# sonix_charge
+#
+# The charging screen of a player that is off on its cable (charge/sonix_charge.c):
+# the framebuffer, the LED and the power key, no LVGL and nothing that makes a
+# sound. The Blaze's launcher starts it when the cable lit the device. The
+# packer takes it from next to itself, like sonix_launch.
+# ---------------------------------------------------------------------------
+
+$(CHARGE_BIN): charge/sonix_charge.c charge/battery_alpha.h charge/font_alpha.h $(CROSS_CC)
+	$(CROSS_CC) -O2 -Wall -Wextra -march=mips32r2 -mno-madd4 -mplt -include stdbool.h -Icharge -o $@ $< -lrt
+	@if [ -x "$(CROSS_STRIP)" ]; then $(CROSS_STRIP) $@; fi
+	@echo "sonix_charge: $$(wc -c < $@) bytes"
 
 # ---------------------------------------------------------------------------
 # Splitting the link output in two
@@ -406,7 +421,7 @@ compile_commands.json:
 	@python3 generate_compile_commands.py
 
 clean:
-	rm -rf build_host build_target build_gen $(HOST_BIN) $(TARGET_BIN) $(TARGET_DEBUG_BIN) $(LAUNCH_BIN) compile_commands.json compile_flags.txt
+	rm -rf build_host build_target build_gen $(HOST_BIN) $(TARGET_BIN) $(TARGET_DEBUG_BIN) $(LAUNCH_BIN) $(CHARGE_BIN) compile_commands.json compile_flags.txt
 
 # The bundled libraries and their extracted sources. The downloaded tarballs stay.
 .PHONY: libs-clean
