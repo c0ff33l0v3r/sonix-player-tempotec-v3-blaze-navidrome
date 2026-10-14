@@ -5,8 +5,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <sys/stat.h>
 #include <time.h>
 
+#include "src/system/library/albumart.h"
 #include "src/system/library/jpeginfo.h"
 
 #define IMAGES_DIR_NAME "Screensaver"
@@ -30,22 +33,58 @@ const char *screensaverpics_dir(void) {
 	return dir;
 }
 
-bool screensaverpics_usable(const char *dir, const char *name, int max_w, int max_h) {
-	if (!dir || !dir[0] || !jpeg_info_has_extension(name)) {
+// .jpg, .jpeg or .png, either case.
+static bool has_image_extension(const char *name) {
+	const char *dot = strrchr(name, '.');
+	return dot && (strcasecmp(dot, ".png") == 0 || jpeg_info_has_extension(name));
+}
+
+// A picture beyond this on either side is a file that was not meant for a
+// screen. Under it the scaled decoders take any size: a JPEG comes out at a
+// half, quarter or eighth of its own and a PNG is shrunk scanline by scanline.
+#define MAX_SIDE 16384
+
+// PNG's size from its IHDR: the signature, then the first chunk, whose first
+// eight bytes are width and height, big-endian.
+static bool png_size(const char *path, int *w, int *h) {
+	unsigned char head[24];
+	FILE *f = fopen(path, "rb");
+	size_t got = f ? fread(head, 1, sizeof(head), f) : 0;
+	if (f) {
+		fclose(f);
+	}
+	if (got != sizeof(head) || memcmp(head, "\x89PNG\r\n\x1a\n", 8) != 0) {
+		return false;
+	}
+	*w = (head[16] << 24) | (head[17] << 16) | (head[18] << 8) | head[19];
+	*h = (head[20] << 24) | (head[21] << 16) | (head[22] << 8) | head[23];
+	return true;
+}
+
+bool screensaverpics_usable(const char *dir, const char *name) {
+	if (!dir || !dir[0] || !has_image_extension(name)) {
 		return false;
 	}
 	char path[PATH_MAX];
 	if ((size_t)snprintf(path, sizeof(path), "%s/%s", dir, name) >= sizeof(path)) {
 		return false;
 	}
-	jpeg_info_t info;
-	if (!jpeg_info_read(path, &info)) {
+	struct stat st;
+	if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 || st.st_size > ALBUMART_MAX_BYTES) {
 		return false;
 	}
-	return !info.progressive && info.width <= max_w && info.height <= max_h && info.height >= info.width;
+	int w, h;
+	jpeg_info_t info;
+	if (jpeg_info_read(path, &info)) {
+		w = info.width;
+		h = info.height;
+	} else if (!png_size(path, &w, &h)) {
+		return false;
+	}
+	return w > 0 && h > 0 && w <= MAX_SIDE && h <= MAX_SIDE;
 }
 
-bool screensaverpics_any(int max_w, int max_h) {
+bool screensaverpics_any(void) {
 	const char *dir = screensaverpics_dir();
 	DIR *d = dir[0] ? opendir(dir) : NULL;
 	if (!d) {
@@ -54,7 +93,7 @@ bool screensaverpics_any(int max_w, int max_h) {
 	bool found = false;
 	struct dirent *e;
 	while (!found && (e = readdir(d)) != NULL) {
-		found = screensaverpics_usable(dir, e->d_name, max_w, max_h);
+		found = screensaverpics_usable(dir, e->d_name);
 	}
 	closedir(d);
 	return found;
@@ -90,7 +129,7 @@ static bool sample_name(const char *dir, const char *avoid, char skip[][NAME_MAX
 	out[0] = '\0';
 	struct dirent *e;
 	while ((e = readdir(d)) != NULL) {
-		if (!jpeg_info_has_extension(e->d_name)) {
+		if (!has_image_extension(e->d_name)) {
 			continue;
 		}
 		if (avoid && avoid[0] && strcmp(e->d_name, avoid) == 0) {
@@ -123,7 +162,7 @@ static bool join_path(char *out, size_t out_size, const char *dir, const char *n
 	return true;
 }
 
-bool screensaverpics_pick(const char *current, int max_w, int max_h, char *out, size_t out_size) {
+bool screensaverpics_pick(const char *current, char *out, size_t out_size) {
 	if (!out || out_size == 0) {
 		return false;
 	}
@@ -152,7 +191,7 @@ bool screensaverpics_pick(const char *current, int max_w, int max_h, char *out, 
 		snprintf(tried[tries], sizeof(tried[tries]), "%s", name);
 		tries++;
 
-		if (screensaverpics_usable(dir, name, max_w, max_h) && join_path(out, out_size, dir, name)) {
+		if (screensaverpics_usable(dir, name) && join_path(out, out_size, dir, name)) {
 			return true;
 		}
 	}
@@ -160,7 +199,7 @@ bool screensaverpics_pick(const char *current, int max_w, int max_h, char *out, 
 	// Nothing else would do. The picture already up is the last resort rather
 	// than the first: with one picture in the folder "a different one" is a
 	// request that cannot be met, and seeing it again beats seeing black.
-	if (shown && screensaverpics_usable(dir, shown, max_w, max_h) && join_path(out, out_size, dir, shown)) {
+	if (shown && screensaverpics_usable(dir, shown) && join_path(out, out_size, dir, shown)) {
 		return true;
 	}
 

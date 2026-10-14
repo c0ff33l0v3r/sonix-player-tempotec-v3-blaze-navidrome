@@ -23,9 +23,10 @@ bool screensaver_get_enabled(void);
 // Where the picture comes from.
 //
 // Album is the artwork of what is playing, borrowed from the player and free.
-// Images is the card's own Screensaver folder, and costs a decode at every
-// wake -- which is why it is not the default and why the folder is judged
-// before the option can be chosen at all.
+// Images is the card's own Screensaver folder. Each picture is decoded and
+// scaled ahead of the wake on the loader thread, so a wake only swaps in
+// pixels that are already there; the folder is still judged before the option
+// can be chosen at all.
 typedef enum {
 	SCREENSAVER_SOURCE_ALBUM = 0,
 	SCREENSAVER_SOURCE_IMAGES,

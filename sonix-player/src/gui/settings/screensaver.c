@@ -49,13 +49,14 @@ static int strip_h;
 // ---------------------------------------------------------------------------
 // Pictures from the card
 //
-// The other thing the screensaver can show: one of the JPEGs in the card's
+// The other thing the screensaver can show: one of the JPEG or PNG files in the card's
 // Screensaver folder, a different one each time the screen lights up. Which
 // files qualify and which one comes up is screensaverpics.h; what is left here
 // is the drawing and the pixels it owns.
 //
 // Nothing is decoded on this thread. The picture for the next wake is asked of
-// the cover loader as the panel goes dark and is waiting, decoded, by the time
+// the cover loader as soon as the one before it is on screen (and again as the
+// panel goes dark) and is waiting, decoded, by the time
 // the screen comes back -- so a wake costs a pointer swap rather than a card
 // read, a JPEG and a blur with the interface thread standing still and the
 // audio decoder sharing the one core with it.
@@ -74,6 +75,7 @@ static cover_image_t next_pic, next_strip;
 static char next_file[512];
 static bool next_ready;	  // next_pic/next_strip hold a collected picture
 static bool next_pending; // a request is out with the loader
+static int next_fails;	  // decodes in a row that came back empty; stops the tick re-asking
 
 // Resizes the strip and gives the picture whatever it should have.
 //
@@ -129,7 +131,7 @@ void screensaver_set_source(screensaver_source_t chosen) {
 
 void screensaver_set_card_root(const char *root) { screensaverpics_set_root(root); }
 
-bool screensaver_has_images(void) { return screensaverpics_any(screen_w, screen_h); }
+bool screensaver_has_images(void) { return screensaverpics_any(); }
 
 // Picks the next picture and puts it out to decode. Called as the panel goes
 // dark, which is the whole point: the card read and the JPEG happen on the
@@ -142,7 +144,7 @@ static void request_next(void) {
 		return;
 	}
 	char chosen[sizeof(next_file)];
-	if (!screensaverpics_pick(image_file, screen_w, screen_h, chosen, sizeof(chosen))) {
+	if (!screensaverpics_pick(image_file, chosen, sizeof(chosen))) {
 		// The folder gave nothing at all -- emptied, or the card taken out.
 		// What is already up stays up: it is still a picture, and black is not.
 		return;
@@ -169,8 +171,10 @@ static void collect_next(void) {
 		// It passed the header check and still would not decode. Forgotten, so
 		// the next request picks another rather than retrying this one.
 		next_file[0] = '\0';
+		next_fails++;
 		return;
 	}
+	next_fails = 0;
 	cover_free(&next_pic);
 	cover_free(&next_strip);
 	next_pic = pic;
@@ -246,6 +250,15 @@ static void clock_timer_cb(lv_timer_t *timer) {
 	// up on it -- a short dark spell, or a slow card. It is only stored, never
 	// swapped in: the picture must not change while it is being looked at.
 	collect_next();
+
+	// The picture after the one on screen is asked for as soon as there is room
+	// for it -- at start-up, after a card goes in, right after a swap -- rather
+	// than only as the panel goes dark, so a short dark spell does not leave the
+	// wake with nothing ready. Gives up after three empty decodes in a row; the
+	// next screen-off tries again.
+	if (enabled && next_fails < 3) {
+		request_next();
+	}
 
 	if (!screensaver_is_visible()) {
 		refresh_clock();
@@ -500,6 +513,7 @@ bool screensaver_prepare(void) {
 	}
 
 	if (!waking) {
+		next_fails = 0;
 		request_next();
 	}
 	return screensaver_is_visible();
@@ -715,4 +729,9 @@ void screensaver_init(gui_config_t *cfg) {
 	// on it -- but with the panel off nothing is scanned out, so ticking it
 	// once a second all night buys nothing.
 	power_pause_in_standby(clock_timer);
+
+	// The first picture is started now, so the first wake after boot has one.
+	if (enabled) {
+		request_next();
+	}
 }
