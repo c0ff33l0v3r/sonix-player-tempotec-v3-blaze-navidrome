@@ -115,6 +115,12 @@ track** past the TempoTec logo until **updater** appears. A valid
 file is there first. The image only writes the main kernel and rootfs; the
 bootloader and the recovery system are never touched.
 
+## Bugs and feedback
+
+Questions, bug reports and ideas go in the Telegram group:
+[V3 Blaze Discussion](https://t.me/V3_Blaze_Discussion). When you report a bug,
+say which version you run and what you did before it happened.
+
 ## Building
 
 Sonix builds as described in [UPSTREAM-README.md](UPSTREAM-README.md)
