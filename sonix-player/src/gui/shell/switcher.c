@@ -83,6 +83,15 @@ static lv_obj_t *history_pop(void) {
 
 static void load_screen(lv_obj_t *target_screen);
 
+bool switcher_in_history(lv_obj_t *screen) {
+	for (int i = 0; i < screen_history_len; i++) {
+		if (screen_history[i] == screen) {
+			return true;
+		}
+	}
+	return false;
+}
+
 // Forgets the whole back-stack: the next chevron press lands on the main
 // menu. For pages that end a one-way flow (a finished scan) where walking
 // back through the flow's screens would make no sense.

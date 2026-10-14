@@ -106,7 +106,9 @@ int settingsrow_content_top(gui_config_t *cfg) {
 }
 
 // Every page built by settingsrow_page() reopens scrolled to the top; a long
-// page would otherwise stay wherever it was last left.
+// page would otherwise stay wherever it was last left. Not when it was left
+// forwards, into one of its own rows: coming back from there lands on the row
+// it was opened from, not at the top of the list.
 //
 // The reset runs on unload, not on load. On load it would race: many pages
 // rebuild their content inside LV_EVENT_SCREEN_LOADED, and LVGL calls callbacks
@@ -118,7 +120,7 @@ int settingsrow_content_top(gui_config_t *cfg) {
 // screen change, so the page beneath is never unloaded and keeps its position.
 static void page_scroll_top_cb(lv_event_t *e) {
 	lv_obj_t *container = (lv_obj_t *)lv_event_get_user_data(e);
-	if (container) {
+	if (container && !switcher_in_history(lv_event_get_current_target(e))) {
 		lv_obj_scroll_to_y(container, 0, LV_ANIM_OFF);
 	}
 }
