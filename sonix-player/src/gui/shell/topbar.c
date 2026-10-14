@@ -634,7 +634,10 @@ static void jack_timer_cb(lv_timer_t *timer) {
 	// change back. The cable goes with it -- a charge that has finished still
 	// leaves the player on a charger, and that is what keeps the LED off the
 	// darken-in-standby option.
-	led_set_charging(settled == 2);
+	// Red for as long as a cable is in, charge finished or not: the stock
+	// player does the same, and a full battery on the cable is no reason for
+	// the LED to look like nothing is plugged in.
+	led_set_charging(settled != 0);
 	led_set_on_charger(settled != 0);
 }
 

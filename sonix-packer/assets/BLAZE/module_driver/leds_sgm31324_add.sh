@@ -1,0 +1,27 @@
+insmod leds_sgm31324_add.ko
+cd /sys/module/leds_sgm31324_add/parameters/
+echo i2c_bus_num=0 > sgm31324
+echo enable_gpio=-1 > sgm31324
+echo enable_active_level=-1 > sgm31324
+echo wled_gpio=PC01 > sgm31324
+echo wled_active_level=1 > sgm31324
+echo wled_pattern_id=11 > sgm31324
+echo alloc=16 > sgm31324
+echo regs="00000000450007010106"  > sgm31324
+echo regs="000000005400000B3800"  > sgm31324
+echo regs="00000000450006060000"  > sgm31324
+echo regs="00000000540000044000"  > sgm31324
+echo regs="00000000000000000006"  > sgm31324
+echo regs="001E7D0060BB00002F06"  > sgm31324
+echo regs="000E7D00606600003F06"  > sgm31324
+echo regs="00000000440000050006"  > sgm31324
+echo regs="0000000045000D000006"  > sgm31324
+echo regs="00000000510005001C06"  > sgm31324
+echo regs="00000000000000000006"  > sgm31324
+# Patterns 12-14, which the Blaze stock leaves out: Wi-Fi transfer, podcast, Bluetooth receiver.
+# 13 is the R3 Pro II value with the red and blue bytes swapped; 12 and 14 were tuned on the device
+# (14 is the stock blue, pattern 9, at full brightness).
+echo regs="000E7D00686601070106"  > sgm31324
+echo regs="00000000510007001206"  > sgm31324
+echo regs="0000000045001F000006"  > sgm31324
+echo register > sgm31324
