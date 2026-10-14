@@ -567,7 +567,9 @@ build_one() {
 	# TempoTec's boot animation is the one stock resource the player plays
 	# (bootanim.h). It is kept out of git, so it travels from the rootfs it is
 	# in to where the player looks, ahead of the litegui folder it is deleted with.
-	if [ "$MODEL_DIR" = "BLAZE" ]; then
+	# NO_BOOT_ANIMATION=1 leaves it out: a custom /etc/logo.jpeg would have the
+	# animation drawn over its middle.
+	if [ "$MODEL_DIR" = "BLAZE" ] && [ -z "${NO_BOOT_ANIMATION:-}" ]; then
 		ANIM_SRC="$SQUASH_DIR/usr/resource/litegui/boot_animation/en_2025"
 		ANIM_DST="$SQUASH_DIR/usr/resource/sonix/boot_animation"
 		if [ -f "$ANIM_SRC/0.png" ]; then
