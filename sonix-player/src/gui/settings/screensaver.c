@@ -495,16 +495,17 @@ bool screensaver_prepare(void) {
 	if (!saver || !enabled) {
 		return false;
 	}
-	// Called once as the panel goes dark and again as it lights up, and the two
-	// do different work. Going dark is when the next picture is asked for: the
-	// screen is about to be off, the loader thread has it to itself, and nobody
-	// is waiting. Lighting up is when it is collected and swapped in -- no card,
-	// no decode, nothing between the button and the backlight.
+	// Called once as the panel goes dark and again as it lights up. Going dark
+	// is when the prepared picture is swapped in: power.c draws this into the
+	// framebuffer right after, so the wake's very first scan-out is the new
+	// picture. Swapped at the wake instead, the panel showed the old one for a
+	// frame and then the new one. The one after it is asked for at the same
+	// time, with the loader thread to itself; lighting up only collects.
 	bool waking = power_screen_is_on();
 
 	if (screensaver_is_visible()) {
 		collect_next();
-		if (waking) {
+		if (!waking) {
 			promote_next();
 		}
 		refresh_content();

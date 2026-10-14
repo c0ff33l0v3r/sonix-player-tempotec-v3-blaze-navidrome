@@ -1303,6 +1303,7 @@ static lv_display_t *init_host_display(void) {
 // No panel to re-arm on the host: the SDL window never blanks.
 void display_wake_begin(lv_display_t *disp) { (void)disp; }
 void display_wake_end(lv_display_t *disp) { (void)disp; }
+void display_mirror_page(void) {}
 
 // The folder that stands in for the memory card: SONIX_SD_ROOT, else the
 // documents folder named by XDG, else ~/Documents or ~/Documenti.
@@ -2057,6 +2058,21 @@ void display_wake_begin(lv_display_t *disp) {
 		return;
 	}
 	lv_linux_fbdev_set_force_refresh(disp, true);
+}
+
+// Copies the page just drawn over the other one. For the frame power.c draws
+// with the panel already blanked: the pan to it may not take until the
+// unblank, which then scans out the other page -- the previous picture -- for
+// a frame before the wake re-pans. With both pages alike there is nothing old
+// to show. A no-op where the pages are not flipped by the copy path.
+void display_mirror_page(void) {
+	if (fb_fd < 0 || !fb_mem || fb_page_size == 0) {
+		return;
+	}
+	fb_flip_wait();
+	int shown = fb_var.yoffset ? 1 : 0;
+	memcpy(fb_mem + (shown ? 0 : fb_page_size), fb_mem + (shown ? fb_page_size : 0), fb_page_size);
+	dirty_clear(&rot_page_pending[shown ? 0 : 1]); // nothing owed any more
 }
 
 void display_wake_end(lv_display_t *disp) {

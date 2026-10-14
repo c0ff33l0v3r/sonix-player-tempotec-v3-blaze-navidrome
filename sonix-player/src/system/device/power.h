@@ -63,6 +63,9 @@ void power_init(const power_config_t *cfg, lv_display_t *disp);
 // right after the repaint. Both are no-ops on the host build.
 void display_wake_begin(lv_display_t *disp);
 void display_wake_end(lv_display_t *disp);
+// After a frame drawn with the panel blanked: both framebuffer pages get it,
+// so the unblank cannot scan out the previous one (see main.c).
+void display_mirror_page(void);
 
 // Screen rotation: turns the picture (and the touch panel with it) through
 // 180 degrees. Also implemented by main.c, for the same reason -- only the

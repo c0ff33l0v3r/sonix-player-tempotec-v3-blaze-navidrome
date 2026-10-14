@@ -1446,6 +1446,7 @@ void power_screen_off(void) {
 			lv_obj_invalidate(scr);
 		}
 		lv_refr_now(g_disp);
+		display_mirror_page();
 	}
 
 	// Stop rendering entirely while the panel is dark (physical buttons live
