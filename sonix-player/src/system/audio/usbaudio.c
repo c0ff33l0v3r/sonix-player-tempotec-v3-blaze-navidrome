@@ -467,9 +467,8 @@ static void find_volume_control(int card) {
 
 // The level on a device on the USB-C port.
 //
-// The index follows the jacks' own law (alsa_volume_gain_db100): the same
-// number is about as loud on a dongle as on the 3.5 mm socket, and 0 is
-// silence.
+// The index follows the stock player's software curve (swvolume_millibel), as
+// its USB output does: index 20 is about -26 dB, and 0 is silence.
 //
 // How the level is split between the device and the samples:
 //
@@ -498,7 +497,10 @@ void usbaudio_apply_volume(int percent) {
 		percent = 100;
 	}
 	bool mute = percent == 0;
-	long target = mute ? 0 : alsa_volume_gain_db100(percent);
+	// The stock player's own USB curve (swvolume.c), not the jacks' law: the
+	// jacks' table is built for a headphone amp and puts index 20 near -55 dB,
+	// so a dongle needed 40-50 to be as loud as 10-20 on the stock firmware.
+	long target = mute ? 0 : (long)swvolume_millibel(percent) * 10;
 
 	if (!volume_control[0] || volume_max <= volume_min) {
 		swvolume_set_usb_gain(target, mute);
