@@ -15,6 +15,7 @@
 #include "src/gui/nowplaying/coverloader.h"
 #include "src/gui/library/medialist.h"
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/shell/doubletap.h"
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/popover.h"
@@ -2093,6 +2094,7 @@ static void lyrics_build(void) {
 	lv_obj_add_event_cb(cover_panel, lyrics_drag_cb, LV_EVENT_PRESSING, (void *)(uintptr_t) true);
 	lv_obj_add_event_cb(cover_panel, lyrics_drag_cb, LV_EVENT_RELEASED, (void *)(uintptr_t) true);
 	lv_obj_add_event_cb(cover_panel, lyrics_drag_cb, LV_EVENT_PRESS_LOST, (void *)(uintptr_t) true);
+	doubletap_sleep_attach(cover_panel);
 }
 
 // Studio's background for the other two arrangements -- the sleeve blurred at

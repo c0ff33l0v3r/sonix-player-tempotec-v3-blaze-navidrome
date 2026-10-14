@@ -9,6 +9,7 @@
 #include "src/gui/nowplaying/cover.h"
 #include "src/gui/nowplaying/coverloader.h"
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/shell/doubletap.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/scrolltext.h"
@@ -616,6 +617,7 @@ void screensaver_init(gui_config_t *cfg) {
 	lv_obj_add_event_cb(saver, drag_cb, LV_EVENT_PRESSING, NULL);
 	lv_obj_add_event_cb(saver, drag_cb, LV_EVENT_RELEASED, NULL);
 	lv_obj_add_event_cb(saver, drag_cb, LV_EVENT_PRESS_LOST, NULL);
+	doubletap_sleep_attach(saver);
 
 	// The artwork: everything above the strip, centre-cropped to fill it.
 	cover_box = lv_obj_create(saver);

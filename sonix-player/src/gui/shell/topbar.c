@@ -10,6 +10,7 @@
 #include "lvgl/lvgl.h"
 
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/shell/doubletap.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/unchanged.h"
 #include "src/gui/nowplaying/player.h"
@@ -836,6 +837,7 @@ void topbar_init(gui_config_t *cfg) {
 	lv_obj_add_event_cb(top_bar, topbar_drag_cb, LV_EVENT_PRESSING, NULL);
 	lv_obj_add_event_cb(top_bar, topbar_drag_cb, LV_EVENT_RELEASED, NULL);
 	lv_obj_add_event_cb(top_bar, topbar_drag_cb, LV_EVENT_PRESS_LOST, NULL);
+	doubletap_sleep_attach(top_bar);
 
 	// The default container padding would inset the bar's contents, so it goes.
 	lv_obj_set_style_pad_left(top_bar, 0, 0);

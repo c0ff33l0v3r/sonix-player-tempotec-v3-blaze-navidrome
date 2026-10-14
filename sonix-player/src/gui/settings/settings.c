@@ -60,6 +60,7 @@ static lv_obj_t *brightness_value;
 static lv_obj_t *screen_off_value;
 static lv_obj_t *screen_off_slider;
 static lv_obj_t *doubletap_switch;
+static lv_obj_t *doubletap_sleep_switch;
 static lv_obj_t *screensaver_switch;
 static lv_obj_t *screensaver_pills;
 static lv_obj_t *screensaver_album_pill;
@@ -72,6 +73,12 @@ static void doubletap_toggle_cb(lv_event_t *e) {
 	config_set_int("screen", "double_tap_wake", on ? 1 : 0);
 	config_save();
 	power_set_double_tap_wake(on);
+}
+
+static void doubletap_sleep_toggle_cb(lv_event_t *e) {
+	(void)e;
+	config_set_bool("screen", "double_tap_sleep", lv_obj_has_state(doubletap_sleep_switch, LV_STATE_CHECKED));
+	config_save();
 }
 
 // The two pills under the switch, and which of them is lit. Hidden with the
@@ -310,6 +317,12 @@ static void build_screen_page(gui_config_t *cfg) {
 		if (config_get_int("screen", "double_tap_wake", 0)) {
 			lv_obj_add_state(doubletap_switch, LV_STATE_CHECKED);
 		}
+	}
+	// Its other half, which needs nothing of the touch controller: two taps on
+	// the status bar, the Now Playing artwork or the screensaver (doubletap.h).
+	settingsrow_toggle(container, "settings_double_tap_to_sleep", &doubletap_sleep_switch, doubletap_sleep_toggle_cb);
+	if (config_get_bool("screen", "double_tap_sleep", false)) {
+		lv_obj_add_state(doubletap_sleep_switch, LV_STATE_CHECKED);
 	}
 
 	// The screensaver: a picture, the track and the time over everything else
