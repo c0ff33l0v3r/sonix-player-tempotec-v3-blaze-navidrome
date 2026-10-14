@@ -7,6 +7,7 @@
 #include "src/system/audio/replaygain.h"
 #include "src/system/audio/speed.h"
 #include "src/system/audio/swvolume.h"
+#include "src/system/audio/usbaudio.h"
 #include "src/system/audio/eq.h"
 #include "src/system/audio/decimate.h"
 #include "src/system/core/config.h"
@@ -3187,8 +3188,13 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 
 	// Hi-res sources go to the DAC at their real depth: a 24-bit FLAC plays
 	// as S32 (samples left-justified, bit-perfect), the way the stock player
-	// flips its stream to "PCM_FORMAT_PCM 32bit". Everything else stays 16.
-	int out_bits = source_bits > 16 ? 32 : 16;
+	// flips its stream to "PCM_FORMAT_PCM 32bit". Everything else stays 16 --
+	// except on the USB-C port, where the volume is taken off the samples
+	// (swvolume.c): 50-60 dB off a 16-bit word leaves a handful of bits and
+	// audible distortion at low volume, so the port gets S32 there too.
+	// shortcut: not while stretched (the stretcher is 16-bit only); a speed
+	// change in mid-track on the port applies from the next track.
+	int out_bits = (source_bits > 16 || (usbaudio_active() && playback_speed == 1.0)) ? 32 : 16;
 
 	// The rate the device is opened at. The position, the fade and every
 	// byte count below stay in the track's own frames.
