@@ -901,6 +901,10 @@ bool audio_get_gapless(void) { return gapless_enabled; }
 // times a buffer the driver found no memory for is halved before giving up.
 // See open_pcm_device_now().
 #define USB_BUFFER_MAX_BYTES (512u * 1024u)
+// ...and in time: on the port the volume is taken off the samples before they
+// are queued, so a change is heard only once the queue ahead of it has played.
+// 370 ms at 44.1 kHz instead of 743, still several stalls' worth.
+#define USB_BUFFER_MAX_MS 400
 #define PCM_NOMEM_HALVINGS 3
 
 // How much audio one turn of the decode loop handles.
@@ -1563,7 +1567,8 @@ static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_pe
 	bool usb_card = strncmp(device, "plughw:", 7) == 0 || strncmp(device, "hw:", 3) == 0;
 	unsigned int frame_bytes = (unsigned int)channels * (unsigned int)((bits_per_sample + 7) / 8);
 	if (usb_card && sample_rate <= 192000 && frame_bytes > 0) {
-		while (period_size > PERIOD_FRAMES_MIN && period_size * periods * frame_bytes > USB_BUFFER_MAX_BYTES) {
+		while (period_size > PERIOD_FRAMES_MIN && (period_size * periods * frame_bytes > USB_BUFFER_MAX_BYTES ||
+													  period_size * periods * 1000 > (snd_pcm_uframes_t)sample_rate * USB_BUFFER_MAX_MS)) {
 			period_size /= 2;
 		}
 	}
