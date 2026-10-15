@@ -73,9 +73,16 @@ static void build_table(void) {
 	table_ready = true;
 }
 
+// Bumped at every change of the gain, for the playback thread to re-scale
+// what it has already queued (audio.c, usb_requeue).
+static volatile unsigned gain_generation;
+
+unsigned swvolume_generation(void) { return gain_generation; }
+
 void swvolume_set_index(int percent) {
 	build_table();
 	sw_index = clamp_index(percent);
+	gain_generation++;
 }
 
 int swvolume_millibel(int percent) { return SW_HDB[clamp_index(percent)]; }
@@ -113,6 +120,7 @@ void swvolume_set_usb_gain(long db100, bool mute) {
 	}
 	usb_gain_q31 = mute ? 0 : (int64_t)(pow(10.0, (double)db100 / 2000.0) * 2147483648.0);
 	usb_gain_set = true;
+	gain_generation++;
 }
 
 void swvolume_clear_usb_gain(void) {

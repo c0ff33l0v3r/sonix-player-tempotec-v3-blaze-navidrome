@@ -2410,6 +2410,117 @@ static snd_pcm_sframes_t pcm_write_recover(snd_pcm_t **pcm, const void *buf, snd
 	return -EIO;
 }
 
+// ---------------------------------------------------------------------------
+// USB: re-scaling what is already queued when the volume moves
+//
+// On the port the volume is taken off the samples before they are queued, and
+// up to USB_BUFFER_MAX_MS of them are queued ahead, so a change was heard only
+// once that had played. A copy of the queued samples is kept from before the
+// gain; at a change the stream is rewound -- all but one period, which may
+// already be on its way to the device -- and those frames written again at
+// the new gain.
+// ---------------------------------------------------------------------------
+
+typedef struct {
+	uint8_t *data;	   // the frames, before the gain, as a ring
+	size_t cap;		   // frames it holds
+	size_t head;	   // where the next frame goes
+	size_t fill;	   // frames in it
+	size_t frame_bytes;
+	uint8_t *scratch; // one chunk, re-scaled on its way back out
+	size_t scratch_frames;
+	unsigned gen; // the gain the queue was written at
+} requeue_t;
+
+static bool requeue_init(requeue_t *q, size_t cap, size_t frame_bytes, size_t scratch_frames) {
+	memset(q, 0, sizeof(*q));
+	q->data = malloc(cap * frame_bytes);
+	q->scratch = malloc(scratch_frames * frame_bytes);
+	if (!q->data || !q->scratch) {
+		free(q->data);
+		free(q->scratch);
+		memset(q, 0, sizeof(*q));
+		return false;
+	}
+	q->cap = cap;
+	q->frame_bytes = frame_bytes;
+	q->scratch_frames = scratch_frames;
+	q->gen = swvolume_generation();
+	return true;
+}
+
+static void requeue_free(requeue_t *q) {
+	free(q->data);
+	free(q->scratch);
+	memset(q, 0, sizeof(*q));
+}
+
+// After a write that took all of `frames`; anything else and the copy no
+// longer matches the queue, so it is emptied (requeue_keep(q, NULL, 0)).
+static void requeue_keep(requeue_t *q, const void *buf, size_t frames) {
+	if (!q->cap) {
+		return;
+	}
+	if (!buf) {
+		q->fill = 0;
+		return;
+	}
+	const uint8_t *from = buf;
+	if (frames > q->cap) {
+		from += (frames - q->cap) * q->frame_bytes;
+		frames = q->cap;
+	}
+	size_t first = q->cap - q->head < frames ? q->cap - q->head : frames;
+	memcpy(q->data + q->head * q->frame_bytes, from, first * q->frame_bytes);
+	memcpy(q->data, from + first * q->frame_bytes, (frames - first) * q->frame_bytes);
+	q->head = (q->head + frames) % q->cap;
+	q->fill = q->fill + frames < q->cap ? q->fill + frames : q->cap;
+}
+
+static void requeue_rescale(requeue_t *q, snd_pcm_t **pcm, int channels, int rate, int bits, snd_pcm_uframes_t *period) {
+	unsigned gen = swvolume_generation();
+	if (!q->cap || gen == q->gen) {
+		return;
+	}
+	q->gen = gen;
+	if (!q->fill || !*pcm || snd_pcm_state(*pcm) != SND_PCM_STATE_RUNNING) {
+		return;
+	}
+	snd_pcm_sframes_t can = snd_pcm_rewindable(*pcm);
+	if (can <= (snd_pcm_sframes_t)*period) {
+		return;
+	}
+	snd_pcm_uframes_t want = (snd_pcm_uframes_t)can - *period;
+	if (want > q->fill) {
+		want = q->fill;
+	}
+	snd_pcm_sframes_t back = snd_pcm_rewind(*pcm, want);
+	if (back <= 0) {
+		return;
+	}
+	size_t at = (q->head + q->cap - (size_t)back) % q->cap;
+	size_t done = 0;
+	while (done < (size_t)back) {
+		size_t take = (size_t)back - done < q->scratch_frames ? (size_t)back - done : q->scratch_frames;
+		size_t first = q->cap - at < take ? q->cap - at : take;
+		memcpy(q->scratch, q->data + at * q->frame_bytes, first * q->frame_bytes);
+		memcpy(q->scratch + first * q->frame_bytes, q->data, (take - first) * q->frame_bytes);
+		if (swvolume_active()) {
+			if (bits == 32) {
+				swvolume_apply_s32((int32_t *)q->scratch, (int)(take * (size_t)channels));
+			} else {
+				swvolume_apply_s16((short *)q->scratch, (int)(take * (size_t)channels));
+			}
+		}
+		if (pcm_write_recover(pcm, q->scratch, take, channels, rate, bits, period) != (snd_pcm_sframes_t)take) {
+			q->fill = 0; // the queue is short of what the copy says: start the copy again
+			return;
+		}
+		at = (at + take) % q->cap;
+		done += take;
+	}
+}
+
 
 
 // Mid-track jack change (headphones in/out while playing): the stock engine
@@ -3376,6 +3487,15 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		return;
 	}
 
+	// PCM to a USB DAC: what is queued is re-scaled when the volume moves (see
+	// requeue_rescale). Without the memory for it, the change waits for the queue.
+	requeue_t requeue;
+	memset(&requeue, 0, sizeof(requeue));
+	if (!passthrough && usbaudio_active() && !output_is_bluetooth()) {
+		requeue_init(&requeue, (size_t)out_rate * USB_BUFFER_MAX_MS / 1000 + chunk_frames, (size_t)frame_bytes,
+					 chunk_frames);
+	}
+
 	// int64_t and not long: on the device (MIPS o32) long is 32 bit, and this
 	// counts PCM bytes. At 44.1 kHz 16-bit stereo that is 176,400 bytes a
 	// second, so a 32-bit sign flips after three and three quarter hours --
@@ -3842,6 +3962,11 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			}
 		}
 
+		// What is already queued first, at the volume as it is now; then this
+		// chunk's copy, from before the gain.
+		requeue_rescale(&requeue, &pcm_handle, channels, out_rate, out_bits, &period_size);
+		requeue_keep(&requeue, buffer, frames_read);
+
 		// And the software volume, under the same rule and for the same reason:
 		// scaling a DoP stream would stop it being DSD and start being noise.
 		if (swvolume_active() && !passthrough) {
@@ -3857,6 +3982,9 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		snd_pcm_sframes_t written =
 			pcm_write_recover(&pcm_handle, buffer, frames_read, channels, out_rate, out_bits, &period_size);
 		health_lap(&health, STAGE_WRITE);
+		if (written != (snd_pcm_sframes_t)frames_read) {
+			requeue_keep(&requeue, NULL, 0); // the queue no longer ends where the copy does
+		}
 
 		if (written == -EINTR) {
 			// Not an error: a command (pause, stop, another track, a seek)
@@ -4004,6 +4132,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	if (!keep_open) {
 		set_dac_dop(0);
 	}
+	requeue_free(&requeue);
 	free(buffer);
 	speed_close(stretch);
 	decoder_close(dec);

@@ -49,6 +49,9 @@ void swvolume_clear_usb_gain(void);
 // before usbaudio.c has set one.
 bool swvolume_active(void);
 
+// Changes with every change of the gain: compare two readings to tell.
+unsigned swvolume_generation(void);
+
 // The attenuation for an index, in tenths of a dB, straight off the curve.
 int swvolume_millibel(int percent);
 
