@@ -1761,9 +1761,18 @@ static void power_timer_cb(lv_timer_t *timer) {
 	g_usb_present_last = usb_now;
 	g_usb_present_known = true;
 
-	// A cable plugged or pulled lights the screen, like the power button does,
-	// and counts as activity so the idle timer does not blank it again at once.
-	if (usb_changed && !g_screen_on) {
+	// The same for the 3.5 and 4.4 mm jacks: headphones in or out.
+	static int jack_last = -1;
+	int jack_now = headphone_jack_state();
+	bool jack_changed = jack_last >= 0 && jack_now != jack_last;
+	jack_last = jack_now;
+	if (jack_changed) {
+		g_mem_active_ms = now;
+	}
+
+	// A cable or headphones plugged or pulled light the screen, like the power
+	// button does, and count as activity so the idle timer does not blank it again at once.
+	if ((usb_changed || jack_changed) && !g_screen_on) {
 		power_screen_on();
 		power_notify_activity();
 		lv_display_trigger_activity(g_disp);
