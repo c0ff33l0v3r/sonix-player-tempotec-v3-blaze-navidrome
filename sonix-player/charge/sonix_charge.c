@@ -1,8 +1,8 @@
 // sonix_charge: the charging screen of a player that is "off" on its cable.
 //
 // The stock player shows a battery and nothing else when the cable lights the
-// device, and again at the short press of the power button; the long press
-// starts it for real. A player that is up to show that and has restored the
+// device, and again at a short press of the power button (a press while it is
+// lit turns it off); the long press starts it for real. A player that is up to show that and has restored the
 // last track, opened the DAC and loaded every service is not off, so this is
 // a program of its own: the framebuffer, the LED, the power key and two sysfs
 // files, and nothing that makes a sound.
@@ -40,6 +40,8 @@
 #define LED_NODE "/sys/class/leds/sgm31324-leds/led_pattern"
 #define PATTERN_RED "6"
 #define PATTERN_NONE "5"
+#define PATTERN_BLUE "1"
+#define RELEASE_WAIT_MS 3000 // after the long press, the reboot waits this long for the key to come up
 #define CAPACITY_NODE "/sys/class/power_supply/battery/capacity"
 #define SUPPLY_DIR "/sys/class/power_supply"
 #define LOG_FILE "/mnt/sd_0/.local/charge.log"
@@ -52,7 +54,7 @@
 #define LONG_PRESS_MS 1000 // the power button held: start the player
 #define POLL_MS 500
 #define CABLE_GONE_POLLS 12 // consecutive reads without the cable: six seconds
-#define CABLE_GRACE_MS 20000 // the supplies are not trusted this soon after the start
+#define CABLE_GRACE_MS 20000 // the supplies are not trusted this soon after the boot
 
 // The stock layout, 320 x 480: outline at (107,160), fill 74 x 84 at (123,203),
 // the percentage centred under it at y 325.
@@ -276,7 +278,9 @@ static void light(int percent) {
 }
 
 static void dark(void) {
-	write_str(BACKLIGHT_NODE, "0");
+	// 1, not 0: from 0 this backlight does not always come back on the next
+	// unblank (the player's wake had the same trouble), and the blank puts it out anyway.
+	write_str(BACKLIGHT_NODE, "1");
 	write_str(BLANK_NODE, "4"); // FB_BLANK_POWERDOWN
 	screen_on = false;
 }
@@ -318,8 +322,15 @@ int main(void) {
 				if (ev.value == 1) {
 					held_since = now_ms();
 				} else if (ev.value == 0 && held_since) {
-					// A short press: the battery again, for a while.
+					// A short press: dark if lit, like the player's own screen
+					// off; otherwise the battery again, for a while.
 					held_since = 0;
+					if (screen_on) {
+						note("screen off by the key");
+						dark();
+						continue;
+					}
+					note("screen on by the key");
 					percent = read_int(CAPACITY_NODE, percent);
 					shown_percent = percent;
 					light(percent);
@@ -338,6 +349,25 @@ int main(void) {
 			note("power held: starting the player");
 			int rc = system("i2cset -f -y 0 0x34 0x07 0x01");
 			(void)rc;
+			// The LED says "let go", and the reboot waits for it: a key still
+			// held through the reboot reaches the PMIC's 6 s power-off (REG27h)
+			// and the player has to be switched on again.
+			write_str(LED_NODE, PATTERN_BLUE);
+			long until = now_ms() + RELEASE_WAIT_MS;
+			while (keys >= 0 && now_ms() < until) {
+				struct pollfd rel = {.fd = keys, .events = POLLIN};
+				if (poll(&rel, 1, (int)(until - now_ms())) <= 0) {
+					break;
+				}
+				struct input_event ev;
+				bool released = false;
+				while (read(keys, &ev, sizeof(ev)) == (ssize_t)sizeof(ev)) {
+					released |= ev.type == EV_KEY && ev.code == KEY_POWER && ev.value == 0;
+				}
+				if (released) {
+					break;
+				}
+			}
 			return 0;
 		}
 
@@ -357,7 +387,9 @@ int main(void) {
 			if (cable_gone == 0) {
 				note("cable not seen");
 			}
-			if (now - started_at < CABLE_GRACE_MS) {
+			// Counted from the boot (now_ms is CLOCK_MONOTONIC), not from this start:
+			// exec'd by the player's power-off the supplies are long settled.
+			if (now < CABLE_GRACE_MS) {
 				cable_gone = 1;
 			} else if (++cable_gone >= CABLE_GONE_POLLS) {
 				note("cable gone: power off");
