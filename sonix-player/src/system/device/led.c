@@ -44,6 +44,21 @@
 // headphones.
 #define PATTERN_BT_RECEIVER 14
 
+// The colour each state shows, user-chosen ([led] colour_N, see led.h). The
+// defaults are the stock colours above.
+static int s_state_pattern[LED_STATE_COUNT] = {
+	[LED_STATE_IDLE] = PATTERN_IDLE_AQUA,
+	[LED_STATE_PCM_48K] = PATTERN_PCM_48K,
+	[LED_STATE_PCM_192K] = PATTERN_PCM_192K,
+	[LED_STATE_PCM_HI] = PATTERN_PCM_HI,
+	[LED_STATE_DSD] = PATTERN_DSD_WHITE,
+	[LED_STATE_PODCAST] = PATTERN_PODCAST_PURPLE,
+	[LED_STATE_CHARGING] = PATTERN_CHARGING_RED,
+	[LED_STATE_WIFI] = PATTERN_WIFI_TRANSFER,
+	[LED_STATE_BT_RX] = PATTERN_BT_RECEIVER,
+};
+#define STATE_PATTERN(s) s_state_pattern[LED_STATE_##s]
+
 // With the "LED off in standby" option on, this long without anything playing
 // turns the LED off entirely.
 #define IDLE_OFF_SECONDS 20
@@ -111,15 +126,15 @@ static int rate_pattern(int sample_rate) {
 	// by its own flag (see led_update_playback): over DoP its rate is that of
 	// the PCM carrying it. A source at a DSD bit rate is white all the same.
 	if (sample_rate >= 2822400) {
-		return PATTERN_DSD_WHITE;
+		return STATE_PATTERN(DSD);
 	}
 	if (sample_rate > 192000) {
-		return PATTERN_PCM_HI;
+		return STATE_PATTERN(PCM_HI);
 	}
 	if (sample_rate > 48000) {
-		return PATTERN_PCM_192K;
+		return STATE_PATTERN(PCM_192K);
 	}
-	return PATTERN_PCM_48K;
+	return STATE_PATTERN(PCM_48K);
 }
 
 // When the "off in standby" countdown starts: the latest of the screen going
@@ -150,32 +165,32 @@ static void apply(void) {
 		// The master switch is off: the LED stays dark, except that a charge
 		// in progress still shows -- a device that looks dead while it is
 		// charging is worse than a lit LED.
-		set_pattern(charging_now ? PATTERN_CHARGING_RED : PATTERN_OFF);
+		set_pattern(charging_now ? STATE_PATTERN(CHARGING) : PATTERN_OFF);
 		return;
 	}
 	if (s_playing && s_rate > 0) {
 		// Playback always shows its colour (red while actually charging, the
 		// stock priority). A podcast has its own colour, purple, whatever the
 		// sample rate: it says what is being listened to, not how it is sampled.
-		pattern = charging_now ? PATTERN_CHARGING_RED
-				  : s_podcast  ? PATTERN_PODCAST_PURPLE
-				  : s_dsd	   ? PATTERN_DSD_WHITE
+		pattern = charging_now ? STATE_PATTERN(CHARGING)
+				  : s_podcast  ? STATE_PATTERN(PODCAST)
+				  : s_dsd	   ? STATE_PATTERN(DSD)
 							   : rate_pattern(s_rate);
 	} else if (s_dac_streaming && s_dac_rate > 0) {
 		// In DAC mode nothing plays through audio.c, so s_playing is false and
 		// the LED went dark twenty seconds after the screen did -- with the
 		// computer still sending music. The rate the host chose gets the same
 		// colour a local track of that rate would.
-		pattern = charging_now ? PATTERN_CHARGING_RED : rate_pattern(s_dac_rate);
+		pattern = charging_now ? STATE_PATTERN(CHARGING) : rate_pattern(s_dac_rate);
 	} else if (charging_now) {
 		// Never darkened by the standby option: a charge in progress stays
 		// visible.
-		pattern = PATTERN_CHARGING_RED;
+		pattern = STATE_PATTERN(CHARGING);
 	} else if (s_wifi_transfer) {
 		// A Wi-Fi transfer is running: its pattern stays lit even with the
 		// screen off, since it is the only sign the server is running, and it
 		// deliberately overrides the off-in-standby option.
-		pattern = PATTERN_WIFI_TRANSFER;
+		pattern = STATE_PATTERN(WIFI);
 	} else if (s_bt_receiver) {
 		// Bluetooth receiver mode, lit whether or not the sender is sending
 		// right now: the mode is what the LED reports, the way the transfer
@@ -183,13 +198,13 @@ static void apply(void) {
 		// branch at the top never fires and without this one the LED went dark
 		// twenty seconds after the screen did -- with music still coming out of
 		// the jack.
-		pattern = PATTERN_BT_RECEIVER;
+		pattern = STATE_PATTERN(BT_RX);
 	} else if (s_dac_active) {
 		// The mode is up but the computer is not sending anything yet. Same
 		// argument as the transfer above: with the screen dark the LED is the
 		// only sign the player is a sound card, so the standby option does not
 		// reach it.
-		pattern = PATTERN_IDLE_AQUA;
+		pattern = STATE_PATTERN(IDLE);
 	} else if (s_idle_off_enabled && !s_on_charger && s_standby &&
 			   time(NULL) - idle_window_start() >= IDLE_OFF_SECONDS) {
 		// LED off in standby: the screen has been off this long with nothing
@@ -209,7 +224,7 @@ static void apply(void) {
 		// server, the receiver and DAC mode have above.
 		pattern = PATTERN_OFF;
 	} else {
-		pattern = PATTERN_IDLE_AQUA;
+		pattern = STATE_PATTERN(IDLE);
 	}
 	set_pattern(pattern);
 }
@@ -234,7 +249,7 @@ void led_init(void) {
 		write_str(RED_TRIGGER_NODE, "none");
 		red_trigger_state = 0;
 	}
-	set_pattern(PATTERN_IDLE_AQUA);
+	set_pattern(STATE_PATTERN(IDLE));
 }
 
 void led_set_charging(bool charging) {
@@ -326,3 +341,22 @@ void led_set_standby(bool standby) {
 	apply();
 }
 
+
+void led_set_state_pattern(led_state_t state, int pattern) {
+	if (state < 0 || state >= LED_STATE_COUNT || pattern < 1 || pattern > 16) {
+		return;
+	}
+	s_state_pattern[state] = pattern;
+	apply();
+}
+
+int led_state_pattern(led_state_t state) { return (state >= 0 && state < LED_STATE_COUNT) ? s_state_pattern[state] : 0; }
+
+// Shown as it is chosen; led_preview_end() puts back what the state of the
+// player calls for.
+void led_preview(int pattern) { set_pattern(pattern); }
+
+void led_preview_end(void) {
+	current_pattern = -1; // the preview wrote behind apply()'s back
+	apply();
+}

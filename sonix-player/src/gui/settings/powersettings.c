@@ -1,5 +1,7 @@
 #include "powersettings.h"
 
+#include <stdio.h>
+
 #include "lvgl/lvgl.h"
 
 #include "src/gui/fonts/fonts.h"
@@ -11,6 +13,8 @@
 #include "src/system/device/led.h"
 #include "src/system/device/power.h"
 #include "src/system/device/system.h"
+#include "src/system/device/sysinfo.h"
+#include "src/gui/shell/switcher.h"
 
 lv_obj_t *powersettings_screen;
 
@@ -35,6 +39,90 @@ static lv_obj_t *key_lock_switch;
 static lv_obj_t *standby_switch;
 static lv_obj_t *charge_note;
 static lv_obj_t *axp_limit_switch, *axp_current_switch; // the R1's two, instead of the slider
+
+// --- LED colours ---
+//
+// One row per state; a tap moves it to the next colour and shows it on the LED
+// for a moment. The patterns are the ones leds_sgm31324_add.sh registers on
+// the Blaze (12-14 added there by hand); 9 and 10 are left out, they look the
+// same as 14 and 13.
+static const struct {
+	int pattern;
+	const char *label;
+} LED_COLOURS[] = {
+	{5, "led_colour_off"},		   {1, "led_colour_blue"},	 {3, "led_colour_cyan"},
+	{14, "led_colour_dark_blue"},  {8, "led_colour_green"},	 {12, "led_colour_green_blink"},
+	{2, "led_colour_yellow"},	   {4, "led_colour_orange"}, {6, "led_colour_red_breathing"},
+	{7, "led_colour_red_blink"},   {13, "led_colour_purple"}, {11, "led_colour_white"},
+};
+#define LED_COLOUR_COUNT ((int)(sizeof(LED_COLOURS) / sizeof(LED_COLOURS[0])))
+#define LED_PREVIEW_MS 2000
+
+static const char *const LED_STATE_LABELS[LED_STATE_COUNT] = {
+	[LED_STATE_IDLE] = "led_state_idle",		   [LED_STATE_PCM_48K] = "led_state_pcm_48k",
+	[LED_STATE_PCM_192K] = "led_state_pcm_192k",   [LED_STATE_PCM_HI] = "led_state_pcm_hi",
+	[LED_STATE_DSD] = "led_state_dsd",			   [LED_STATE_PODCAST] = "led_state_podcast",
+	[LED_STATE_CHARGING] = "led_state_charging",   [LED_STATE_WIFI] = "led_state_wifi",
+	[LED_STATE_BT_RX] = "led_state_bt_receiver",
+};
+
+static lv_obj_t *led_colours_screen;
+static lv_obj_t *led_colour_values[LED_STATE_COUNT];
+static lv_timer_t *led_preview_timer;
+
+static int led_colour_index(int pattern) {
+	for (int i = 0; i < LED_COLOUR_COUNT; i++) {
+		if (LED_COLOURS[i].pattern == pattern) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static void led_colour_label(led_state_t state) {
+	int i = led_colour_index(led_state_pattern(state));
+	lv_label_set_text(led_colour_values[state], i >= 0 ? tr(LED_COLOURS[i].label) : "?");
+}
+
+static void led_preview_done_cb(lv_timer_t *t) {
+	(void)t;
+	led_preview_timer = NULL;
+	led_preview_end();
+}
+
+static void led_colour_row_cb(lv_event_t *e) {
+	led_state_t state = (led_state_t)(intptr_t)lv_event_get_user_data(e);
+	int next = LED_COLOURS[(led_colour_index(led_state_pattern(state)) + 1) % LED_COLOUR_COUNT].pattern;
+	led_set_state_pattern(state, next);
+	char key[24];
+	snprintf(key, sizeof(key), "colour_%d", (int)state);
+	config_set_int("led", key, next);
+	led_colour_label(state);
+
+	led_preview(next);
+	if (led_preview_timer) {
+		lv_timer_reset(led_preview_timer);
+	} else {
+		led_preview_timer = lv_timer_create(led_preview_done_cb, LED_PREVIEW_MS, NULL);
+		lv_timer_set_repeat_count(led_preview_timer, 1);
+	}
+}
+
+static void build_led_colours_page(gui_config_t *cfg) {
+	led_colours_screen = lv_obj_create(NULL);
+	lv_obj_t *container = settingsrow_page(led_colours_screen, cfg, "power_led_colours");
+	for (int s = 0; s < LED_STATE_COUNT; s++) {
+		settingsrow_add(container, LED_STATE_LABELS[s], &led_colour_values[s], led_colour_row_cb, (void *)(intptr_t)s);
+		led_colour_label((led_state_t)s);
+	}
+	lv_obj_t *note = lv_label_create(container);
+	lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
+	lv_obj_set_width(note, lv_pct(100));
+	lv_obj_add_style(note, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(note, &font_ui_22, 0);
+	lv_label_set_text(note, tr("power_led_colours_note"));
+	switcher_attach_back_gesture(led_colours_screen);
+}
 
 // --- reading the saved values ---
 
@@ -90,11 +178,24 @@ void powersettings_apply(void) {
 	// on its own regardless.
 	led_set_enabled(config_get_bool("power", "led_on", true));
 	led_set_idle_off(config_get_bool("power", "led_off_standby", true));
+	for (int s = 0; s < LED_STATE_COUNT; s++) {
+		char key[24];
+		snprintf(key, sizeof(key), "colour_%d", s);
+		int pattern = (int)config_get_int("led", key, 0);
+		if (led_colour_index(pattern) >= 0) {
+			led_set_state_pattern((led_state_t)s, pattern);
+		}
+	}
 
 	input_set_key_lock(config_get_bool("power", "lock_keys_screen_off", false));
 }
 
 static void refresh_labels(void) {
+	if (led_colours_screen) {
+		for (int s = 0; s < LED_STATE_COUNT; s++) {
+			led_colour_label((led_state_t)s);
+		}
+	}
 	if (charge_value) {
 		lv_label_set_text_fmt(charge_value, "%d%%", CHARGE_LIMIT_MIN + (charge_index() * CHARGE_LIMIT_STEP));
 	}
@@ -260,6 +361,11 @@ void powersettings_init(gui_config_t *cfg) {
 	// The LED master switch, and the standby option that depends on it.
 	settingsrow_toggle(container, "power_led_on", &led_on_switch, led_on_toggled_cb);
 	led_off_card = settingsrow_toggle(container, "power_led_off_in_standby", &led_off_switch, led_off_toggled_cb);
+	// Only where the palette above is what the LED module registers.
+	if (sysinfo_model()->ak4493) {
+		build_led_colours_page(cfg);
+		settingsrow_add(container, "power_led_colours", NULL, switch_screen_cb, led_colours_screen);
+	}
 	// No "turn Wi-Fi off in standby" entry: parking the radio is automatic, and
 	// wifi_in_use() in power.c knows on its own when not to turn it off --
 	// Qobuz, Tidal, podcasts, radio, AirPlay, DLNA, transfers.

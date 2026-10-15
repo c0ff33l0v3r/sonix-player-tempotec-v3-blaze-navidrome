@@ -111,4 +111,26 @@ void led_set_idle_off(bool enabled);
 // while the screen is off. Waking restarts the idle window.
 void led_set_standby(bool standby);
 
+// The states whose colour can be chosen (Power > LED colours), each mapped to
+// one of the controller's patterns ([led] colour_<state> in the config).
+typedef enum {
+	LED_STATE_IDLE,
+	LED_STATE_PCM_48K,
+	LED_STATE_PCM_192K,
+	LED_STATE_PCM_HI,
+	LED_STATE_DSD,
+	LED_STATE_PODCAST,
+	LED_STATE_CHARGING,
+	LED_STATE_WIFI,
+	LED_STATE_BT_RX,
+	LED_STATE_COUNT,
+} led_state_t;
+
+void led_set_state_pattern(led_state_t state, int pattern);
+int led_state_pattern(led_state_t state);
+
+// Lights `pattern` now, whatever the player is doing, until led_preview_end().
+void led_preview(int pattern);
+void led_preview_end(void);
+
 #endif /* LED_H */
