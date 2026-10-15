@@ -73,6 +73,11 @@ void powermenu_show(void) {
 	slide_reset(&slide_off);
 	slide_reset(&slide_reboot);
 
+	// Held from a dark screen: the menu was opening unseen. Lit first, so the
+	// screensaver the wake may raise ends up under the menu, not over it.
+	if (!power_screen_is_on()) {
+		power_screen_on();
+	}
 	lv_obj_set_hidden(panel, false);
 	lv_obj_move_foreground(panel);
 	power_hold_screen_on(true);
