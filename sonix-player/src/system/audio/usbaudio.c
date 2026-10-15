@@ -485,6 +485,10 @@ static void find_volume_control(int card) {
 // The value written is read back. A driver is allowed to round it; sitting at
 // the top of its range after being asked for well below is a control that does
 // nothing, and then it is given up and the samples take the whole level.
+// Set while a DoP stream is going out: the samples cannot be scaled then, so
+// the device's own control takes the whole level (see usbaudio_set_dop).
+static volatile bool dop_on;
+
 void usbaudio_apply_volume(int percent) {
 	if (active_card < 0) {
 		swvolume_clear_usb_gain();
@@ -507,7 +511,7 @@ void usbaudio_apply_volume(int percent) {
 		return;
 	}
 
-	bool hardware = volume_has_db && config_get_int("usb", "hardware_volume", 0);
+	bool hardware = volume_has_db && (dop_on || config_get_int("usb", "hardware_volume", 0));
 	long value = volume_max;
 	long hw_db = 0;
 	if (mute) {
@@ -725,6 +729,26 @@ void usbaudio_poll(void) {
 bool usbaudio_active(void) { return active_card >= 0; }
 
 bool usbaudio_has_volume_control(void) { return active_card >= 0 && volume_control[0] && volume_max > volume_min; }
+
+// [usb] dsd_mode: 0 auto (DoP only when the device can take the level on a dB
+// scale, PCM otherwise), 1 DoP always, 2 PCM always.
+bool usbaudio_dsd_as_pcm(void) {
+	long mode = config_get_int("usb", "dsd_mode", USB_DSD_AUTO);
+	if (mode == USB_DSD_DOP) {
+		return false;
+	}
+	return mode == USB_DSD_PCM || !(usbaudio_has_volume_control() && volume_has_db);
+}
+
+void usbaudio_set_dop(bool on) {
+	if (on == dop_on) {
+		return;
+	}
+	dop_on = on;
+	if (active_card >= 0) {
+		usbaudio_apply_volume(get_volume_percent());
+	}
+}
 
 void usbaudio_card_name(char *out, size_t out_size) {
 	if (!out || out_size == 0) {

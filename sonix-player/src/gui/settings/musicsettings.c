@@ -33,6 +33,7 @@
 #include "src/system/decode/decode.h"
 #include "src/system/audio/replaygain.h"
 #include "src/system/core/config.h"
+#include "src/system/audio/usbaudio.h"
 #include "src/system/core/lang.h"
 #include "src/system/library/library.h"
 #include "src/system/library/metadata.h"
@@ -837,6 +838,24 @@ static void dsd_gain_pick_cb(lv_event_t *e) {
 		return;
 	}
 	dsd_gain_store((int)(intptr_t)lv_event_get_user_data(e));
+}
+
+// DSD over a USB DAC ([usb] dsd_mode, read by usbaudio_dsd_as_pcm when a track starts).
+static lv_obj_t *usb_dsd_pill[3];
+
+static void usb_dsd_refresh(void) {
+	long mode = config_get_int("usb", "dsd_mode", USB_DSD_AUTO);
+	for (int i = 0; i < 3; i++) {
+		settingsrow_pill_active(usb_dsd_pill[i], i == mode);
+	}
+}
+
+static void usb_dsd_pick_cb(lv_event_t *e) {
+	if (player_sheet_drag_active() || switcher_back_drag_active()) {
+		return;
+	}
+	config_set_int("usb", "dsd_mode", (int)(intptr_t)lv_event_get_user_data(e));
+	usb_dsd_refresh();
 }
 
 // The round corner buttons on the MSEB and equalizer pages, the same shape the
@@ -2004,6 +2023,15 @@ void musicsettings_init(gui_config_t *cfg) {
 		dsd_gain_pill[i] = settingsrow_pill_text(dsd_gain_pills, text, i + 1, dsd_gain_pick_cb);
 	}
 	dsd_gain_refresh();
+
+	lv_obj_t *usb_dsd_pills;
+	settingsrow_pills(container, "musicsettings_usb_dsd", &usb_dsd_pills);
+	usb_dsd_pill[USB_DSD_AUTO] = settingsrow_pill_text(usb_dsd_pills, "Auto", USB_DSD_AUTO, usb_dsd_pick_cb);
+	usb_dsd_pill[USB_DSD_DOP] = settingsrow_pill_text(usb_dsd_pills, "DoP", USB_DSD_DOP, usb_dsd_pick_cb);
+	usb_dsd_pill[USB_DSD_PCM] = settingsrow_pill_text(usb_dsd_pills, "PCM", USB_DSD_PCM, usb_dsd_pick_cb);
+	option_note(container, "musicsettings_usb_dsd_note");
+	usb_dsd_refresh();
+	theme_register_refresh(usb_dsd_refresh);
 
 	build_filter_page(cfg);
 	settingsrow_add(container, "musicsettings_filters", NULL, switch_screen_cb, dacfilter_screen);

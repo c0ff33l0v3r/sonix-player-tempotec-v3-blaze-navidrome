@@ -3207,7 +3207,10 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	}
 
 	// Headphones have no DSD mode to switch into: DSD goes to them as PCM.
-	bool dsd_as_pcm = decoder_passthrough(dec) && output_is_bluetooth() && decoder_dsd_to_pcm(dec);
+	// So does a USB DAC that cannot take the level itself: DoP cannot be scaled,
+	// so it would play at full volume whatever the slider says (usbaudio_dsd_as_pcm).
+	bool dsd_as_pcm = decoder_passthrough(dec) && (output_is_bluetooth() || (usbaudio_active() && usbaudio_dsd_as_pcm())) &&
+					  decoder_dsd_to_pcm(dec);
 
 	int channels = decoder_channels(dec);
 	int sample_rate = decoder_sample_rate(dec);
@@ -3240,7 +3243,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	int decim_factor = bluetooth_decimation(sample_rate, channels, out_bits, passthrough);
 	// 176.4 kHz is more than any Bluetooth link carries, whatever the
 	// decimation settings say.
-	if (dsd_as_pcm && decim_factor == 1) {
+	if (dsd_as_pcm && output_is_bluetooth() && decim_factor == 1) {
 		unsigned sink = bluetooth_sink_rate();
 		decim_factor = decimate_factor_for(sample_rate, sink ? (int)sink : 44100);
 	}

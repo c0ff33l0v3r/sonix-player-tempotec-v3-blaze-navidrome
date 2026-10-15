@@ -672,6 +672,7 @@ void set_dac_dop(int enabled) {
 	}
 	current_dop = enabled;
 	alsa_set_control("DOP_EN", enabled);
+	usbaudio_set_dop(enabled);
 	printf("set dac DoP to %d\n", enabled);
 
 	// The attenuation the DAC should be at is not the same on the two sides of

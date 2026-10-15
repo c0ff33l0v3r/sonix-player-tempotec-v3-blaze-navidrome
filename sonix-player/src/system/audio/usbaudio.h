@@ -61,4 +61,16 @@ void usbaudio_apply_volume(int percent);
 // the level any more and the software volume takes it over -- see swvolume.c.
 bool usbaudio_has_volume_control(void);
 
+// How DSD goes out over the port ([usb] dsd_mode).
+#define USB_DSD_AUTO 0
+#define USB_DSD_DOP 1
+#define USB_DSD_PCM 2
+
+// Whether a DSD track should be converted to PCM for the device on the port.
+bool usbaudio_dsd_as_pcm(void);
+
+// Told on both edges of a DoP stream: while it lasts the level goes to the
+// device's own volume control, since DoP samples cannot be scaled.
+void usbaudio_set_dop(bool on);
+
 #endif /* USBAUDIO_H */
