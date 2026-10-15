@@ -57,7 +57,9 @@ bool glyphwarm_text(const lv_font_t *font, const char *text, uint32_t *pos, uint
 #define CENSUS_MAX_TITLES 20000	 // rows of track titles read; albums and artists are few
 #define WARM_TICK_MS 40
 #define WARM_SLICE_US 5000
-#define WARM_QUIET_MS 300
+// A single CJK glyph can take 40-65 ms on the Blaze, so a slice cannot be kept
+// short: it waits for a real pause instead of the gap between two gestures.
+#define WARM_QUIET_MS 2000
 
 typedef struct {
 	uint32_t letter;
