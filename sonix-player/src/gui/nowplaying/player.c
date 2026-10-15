@@ -4234,13 +4234,56 @@ void player_screen_next(void) {
 	frameprof_end(PROF_PROGRESS);
 }
 
+// Held, << and >> seek like the transport keys do (system.c seek_step): 5 s
+// every quarter second. The release of a hold is not also a skip.
+#define TOUCH_SEEK_REPEAT_MS 250
+#define TOUCH_SEEK_STEP_SECONDS 5.0
+static bool touch_seeked;
+static uint32_t touch_seek_last;
+
+static void touch_seek_event_cb(lv_event_t *e) {
+	lv_event_code_t code = lv_event_get_code(e);
+	if (code == LV_EVENT_PRESSED) {
+		touch_seeked = false;
+		return;
+	}
+	// The scrub only moves a number until it is committed, as the keys do on release.
+	if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+		if (touch_seeked) {
+			device_state_scrub_commit();
+		}
+		return;
+	}
+	// LONG_PRESSED_REPEAT comes every 100 ms; the step is paced here.
+	if (touch_seeked && lv_tick_elaps(touch_seek_last) < TOUCH_SEEK_REPEAT_MS) {
+		return;
+	}
+	device_state_t state;
+	device_state_get(&state);
+	if (state.live || state.progress_total_secs <= 0) {
+		return;
+	}
+	touch_seeked = true;
+	touch_seek_last = lv_tick_get();
+	double step = TOUCH_SEEK_STEP_SECONDS;
+	device_state_scrub_by(lv_event_get_user_data(e) ? step : -step);
+}
+
 static void prev_btn_event_cb(lv_event_t *e) {
 	(void)e;
+	if (touch_seeked) {
+		touch_seeked = false;
+		return;
+	}
 	player_screen_prev();
 }
 
 static void next_btn_event_cb(lv_event_t *e) {
 	(void)e;
+	if (touch_seeked) {
+		touch_seeked = false;
+		return;
+	}
 	player_screen_next();
 }
 
@@ -5257,6 +5300,10 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_center(prev_icon);
 
 	lv_obj_add_event_cb(prev_btn, prev_btn_event_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_add_event_cb(prev_btn, touch_seek_event_cb, LV_EVENT_PRESSED, NULL);
+	lv_obj_add_event_cb(prev_btn, touch_seek_event_cb, LV_EVENT_LONG_PRESSED_REPEAT, NULL);
+	lv_obj_add_event_cb(prev_btn, touch_seek_event_cb, LV_EVENT_RELEASED, NULL);
+	lv_obj_add_event_cb(prev_btn, touch_seek_event_cb, LV_EVENT_PRESS_LOST, NULL);
 	lv_obj_set_style_opa(prev_btn, LV_OPA_40, LV_STATE_DISABLED); // see apply_connecting()
 
 	// Play/pause: a white disc, with the glyph carrying the colour.
@@ -5284,6 +5331,10 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_center(next_icon);
 
 	lv_obj_add_event_cb(next_btn, next_btn_event_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_add_event_cb(next_btn, touch_seek_event_cb, LV_EVENT_PRESSED, (void *)1);
+	lv_obj_add_event_cb(next_btn, touch_seek_event_cb, LV_EVENT_LONG_PRESSED_REPEAT, (void *)1);
+	lv_obj_add_event_cb(next_btn, touch_seek_event_cb, LV_EVENT_RELEASED, (void *)1);
+	lv_obj_add_event_cb(next_btn, touch_seek_event_cb, LV_EVENT_PRESS_LOST, (void *)1);
 	lv_obj_set_style_opa(next_btn, LV_OPA_40, LV_STATE_DISABLED);
 
 	// Album art: a square as wide as the screen, flush against the top edge
