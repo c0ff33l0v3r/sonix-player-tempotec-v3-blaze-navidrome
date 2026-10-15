@@ -1600,9 +1600,9 @@ void power_screen_on(void) {
 		screen_power(true); // panel, backlight and touch controller back up
 		// The unblank lights the backlight before there is a picture: dark
 		// until the repaint below is up, or the panel shows black first.
-		if (g_cfg.brightness_path) {
-			write_long_to_file(g_cfg.brightness_path, 0);
-		}
+		// MIN and not 0: after some resumes from mem the backlight never comes
+		// back from 0 (black screen until reboot), while level changes above 0 still work.
+		backlight_write(BRIGHTNESS_MIN);
 	}
 	frameprof_end(PROF_WAKE_UNBLANK);
 	WAKE_STEP("unblank");
