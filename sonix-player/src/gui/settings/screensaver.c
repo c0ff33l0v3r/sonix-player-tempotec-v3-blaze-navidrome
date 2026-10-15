@@ -437,12 +437,14 @@ void screensaver_show(void) {
 	lv_obj_set_hidden(saver, false);
 	lv_obj_move_foreground(saver);
 	lv_timer_resume(clock_timer);
+	player_lyrics_covered(PLAYER_COVER_SCREENSAVER, true);
 }
 
 // Everything that has to happen once it is really gone, whether it was
 // dismissed by a tap, by a finished swipe, or by switching the option off.
 static void finish_hide(void) {
 	lv_obj_set_hidden(saver, true);
+	player_lyrics_covered(PLAYER_COVER_SCREENSAVER, false);
 	lv_obj_set_y(saver, 0);
 	lv_timer_pause(clock_timer);
 	// Let go of the player's pixels: it frees them at the next track change,

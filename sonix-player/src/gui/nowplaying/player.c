@@ -1313,6 +1313,23 @@ static void lyrics_pad(void) {
 
 // An A8 mask the size of the column, opaque but for a ramp at the top and at
 // the bottom. Built again only when the size changes.
+// The fade is on when the page wants it and nothing slides over the column:
+// under a moving control centre or screensaver the masked layer would be
+// rebuilt on every frame of the slide (see lyrics_fade).
+static bool lyrics_fade_wanted = true;
+static unsigned lyrics_fade_covers;
+
+static void lyrics_fade_apply(void) {
+	if (lyrics_view && lyrics_mask_pixels) {
+		lv_obj_set_style_bitmap_mask_src(lyrics_view, lyrics_fade_wanted && !lyrics_fade_covers ? &lyrics_mask : NULL, 0);
+	}
+}
+
+void player_lyrics_covered(unsigned who, bool covered) {
+	lyrics_fade_covers = covered ? lyrics_fade_covers | who : lyrics_fade_covers & ~who;
+	lyrics_fade_apply();
+}
+
 static void lyrics_mask_build(int w, int h) {
 	if (lyrics_mask_pixels && (int)lyrics_mask.header.w == w && (int)lyrics_mask.header.h == h) {
 		return;
@@ -1342,7 +1359,7 @@ static void lyrics_mask_build(int w, int h) {
 	lyrics_mask.header.stride = (uint32_t)w;
 	lyrics_mask.data = lyrics_mask_pixels;
 	lyrics_mask.data_size = (uint32_t)((size_t)w * (size_t)h);
-	lv_obj_set_style_bitmap_mask_src(lyrics_view, &lyrics_mask, 0);
+	lyrics_fade_apply();
 }
 
 static void lyrics_note_show(const char *tag) {
@@ -1774,9 +1791,8 @@ static void lyrics_progress_apply(int32_t progress) {
 // rendering the column into a layer of its own and masking it, which is fine
 // once a scroll step and far too much for every frame of a swipe.
 static void lyrics_fade(bool on) {
-	if (lyrics_view && lyrics_mask_pixels) {
-		lv_obj_set_style_bitmap_mask_src(lyrics_view, on ? &lyrics_mask : NULL, 0);
-	}
+	lyrics_fade_wanted = on;
+	lyrics_fade_apply();
 }
 
 static void lyrics_progress_exec(void *obj, int32_t value) {

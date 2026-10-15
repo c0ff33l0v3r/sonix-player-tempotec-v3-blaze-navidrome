@@ -486,6 +486,7 @@ static void hide_when_parked_cb(lv_anim_t *a) {
 	(void)a;
 	if (!panel_open) {
 		lv_obj_set_hidden(veil, true);
+		player_lyrics_covered(PLAYER_COVER_QUICKPANEL, false);
 		restore_topbar();
 	}
 }
@@ -496,6 +497,7 @@ static void panel_slide_to(int y, bool animate) {
 		lv_obj_set_y(panel, y);
 		if (!panel_open) {
 			lv_obj_set_hidden(veil, true);
+			player_lyrics_covered(PLAYER_COVER_QUICKPANEL, false);
 			restore_topbar();
 		}
 		return;
@@ -622,6 +624,7 @@ static void panel_prepare(void) {
 	}
 
 	lv_obj_set_hidden(veil, false);
+	player_lyrics_covered(PLAYER_COVER_QUICKPANEL, true);
 	lv_obj_move_foreground(veil);
 
 	// The player hides the status bar so artwork can run to the top edge. The

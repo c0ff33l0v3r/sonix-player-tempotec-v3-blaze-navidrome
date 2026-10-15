@@ -95,6 +95,12 @@ bool player_current_podcast_feed(long long *id_out, podcast_feed_t *feed_out);
 
 bool player_sheet_is_open(void);
 
+// Something sliding over the player (the control centre, the screensaver):
+// the lyrics' edge fade is left off while any of them is on screen.
+#define PLAYER_COVER_QUICKPANEL 1u
+#define PLAYER_COVER_SCREENSAVER 2u
+void player_lyrics_covered(unsigned who, bool covered);
+
 // True while the gesture in progress has been claimed as a sideways drag. The
 // tap handlers on the pages behind check this so that swiping the player in
 // across a button does not also press it.
