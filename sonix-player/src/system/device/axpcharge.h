@@ -2,6 +2,7 @@
 #define AXPCHARGE_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 // Charging on a player whose AXP2101 PMIC is also its charger: the R1, which
 // has no MP2731. The percentage limit in power.c needs the MP2731's node, so on
@@ -40,5 +41,10 @@ bool axpcharge_holding(void);
 // sonix_charge look at it together with the PMIC's power-on source. No-op on
 // the host.
 void axp_charge_boot_done(bool done);
+// One register of the PMIC, read or written over the same bus. Both players
+// have the AXP2101, whichever of them charges. False when it does not answer,
+// and always on the host.
+bool axpcharge_reg_read(uint8_t reg, uint8_t *value);
+bool axpcharge_reg_write(uint8_t reg, uint8_t value);
 
 #endif /* AXPCHARGE_H */

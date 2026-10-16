@@ -43,9 +43,11 @@
 #include "src/system/device/usb.h"
 #include "src/system/audio/usbdac.h"
 #include "src/system/gearboy/gearboy.h"
+#include "src/system/audio/metronome.h"
 #include "src/system/device/led.h"
 #include "src/system/device/sysinfo.h"
 #include "src/system/device/axpcharge.h"
+#include "src/system/device/chargescreen.h"
 #include "src/gui/shell/gui.h"
 
 #include <errno.h>
@@ -313,13 +315,24 @@ static bool g_screen_view_hold; // see power_hold_screen_for_view
 // powered on from the charger alone.
 //
 // The two nodes under /sys/class/power_supply/usb/ the stock player writes are
-// not used at all: that supply is the AXP2101 PMIC, not the charger, and
-// writing them does nothing to charging.
+// not used at all: on the R3 Pro II that supply is the AXP2101 PMIC, not the
+// charger, and writing them does nothing to charging.
 #define STEP_CHARGING_NODE "/sys/class/power_supply/mp2731-charger/step_charging_enabled"
+
+// The open mp2731.ko keeps the limit itself: given the percentage once, it
+// reads the fuel gauge, stops the charge at the limit and restarts it 3 %
+// below the level the gauge settles at once charging stops, and keeps the
+// system out of suspend while the cable is in, so the limit holds whatever
+// user space is doing. Where these files are, the tick below leaves the
+// percentage to the driver and only forbids charging outright (DAC mode); the
+// stock driver has neither, and the tick does it all.
+#define DRIVER_LIMIT_NODE "/sys/class/power_supply/mp2731-charger/charge_limit_percent"
+#define DRIVER_HELD_NODE "/sys/class/power_supply/mp2731-charger/charge_limit_held"
 
 static const char *g_charge_node;	 // the writable node, NULL if there is none
 static int g_charge_limit = 100;	 // 100 = charge to full
 static bool g_charging_suspended;
+static bool g_driver_limit;			 // the driver keeps the limit (DRIVER_LIMIT_NODE)
 
 // Set while something has deliberately forbidden charging regardless of the
 // battery level -- DAC mode with the charger switched off. Kept separate from
@@ -341,8 +354,16 @@ static void find_charge_node(void) {
 	}
 
 	g_charge_node = STEP_CHARGING_NODE;
-	printf("power: charge limit will use %s\n", g_charge_node);
+	g_driver_limit = access(DRIVER_LIMIT_NODE, W_OK) == 0;
+	if (g_driver_limit) {
+		printf("power: charge limit kept by the driver through %s\n", DRIVER_LIMIT_NODE);
+	} else {
+		printf("power: charge limit will use %s\n", g_charge_node);
+	}
 }
+
+// Whether the driver is holding the charge at the limit right now.
+static bool driver_limit_held(void) { return read_long_from_file(DRIVER_HELD_NODE) == 1; }
 
 bool power_charge_limit_supported(void) {
 	find_charge_node();
@@ -351,7 +372,12 @@ bool power_charge_limit_supported(void) {
 
 int power_get_charge_limit(void) { return g_charge_limit; }
 
-bool power_charging_held(void) { return g_charging_suspended || axpcharge_holding(); }
+bool power_charging_held(void) {
+	if (g_driver_limit) {
+		return driver_limit_held() || axpcharge_holding();
+	}
+	return g_charging_suspended || axpcharge_holding();
+}
 
 static void charger_run(bool run);
 
@@ -372,6 +398,13 @@ void power_set_charge_limit(int percent) {
 		percent = 100;
 	}
 	g_charge_limit = percent;
+
+	find_charge_node();
+	static int written = -1;
+	if (g_driver_limit && percent != written) {
+		write_long_to_file(DRIVER_LIMIT_NODE, percent);
+		written = percent;
+	}
 }
 
 static void charger_run(bool run) {
@@ -392,7 +425,11 @@ static void apply_charge_limit(void) {
 	}
 
 	bool allow;
-	if (!usb_vbus_present()) {
+	if (g_driver_limit) {
+		// The percentage is the driver's: what is left here is the user's own
+		// choice to stop charging, and the cable going out undoes even that.
+		allow = !usb_vbus_present() || !g_charging_blocked;
+	} else if (!usb_vbus_present()) {
 		// No cable, nothing to hold off -- and this is the case that must not
 		// be got wrong. The bit survives the charger being unplugged, so a
 		// player that left it off would meet the next cable with a charger that
@@ -425,7 +462,7 @@ static void apply_charge_limit(void) {
 
 	charger_run(allow);
 	g_charging_suspended = !allow;
-	printf("power: charging %s\n", allow ? "on" : "held off at the limit");
+	printf("power: charging %s\n", allow ? "on" : g_driver_limit ? "off" : "held off at the limit");
 }
 
 // Forbids or allows charging outright, on top of whatever the percentage limit
@@ -780,6 +817,9 @@ static void unpark_radios(void) {
 // [power] standby_mem_seconds (60 by default, like the stock firmware).
 // ---------------------------------------------------------------------------
 
+// The shortest wait before standby that is accepted, in seconds.
+#define STANDBY_MEM_MIN_SECONDS 15
+
 static bool g_mem_enabled;
 // Raised by a suspend that failed or that came straight back. It stops the
 // countdown for THIS dark-screen spell only, and power_screen_on() clears it, so
@@ -801,10 +841,9 @@ void power_set_standby_enabled(bool enabled) {
 	g_mem_instant_wakes = 0;
 }
 
-// The wait after the screen goes dark, set from the same settings page.
-void power_set_standby_seconds(uint32_t seconds) {
-	if (seconds < 15) {
-		seconds = 15; // any lower risks the device sleeping under the fingers
+void power_set_standby_after(uint32_t seconds) {
+	if (seconds < STANDBY_MEM_MIN_SECONDS) {
+		seconds = STANDBY_MEM_MIN_SECONDS; // any lower risks the device sleeping under the fingers
 	}
 	g_mem_after_ms = seconds * 1000u;
 }
@@ -857,17 +896,37 @@ static void mem_skip(const char *why) {
 // the RTC is what wakes the device (no user: the deadline arrived), it really
 // shuts down. If the user wakes it first, turning the screen on disarms the
 // alarm, and the next suspend re-arms it with the new deadline.
+//
+// The same alarm looks in on the battery. A cell that runs out during the sleep
+// leaves the device restarting itself into an empty battery, so on battery
+// power the sleep is also broken now and then, more often the lower the level:
+// awake for a short while with the screen dark, lowbattery.c reads the level
+// and switches the player off at 1 %, and otherwise the device goes back to
+// sleep. Whichever of the two moments comes first is the one programmed.
 // ---------------------------------------------------------------------------
 #define RTC_WAKEALARM_PATH "/sys/class/rtc/rtc0/wakealarm"
 
+// How long the sleep lasts before the battery is looked at, by level.
+#define BATTERY_CHECK_LOW_S (20 * 60)	   // at 5 % or under
+#define BATTERY_CHECK_MID_S (60 * 60)	   // at 15 % or under
+#define BATTERY_CHECK_HIGH_S (4 * 60 * 60) // above
+// Awake for this long after such a wake, enough for lowbattery.c's readings,
+// before the device goes back to sleep.
+#define BATTERY_CHECK_AWAKE_MS 40000
+
 static bool g_rtc_alarm_armed;
-static time_t g_rtc_alarm_at;
-// The same deadline on CLOCK_BOOTTIME. The wall clock is not usable for this:
-// it does not count the sleep, and clock_resync() -- the one thing that would
-// fix it -- refuses to do anything until the date has been set by hand or by
-// ntpdate, so on a device that has seen neither the deadline check never comes
-// true. CLOCK_BOOTTIME counts suspended time and needs nobody's permission.
+// Whether the automatic shutdown has a deadline in this sleep, and whether the
+// alarm programmed is the battery's.
+static bool g_rtc_auto_off_armed;
+static bool g_rtc_battery_armed;
+// The automatic shutdown's deadline on CLOCK_BOOTTIME. The wall clock is not
+// usable for this: it does not count the sleep, and clock_resync() -- the one
+// thing that would fix it -- refuses to do anything until the date has been set
+// by hand or by ntpdate, so on a device that has seen neither the deadline check
+// never comes true. CLOCK_BOOTTIME counts suspended time and needs nobody's
+// permission.
 static uint32_t g_rtc_alarm_boot_at;
+static uint32_t g_rtc_battery_boot_at;
 
 static bool rtc_wakealarm_write(const char *val) {
 #ifdef HOST_BUILD
@@ -888,31 +947,50 @@ static void rtc_alarm_disarm(void) {
 		return;
 	}
 	g_rtc_alarm_armed = false;
+	g_rtc_auto_off_armed = false;
+	g_rtc_battery_armed = false;
 	rtc_wakealarm_write("0");
 	printf("power: RTC wake alarm disarmed\n");
 }
 
-static void rtc_alarm_arm_for_auto_off(void) {
+// Seconds of sleep before the battery is looked at; 0 on the charger or with
+// no level to read.
+static long battery_check_after_s(void) {
+	const char *text = read_battery_percent();
+	if (usb_vbus_present() || !text || text[0] < '0' || text[0] > '9') {
+		return 0;
+	}
+	int level = atoi(text);
+	return level <= 5 ? BATTERY_CHECK_LOW_S : level <= 15 ? BATTERY_CHECK_MID_S : BATTERY_CHECK_HIGH_S;
+}
+
+static void rtc_alarm_arm(void) {
 	g_rtc_alarm_armed = false;
+	g_rtc_auto_off_armed = false;
+	g_rtc_battery_armed = false;
+
+	long auto_off_s = 0;
+	if (g_auto_off_enabled && g_auto_off_ms > 0) {
+		uint32_t idle_wall = boottime_ms() - g_last_active_boot_ms;
+		// Already expired: the normal awake tick handles it.
+		if (idle_wall < g_auto_off_ms) {
+			auto_off_s = (long)((g_auto_off_ms - idle_wall) / 1000u) + 5; // margin
+		}
+	}
+	long battery_s = battery_check_after_s();
+
 	// Cleared on every path, not only when a new one is written: an alarm left
 	// over from an earlier suspend outlives the setting that armed it, and fires
 	// later to wake a device that has no reason to wake -- with the software
 	// flag down, so nothing acts on it and it simply burns battery in the dark.
-	if (!g_auto_off_enabled || g_auto_off_ms == 0) {
-		rtc_wakealarm_write("0");
+	// Cleared first also because the kernel rejects a new alarm over a pending
+	// one.
+	if (!rtc_wakealarm_write("0") || (auto_off_s == 0 && battery_s == 0)) {
 		return;
 	}
-	uint32_t idle_wall = boottime_ms() - g_last_active_boot_ms;
-	if (idle_wall >= g_auto_off_ms) {
-		rtc_wakealarm_write("0");
-		return; // already expired: the normal awake tick handles it
-	}
-	long remaining_s = (long)((g_auto_off_ms - idle_wall) / 1000u) + 5; // margin
-	// Cleared first (the kernel rejects a new alarm over a pending one), then
-	// the absolute time in epoch seconds, which is how the RTC keeps it.
-	if (!rtc_wakealarm_write("0")) {
-		return;
-	}
+	bool battery_first = battery_s > 0 && (auto_off_s == 0 || battery_s < auto_off_s);
+	long remaining_s = battery_first ? battery_s : auto_off_s;
+	// The absolute time in epoch seconds, which is how the RTC keeps it.
 	char buf[32];
 	time_t at = time(NULL) + remaining_s;
 	snprintf(buf, sizeof(buf), "%lld", (long long)at);
@@ -920,9 +998,12 @@ static void rtc_alarm_arm_for_auto_off(void) {
 		return;
 	}
 	g_rtc_alarm_armed = true;
-	g_rtc_alarm_at = at;
-	g_rtc_alarm_boot_at = boottime_ms() + (uint32_t)remaining_s * 1000u;
-	printf("power: mem: RTC wake in %ld s for the automatic shutdown\n", remaining_s);
+	g_rtc_auto_off_armed = auto_off_s > 0;
+	g_rtc_battery_armed = battery_first;
+	g_rtc_alarm_boot_at = boottime_ms() + (uint32_t)auto_off_s * 1000u;
+	g_rtc_battery_boot_at = boottime_ms() + (uint32_t)battery_s * 1000u;
+	printf("power: mem: RTC wake in %ld s %s\n", remaining_s,
+		   battery_first ? "to look at the battery" : "for the automatic shutdown");
 }
 
 void power_quiet_audio_for_shutdown(void) {
@@ -991,8 +1072,8 @@ void power_shutdown(void) {
 	// With the cable in nothing would light the device again by itself, and
 	// the stock player stays on a charging screen then: this process becomes
 	// sonix_charge (a battery, the red LED, the power button), which is what
-	// "off" looks like on a cable. Where the image does not have it, or the
-	// cable is not in, the power goes.
+	// "off" looks like on a cable. The Blaze's image has it; elsewhere (or if
+	// the exec fails) the charging screen built into the player takes over.
 	if (usb_vbus_present() && access(CHARGE_SCREEN_BIN, X_OK) == 0) {
 		power_screen_off();
 		for (int fd = 3; fd < 1024; fd++) {
@@ -1001,12 +1082,21 @@ void power_shutdown(void) {
 		execl(CHARGE_SCREEN_BIN, CHARGE_SCREEN_BIN, (char *)NULL);
 	}
 
-	int rc = system("poweroff");
+	// With the cable in, off is the charging screen, as on the stock player:
+	// the device restarts into it (chargescreen.h) rather than powering down.
+	bool to_charge = usb_vbus_present() && chargescreen_mark(CHARGESCREEN_MARK_REQUESTED);
+	if (!to_charge) {
+		chargescreen_mark(CHARGESCREEN_MARK_NONE);
+	}
+	printf("power: %s\n", to_charge ? "restarting into the charging screen" : "powering off");
+	fflush(NULL);
+
+	int rc = system(to_charge ? "reboot" : "poweroff");
 	(void)rc;
 	sleep(8);
 
 	// Last resort if init never got there.
-	reboot(RB_POWER_OFF);
+	reboot(to_charge ? RB_AUTOBOOT : RB_POWER_OFF);
 }
 
 // The automatic shutdown, from the normal awake tick and from the RTC alarm
@@ -1055,8 +1145,9 @@ static void suspend_to_ram(void) {
 	sync();
 
 	// 4-ter. The RTC alarm: if the automatic shutdown deadline falls during the
-	//        sleep, it is what wakes the device to actually shut down.
-	rtc_alarm_arm_for_auto_off();
+	//        sleep, it is what wakes the device to actually shut down; on
+	//        battery power it also wakes it to look at the level.
+	rtc_alarm_arm();
 
 	// 5. The write that stops the SoC. Blocks until the wake: everything after
 	//    it already runs on the other side.
@@ -1072,7 +1163,7 @@ static void suspend_to_ram(void) {
 		headset_suspend_finish();
 		headset_keys_wake();
 		// The route was parked and the DAC muted for a sleep that never began.
-		audio_force_output_reinit_after_resume();
+		audio_start_output_reinit_after_resume();
 		return;
 	}
 	fputs("mem", f);
@@ -1094,11 +1185,10 @@ static void suspend_to_ram(void) {
 	// starts again, like any other countdown, and the instant-wake counter below
 	// is what guards against a device that wakes itself in a loop.
 
-	// Before the first play opens a PCM: force the output route to re-init. The
-	// suspend powers the HBC3000 down and its kernel resume is a no-op, but the
-	// software route survives, so auto_set_output() would see "X == X" and skip
-	// hbc3000_enable(). A real X->Y->X on the mixer forces the chip's power-on
-	// again, without which the first play after a standby reboots the device.
+	// The route written again before the first play opens a PCM: on the R3 Pro
+	// II that powers the HBC3000 back up, without which the first play after a
+	// standby reboots the device. It runs in the background while the screen
+	// comes back; whatever reaches the card meanwhile waits for it.
 	//
 	// And this is the whole of what a resume owes the audio path. Volume, gain,
 	// digital filter, DRE and NOS are not rewritten because they are not lost:
@@ -1108,9 +1198,8 @@ static void suspend_to_ram(void) {
 	// on alsa_controls_reapply() in alsa-controls.c.
 	//
 	// After a refused suspend too: the route was parked and the DAC muted all
-	// the same, and left that way the next play goes to the parked socket in
-	// silence.
-	audio_force_output_reinit_after_resume();
+	// the same, and the card stays closed until the re-init has run.
+	audio_start_output_reinit_after_resume();
 	if (rc == 0) {
 
 		// And the same courtesy to the radio. The daemons came through the
@@ -1170,8 +1259,16 @@ static void suspend_to_ram(void) {
 	bool user_woke_it = g_power_button_pending;
 	pthread_mutex_unlock(&g_lock);
 
-	if (rc == 0 && g_rtc_alarm_armed && !user_woke_it && (int32_t)(boottime_ms() - g_rtc_alarm_boot_at) >= 0) {
+	bool rtc_woke_it = rc == 0 && g_rtc_alarm_armed && !user_woke_it;
+	if (rtc_woke_it && g_rtc_auto_off_armed && (int32_t)(boottime_ms() - g_rtc_alarm_boot_at) >= 0) {
 		power_auto_off_now("RTC wake after mem: the idle time has run out");
+	}
+	// The battery's own wake: a few seconds of slack, as the RTC counts whole
+	// seconds and the wake takes a moment.
+	bool battery_wake =
+		rtc_woke_it && g_rtc_battery_armed && (int32_t)(boottime_ms() - g_rtc_battery_boot_at) >= -5000;
+	if (battery_wake) {
+		printf("power: mem: RTC wake to look at the battery\n");
 	}
 
 	// No recovery of the old stream: there is nothing left to recover -- the
@@ -1188,6 +1285,11 @@ static void suspend_to_ram(void) {
 	g_screen_off_at = lv_tick_get();
 	g_mem_last_attempt_ms = lv_tick_get();
 	g_mem_skip_logged[0] = '\0';
+	// After a look at the battery, back to sleep sooner: only the readings were
+	// waited for.
+	if (battery_wake && g_mem_after_ms > BATTERY_CHECK_AWAKE_MS) {
+		g_mem_active_ms -= g_mem_after_ms - BATTERY_CHECK_AWAKE_MS;
+	}
 }
 
 static void panel_blank_now(void); // the fast-wake window, below
@@ -1242,7 +1344,9 @@ static void suspend_if_idle(uint32_t now, bool playing) {
 	// nothing runs while the SoC is suspended -- a player asleep on the charger
 	// charges straight past the limit, and the release point three percent below
 	// it is never seen either. Reaching the limit does not lift this: the level
-	// falls again on its own, and only something still awake notices.
+	// falls again on its own, and only something still awake notices. (With the
+	// open mp2731.ko the driver keeps the limit, and the system awake for it, on
+	// its own.)
 	//
 	// With no limit set there is nothing to enforce, but the answer is the same,
 	// because a cable is the one case where sleeping saves nothing that matters.
@@ -1535,6 +1639,29 @@ static uint64_t wake_t_enter; // when power_screen_on() was entered
 #define PROF_WAKE_SETTLE "wake_settle"
 #define PROF_WAKE_DRAW "wake_draw"
 #define PROF_WAKE_FADE "wake_fade"
+// LVGL starts the refresh timer again from its own handler of this event, sent
+// whenever anything is invalidated -- the elapsed time in the player, a title
+// that changes -- so the pause put on it at the blank lasted only until the
+// first of those, and from there every change was drawn into a framebuffer
+// nobody could see. Added after LVGL's handler, this puts the pause back at
+// once. Nothing is lost: the areas stay marked, and power_screen_on() redraws
+// the whole screen anyway; lv_refr_now() does not depend on the timer.
+static void refr_request_cb(lv_event_t *e) {
+	(void)e;
+	if (!g_screen_on && g_refr_timer) {
+		lv_timer_pause(g_refr_timer);
+	}
+}
+
+void power_keep_animations_paused(void) {
+	if (g_screen_on) {
+		return;
+	}
+	lv_timer_t *anim_timer = lv_anim_get_timer();
+	if (anim_timer && !lv_timer_get_paused(anim_timer)) {
+		lv_timer_pause(anim_timer);
+	}
+}
 
 void power_screen_on(void) {
 	waveform_set_screen_on(true);
@@ -1598,6 +1725,12 @@ void power_screen_on(void) {
 	} while (0)
 	WAKE_STEP("before"); // radios, clock, the wake hook
 
+	// Nothing is drawn while the panel is dark (refr_request_cb), and the
+	// unblank below presents whatever the framebuffer holds: the page as it was
+	// at the blank. What changed in the meantime is drawn now, while the panel
+	// is still off -- only the areas that changed.
+	lv_refr_now(g_disp);
+
 	// Woken inside the fast window: the panel never went down (see
 	// panel_blank_now), so there is no unblank, settle or touch resume to do.
 	bool lit = g_panel_lit_dark;
@@ -1646,6 +1779,11 @@ void power_screen_on(void) {
 	}
 	WAKE_STEP("timers");
 
+	// Animations started or left running in the dark have been standing still
+	// (see power_keep_animations_paused). One pass brings each to where its
+	// clock says it is, and runs the completion of the ones already over, so
+	// the wake frame below shows a closed sheet closed rather than half way.
+	lv_anim_refr_now();
 	// ... and force an immediate, full repaint of the framebuffer. The blank
 	// cleared the panel to black, so the whole UI must be redrawn; this is not
 	// gated on g_refr_timer, and lv_refr_now() draws even if the timer is paused.
@@ -1750,7 +1888,10 @@ static void power_timer_cb(lv_timer_t *timer) {
 	// comes in over A2DP, so neither of the first two answers says anything
 	// about it. Streaming rather than merely active, because the mode left on
 	// with the phone paused is exactly the idle state the timer exists for.
-	bool playing = (audio_get_status() == AUDIO_STATUS_PLAYING) || radio_is_playing() || btreceiver_is_streaming();
+	// The metronome counts as music: a player clicking in a pocket with the
+	// screen dark must not go to sleep under it.
+	bool playing = (audio_get_status() == AUDIO_STATUS_PLAYING) || radio_is_playing() || btreceiver_is_streaming() ||
+				   metronome_running();
 	if (playing) {
 		g_last_playing_ms = now;
 	}
@@ -1817,9 +1958,9 @@ static void power_timer_cb(lv_timer_t *timer) {
 	// 4a-bis. the shutdown timer, once it has run out.
 	//
 	//     Before the suspend, not after it: on a tick where both are ready,
-	//     suspending first would leave rtc_alarm_arm_for_auto_off() with a
-	//     deadline already past, so it would arm nothing, that sleep would carry
-	//     no alarm and the shutdown would slip by a whole period.
+	//     suspending first would leave rtc_alarm_arm() with a deadline already
+	//     past, so that sleep would carry no alarm for it and the shutdown would
+	//     slip by a whole period.
 	if (g_auto_off_enabled && g_auto_off_ms > 0 && off_idle_wall >= g_auto_off_ms) {
 		char why[64];
 		snprintf(why, sizeof(why), "%u minutes idle", g_auto_off_ms / 60000u);
@@ -1958,6 +2099,9 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 	g_disp = disp;
 	g_refr_timer = disp ? lv_display_get_refr_timer(disp) : NULL;
 	g_screen_on = true;
+	if (disp) {
+		lv_display_add_event_cb(disp, refr_request_cb, LV_EVENT_REFR_REQUEST, NULL);
+	}
 
 	// discover the panel's maximum backlight level
 	g_max_brightness = g_cfg.max_brightness_path ? read_long_from_file(g_cfg.max_brightness_path) : -1;
@@ -1993,7 +2137,7 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 	if (g_mem_instant_wakes_max < 1) {
 		g_mem_instant_wakes_max = 1;
 	}
-	power_set_standby_seconds(mem_secs > 0 ? (uint32_t)mem_secs : 0);
+	power_set_standby_after(mem_secs > 0 ? (uint32_t)mem_secs : 0);
 
 	// The radios go down on their own clock, not the Standby toggle's: they are
 	// worth switching off whether or not the SoC is going to sleep.
