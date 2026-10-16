@@ -42,6 +42,8 @@ void musicsettings_set_fade_enabled(bool enabled);
 bool musicsettings_playlists_first(void);
 
 bool musicsettings_endless_shuffle(void);
+// Tapping a track also slides to Now Playing (on by default).
+bool musicsettings_open_player_on_tap(void);
 
 bool musicsettings_high_gain(void);
 void musicsettings_set_high_gain(bool enabled);

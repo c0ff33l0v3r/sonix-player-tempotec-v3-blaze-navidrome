@@ -43,10 +43,9 @@ static long current_output = -1; // last value written to "Output Port Switch"
 // the DAC. It is temporary -- the user's own level is put back on the way out
 // and is never overwritten in the config.
 // ---------------------------------------------------------------------------
+// The V3 Blaze's stock player holds 95 (LO_VOLUME_INDEX in its
+// ot_devices_2025.json); here it is 100 there too, as the confirmation promises.
 #define LINEOUT_VOLUME_INDEX 100
-// The V3 Blaze's stock player holds line out at index 95 (LO_VOLUME_INDEX in
-// its ot_devices_2025.json).
-#define LINEOUT_VOLUME_INDEX_AK4493 95
 
 // ---------------------------------------------------------------------------
 // The USB-C digital output
@@ -144,11 +143,6 @@ bool alsa_board_is_ak4493(void) {
 		answer = model && model->ak4493;
 	}
 	return answer != 0;
-}
-
-// The fixed line-out index on this board.
-static int lineout_volume_index(void) {
-	return alsa_board_is_ak4493() ? LINEOUT_VOLUME_INDEX_AK4493 : LINEOUT_VOLUME_INDEX;
 }
 
 // DRE_EN exists on the CS43198 board only; NOS_EN on the CS43198 and, through
@@ -730,7 +724,7 @@ void alsa_controls_reapply(void) {
 	// fixed index and set_volume_percent refuses to move it, so the hardware
 	// write goes through the same path the mode itself uses.
 	if (lineout_on) {
-		apply_volume_hw(lineout_volume_index());
+		apply_volume_hw(LINEOUT_VOLUME_INDEX);
 	} else {
 		set_volume_percent(percent);
 	}
@@ -829,7 +823,11 @@ void auto_set_output(void) {
 		return;
 	}
 
-	if (write_output_route(output) >= 0) {
+	// From route 5 (the amplifier parked off) any route is a real change, as
+	// the stock player writes it after its idle park: the detour through
+	// "other" would hold a single-ended route with a balanced plug in.
+	int ok = current_output == 5 ? alsa_set_control("Output Port Switch", output) : write_output_route(output);
+	if (ok >= 0) {
 		current_output = output;
 	}
 
@@ -841,6 +839,8 @@ void auto_set_output(void) {
 // the kernel), so the next auto_set_output() sees the right route already
 // cached and does not rewrite it for nothing.
 void alsa_controls_note_output(int value) { current_output = value; }
+
+int alsa_controls_output(void) { return (int)current_output; }
 
 // Raw CS43198 attenuation, 0-255, applied to both channels.
 void set_volume(long volume) {
@@ -1204,8 +1204,8 @@ void lineout_set(bool on) {
 		lineout_jack = jack;
 		lineout_on = true;
 		lineout_apply_route(); // the flag and the route, in that order
-		apply_volume_hw(lineout_volume_index());
-		fprintf(stderr, "alsa: line out on (jack %d, index %d)\n", lineout_jack, lineout_volume_index());
+		apply_volume_hw(LINEOUT_VOLUME_INDEX);
+		fprintf(stderr, "alsa: line out on (jack %d, index %d)\n", lineout_jack, LINEOUT_VOLUME_INDEX);
 		return;
 	}
 
@@ -1257,7 +1257,7 @@ void set_gain_level(int level) {
 	// has to be applied again either way -- including in line out, where
 	// set_volume_percent refuses and the fixed index is the one to rewrite.
 	if (lineout_on) {
-		apply_volume_hw(lineout_volume_index());
+		apply_volume_hw(LINEOUT_VOLUME_INDEX);
 	} else {
 		set_volume_percent(current_percent);
 	}

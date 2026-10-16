@@ -2497,7 +2497,9 @@ static void row_clicked_cb(lv_event_t *e) {
 		} else {
 			player_play_file(path); // out of memory: at least play it
 		}
-		switch_screen(player_screen);
+		if (musicsettings_open_player_on_tap()) {
+			switch_screen(player_screen);
+		}
 		return;
 	}
 

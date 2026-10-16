@@ -41,6 +41,8 @@ void auto_set_output(void);
 // Realigns this file's cached route after the "Output Port Switch" mixer has
 // been written by hand (used by the forced re-init after suspend to memory).
 void alsa_controls_note_output(int value);
+// The last route written to "Output Port Switch", or -1 before the first.
+int alsa_controls_output(void);
 void set_volume(long volume);
 
 // The DAC's digital filter (0..dac_filter_count()-1, see alsa-controls.c).

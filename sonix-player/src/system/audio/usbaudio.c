@@ -680,6 +680,11 @@ static void arbitrate_port(bool audio_present) {
 }
 
 void usbaudio_poll(void) {
+	// The first poll is main()'s, made before the saved volume levels load.
+	static bool polled_before;
+	bool booted = polled_before;
+	polled_before = true;
+
 	// Who owns the port comes first, and is asked whatever playback is doing:
 	// the arbitration is about the socket, not about where the sound goes.
 	int card = find_usb_card();
@@ -715,6 +720,14 @@ void usbaudio_poll(void) {
 		// the top of its range. The other order puts a full-scale burst into a
 		// pair of headphones somebody is wearing.
 		find_volume_control(card);
+		// The USB profile now, not at the routing watcher's next tick: until
+		// then the DAC would play at the jack's level. The explicit write stays,
+		// as the switch does nothing when the profile is already USB. Not at
+		// boot: main() polls before the saved levels are loaded, and a switch
+		// then would save audio_init's default over the jack's level.
+		if (booted) {
+			volume_profile_set_output(VOLUME_OUTPUT_USB);
+		}
 		usbaudio_apply_volume(get_volume_percent());
 		audio_set_output_device(pcm);
 	} else {

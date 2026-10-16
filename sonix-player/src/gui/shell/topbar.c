@@ -248,6 +248,7 @@ void topbar_refresh_volume(int percent) {
 static void refresh_headphone_icon(void) {
 	static int last_state = -1;
 	static int last_usb = -1;
+	static int last_lineout = -1;
 	int state = headphone_jack_state();
 
 	// The same poll is where line out finds out that its jack has gone: the
@@ -260,7 +261,8 @@ static void refresh_headphone_icon(void) {
 	usbaudio_poll();
 
 	int usb = usbaudio_active() ? 1 : 0;
-	if (state == last_state && usb == last_usb) {
+	int lineout = lineout_is_active() ? 1 : 0;
+	if (state == last_state && usb == last_usb && lineout == last_lineout) {
 		return;
 	}
 
@@ -284,8 +286,15 @@ static void refresh_headphone_icon(void) {
 		}
 	}
 
+	// Line out ended or began on its own (the jack pulled): the page showing its
+	// switch is told, as the control centre's buttons tell it.
+	if (last_lineout != -1 && lineout != last_lineout && lv_screen_active()) {
+		lv_obj_send_event(lv_screen_active(), LV_EVENT_REFRESH, NULL);
+	}
+
 	last_state = state;
 	last_usb = usb;
+	last_lineout = lineout;
 	if (!hp_icon) {
 		return;
 	}
@@ -299,7 +308,9 @@ static void refresh_headphone_icon(void) {
 		lv_obj_set_hidden(hp_icon, false);
 		return;
 	}
-	lv_image_set_src(hp_icon, &icon_headphones);
+	// Line out takes the jack's place, in the jack's colour: it is that socket,
+	// driven for an amplifier.
+	lv_image_set_src(hp_icon, lineout ? &icon_lineout_status : &icon_headphones);
 
 	if (state == JACK_NONE) {
 		lv_obj_set_hidden(hp_icon, true);

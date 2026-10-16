@@ -343,10 +343,10 @@ void led_set_bt_receiver(bool active) {
 }
 
 void led_set_bt_codec(const char *codec) {
-	// Fixed, like the indicator they match: yellow, green, magenta (the page's
+	// Fixed, like the indicator they match: orange, green, magenta (the page's
 	// 13, aptX HD included), cyan.
 	int pattern = !codec								? 0
-				  : strcasecmp(codec, "SBC") == 0		? 2
+				  : strcasecmp(codec, "SBC") == 0		? 4
 				  : strcasecmp(codec, "AAC") == 0		? 8
 				  : strncasecmp(codec, "aptX", 4) == 0 ? 13
 				  : strcasecmp(codec, "LDAC") == 0		? 3

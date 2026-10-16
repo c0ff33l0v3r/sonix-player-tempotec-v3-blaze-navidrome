@@ -316,10 +316,10 @@ static void poll_cb(lv_timer_t *timer) {
 // headphones connecting mid-song, or walking out of range. Runs whether or not
 // this page is open, because that is when it matters.
 //
-// Once a second while the device is in use, and once every five with the panel
-// dark and nothing playing: there is no stream for a routing change to spoil
+// Every 250 ms (the jack poll's pace) while the device is in use, and once
+// every five seconds with the panel dark and nothing playing: there is no stream for a routing change to spoil
 // then, and a slower tick leaves the main loop asleep in standby.
-#define ROUTING_WATCH_MS 1000
+#define ROUTING_WATCH_MS 250
 #define ROUTING_WATCH_IDLE_MS 5000
 
 static void routing_watch_cb(lv_timer_t *timer) {

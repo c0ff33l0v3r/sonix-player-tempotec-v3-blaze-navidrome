@@ -14,6 +14,7 @@
 #include "src/gui/library/medialist.h"
 #include "src/gui/library/playlistpage.h"
 #include "src/gui/nowplaying/player.h"
+#include "src/gui/settings/musicsettings.h"
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/popover.h"
 #include "src/gui/shell/settingsrow.h"
@@ -488,7 +489,9 @@ static void row_clicked_cb(lv_event_t *e) {
 		} else if (row->path[0]) {
 			player_play_file(row->path);
 		}
-		switch_screen(player_screen);
+		if (musicsettings_open_player_on_tap()) {
+			switch_screen(player_screen);
+		}
 		break;
 	}
 	case CAT_ALBUMS:

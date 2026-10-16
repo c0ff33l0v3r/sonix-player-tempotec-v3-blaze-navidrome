@@ -195,6 +195,12 @@ static void log_first_contact(void) {
 	}
 	printf("axpcharge: found REG64h=0x%02x, REG62h=0x%02x (%d mA)\n", volt, cur,
 		   current_ma(cur & AXP_CURRENT_MASK));
+	// Why this boot started and why the last one ended, for reports of the
+	// player switching itself off (REG21h seen: 0x01 long press, 0x02 software).
+	uint8_t on_src, off_src;
+	if (axp_read(0x20, &on_src) && axp_read(0x21, &off_src)) {
+		printf("axpcharge: power-on source REG20h=0x%02x, last power-off REG21h=0x%02x\n", on_src, off_src);
+	}
 }
 
 void axpcharge_set(bool limit_voltage, bool limit_current) {

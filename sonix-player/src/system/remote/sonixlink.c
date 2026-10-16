@@ -553,6 +553,17 @@ static void client_done(client_t *c);
 static void client_close(client_t *c) {
 	if (c->fd >= 0) {
 		close(c->fd);
+		// The Bluetooth link is the whole connection: once it drops, the phone is
+		// gone now rather than when PEER_ALIVE_MS runs out. Not when a Wi-Fi
+		// phone has spoken since, which owns peer_text then.
+		if (c->persistent) {
+			pthread_mutex_lock(&lock);
+			if (strcmp(peer_text, "Bluetooth") == 0) {
+				last_seen_ms = 0;
+				peer_text[0] = '\0';
+			}
+			pthread_mutex_unlock(&lock);
+		}
 	}
 	if (c->file) {
 		fclose(c->file);
@@ -2827,6 +2838,8 @@ static void *sonixlink_worker(void *unused) {
 				}
 				pthread_mutex_lock(&lock);
 				address_text[0] = '\0';
+				last_seen_ms = 0; // switched off: no phone can be driving it any more
+				peer_text[0] = '\0';
 				pthread_mutex_unlock(&lock);
 				printf("sonixlink: off\n");
 			}

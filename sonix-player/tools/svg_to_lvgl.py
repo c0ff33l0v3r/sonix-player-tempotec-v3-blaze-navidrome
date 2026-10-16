@@ -108,6 +108,7 @@ ICONS = [
     ("volume.svg", "volume_mute", 30),
     ("headphones.svg", "headphones", 26), # jack indicator beside the volume
     ("usb-audio-out.svg", "usbaudioout", 26), # and when the sound leaves over USB-C
+    ("lineout.svg", "lineout_status", 26), # and while line out holds the jack
     ("volume-1.svg", "volume_low", 30),
     ("volume-2.svg", "volume_high", 30),
     # Power menu.

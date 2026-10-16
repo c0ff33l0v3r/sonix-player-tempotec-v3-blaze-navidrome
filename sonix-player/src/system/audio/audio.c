@@ -346,6 +346,14 @@ void audio_force_output_reinit_after_resume(void) {
 		alsa_suspend_restore();
 		return;
 	}
+	// Parked on route 5 (the Blaze): the amplifier stays off until the next
+	// play, whose auto_set_output() writes the real route from 5 -- a real
+	// change that powers the HBC3000 up, the way the stock player resumes
+	// after its own idle park. Nothing to switch, so nothing clicks at the wake.
+	if (alsa_board_is_ak4493() && alsa_controls_output() == 5) {
+		alsa_suspend_restore();
+		return;
+	}
 	// 1 = 3.5 mm line out, 2 = 3.5 mm headphone, 3 = 4.4 mm balanced.
 	int x = detect_output();
 	int y = output_reinit_partner(x);
@@ -390,7 +398,16 @@ void audio_park_output_before_suspend(void) {
 	if (x < 1 || x > 3) {
 		return; // not one of the analogue sockets
 	}
-	int y = output_reinit_partner(x);
+	// The Blaze goes into mem on route 5, the driver's own take-down (mute pin,
+	// HBC3000 off, amplifier DC-DC off). Usually the idle park below did it
+	// long ago and there is nothing left to switch; otherwise its soft pop
+	// comes here. Left on its route, the amplifier losing its supply in mem
+	// clicks loudly, and the partner route clicked too (user, 2026-10-16).
+	if (alsa_board_is_ak4493() && alsa_controls_output() == 5) {
+		fprintf(stderr, "audio: amplifier already off (route 5) before mem\n");
+		return;
+	}
+	int y = alsa_board_is_ak4493() ? 5 : output_reinit_partner(x);
 	// The DAC first: the route change mutes the old port, but the DAC feeding
 	// it would still be live when its supply goes. Silent until the wake has
 	// put the real route back (audio_force_output_reinit_after_resume()).
@@ -399,11 +416,14 @@ void audio_park_output_before_suspend(void) {
 	// line out are the same route, and a report of a pop has to say which.
 	fprintf(stderr, "audio: output parked on %d before mem (was %d, balanced line out %d)\n", y, x, alsa_output_key() & 1);
 #ifndef HOST_BUILD
-	alsa_set_control("Output Port Switch", y);
+	bool parked = alsa_set_control("Output Port Switch", y) >= 0;
 	usleep(120 * 1000); // the driver's mute and route change, before the power goes
 	// Written by hand like the re-init: the cache follows, so a suspend that
-	// fails after this puts the real route back at the next play.
-	alsa_controls_note_output(y);
+	// fails after this puts the real route back at the next play. Only when
+	// the write took: the wake trusts a cached 5 and skips its re-init.
+	if (parked) {
+		alsa_controls_note_output(y);
+	}
 #endif
 }
 
@@ -418,6 +438,11 @@ static volatile bool pcm_device_open = false;
 // it is not feeding it, which is why its "pop" is a familiar sound on these
 // players.
 #define PAUSED_DEVICE_CLOSE_MS 5000
+
+// The Blaze's amplifier off once a pause has lasted this long (see
+// idle_amp_off()); the stock player's CloseDelay for its analogue output.
+#define IDLE_AMP_OFF_MS 30000
+static void idle_amp_off(long paused_ms);
 
 // True when the stream is going out over Bluetooth rather than to the DAC.
 static bool output_is_bluetooth(void) {
@@ -2915,6 +2940,9 @@ static void play_wav_file(const char *filepath) {
 				playback_follow(NULL);
 				fprintf(stderr, "audio[%ld]: device released while paused (DAC powered down)\n", log_ms());
 			}
+			if (!pcm_handle) {
+				idle_amp_off(log_ms() - paused_at_ms);
+			}
 
 			// With the device handed back there is nothing to be quick about:
 			// a fifth of a second between checks instead of a twentieth means
@@ -3681,6 +3709,9 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				playback_follow(NULL);
 				fprintf(stderr, "audio[%ld]: device released while paused (DAC powered down)\n", log_ms());
 			}
+			if (!pcm_handle) {
+				idle_amp_off(log_ms() - paused_at_ms);
+			}
 
 			// With the device handed back there is nothing to be quick about:
 			// a fifth of a second between checks instead of a twentieth means
@@ -4212,6 +4243,10 @@ static void *playback_thread_func(void *arg) {
 
 	while (1) {
 		pthread_mutex_lock(&audio_mutex);
+		// Stopped from here (album over, or stopped): the Blaze's amplifier
+		// goes off after IDLE_AMP_OFF_MS, as it does when paused.
+		long idle_since = log_ms();
+		bool idle_park_done = !alsa_board_is_ak4493();
 		while (!play_request && !stop_thread) {
 			// Suspend-to-RAM is about to start: any held PCM has to be closed
 			// now, not in GAPLESS_HOLD_MS. Only this thread may close it, so
@@ -4224,7 +4259,24 @@ static void *playback_thread_func(void *arg) {
 				continue;
 			}
 			if (!gapless_holding()) {
-				pthread_cond_wait(&audio_cond, &audio_mutex);
+				long left = IDLE_AMP_OFF_MS - (log_ms() - idle_since);
+				if (!idle_park_done && left <= 0) {
+					idle_park_done = true; // once: a refused park must not spin
+					pthread_mutex_unlock(&audio_mutex);
+					idle_amp_off(log_ms() - idle_since);
+					pthread_mutex_lock(&audio_mutex);
+					continue;
+				}
+				if (idle_park_done) {
+					pthread_cond_wait(&audio_cond, &audio_mutex);
+					continue;
+				}
+				struct timespec until;
+				clock_gettime(CLOCK_REALTIME, &until);
+				until.tv_nsec += left * 1000000L;
+				until.tv_sec += until.tv_nsec / 1000000000L;
+				until.tv_nsec %= 1000000000L;
+				pthread_cond_timedwait(&audio_cond, &audio_mutex, &until);
 				continue;
 			}
 
@@ -4764,6 +4816,35 @@ void audio_get_output_device(char *out, size_t out_size) {
 
 static int external_frame_bytes = 4;
 static pthread_mutex_t external_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// The stock player's output device drops to route 5 thirty seconds after its
+// last write, so its soft pop comes then and mem later finds the amplifier
+// already off. The same here, from the paused loops with the PCM closed: the
+// next play's auto_set_output() writes the real route from 5. Not while a
+// receiver or DAC-mode stream holds the card: a route write under a live
+// stream stalls its DMA.
+static void idle_amp_off(long paused_ms) {
+	if (!alsa_board_is_ak4493() || paused_ms < IDLE_AMP_OFF_MS || alsa_controls_output() == 5) {
+		return;
+	}
+	// Held through the write: an external stream opening in between would
+	// have the route pulled from under it.
+	pthread_mutex_lock(&external_lock);
+	if (!external_pcm) {
+		fprintf(stderr, "audio[%ld]: idle %ld s: amplifier off (route 5)\n", log_ms(), paused_ms / 1000);
+#ifndef HOST_BUILD
+		bool ok = alsa_set_control("Output Port Switch", 5) >= 0;
+#else
+		bool ok = true;
+#endif
+		// The cache says 5 only if the route is 5: mem trusts it and skips its
+		// own park, and an amplifier left on into mem clicks loudly.
+		if (ok) {
+			alsa_controls_note_output(5);
+		}
+	}
+	pthread_mutex_unlock(&external_lock);
+}
 
 // What the open was made on, so a change can be noticed.
 //

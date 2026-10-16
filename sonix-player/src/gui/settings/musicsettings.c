@@ -223,6 +223,45 @@ static void gain_toggle_cb(lv_event_t *e) {
 
 static void gain_pick_cb(lv_event_t *e) { gain_level_store((int)(intptr_t)lv_event_get_user_data(e)); }
 
+// Line out, the control centre's button as a row: the same switch, the same
+// conditions, the same warning. The row shows the mode, not the tap -- it stays
+// off until the warning is accepted, and follows the mode ending on its own
+// (the jack pulled, Bluetooth taking over) when the page is shown again.
+static lv_obj_t *lineout_switch;
+
+static void lineout_refresh(void) {
+	if (!lineout_switch) {
+		return;
+	}
+	lv_obj_set_state(lineout_switch, LV_STATE_CHECKED, lineout_is_active());
+}
+
+static void lineout_applied(void) {
+	lineout_refresh();
+	topbar_refresh_volume(get_volume_percent());
+}
+
+static void lineout_confirmed(void *user) {
+	(void)user;
+	lineout_set(true);
+	lineout_applied();
+}
+
+static void lineout_toggle_cb(lv_event_t *e) {
+	(void)e;
+	if (!lv_obj_has_state(lineout_switch, LV_STATE_CHECKED)) {
+		lineout_set(false);
+		lineout_applied();
+		return;
+	}
+	lineout_refresh(); // off again until the warning is accepted
+	if (bluetooth_audio_active() || headphone_jack_state() == JACK_NONE) {
+		gui_notify_popup("quickpanel_line_out_needs_the_jack");
+		return;
+	}
+	confirm_show("quickpanel_line_out", tr("quickpanel_the_volume_will_go_to_100"), "quickpanel_activate", lineout_confirmed, NULL);
+}
+
 // ---------------------------------------------------------------------------
 // MSEB: the stock player's MageSound tuning (see eq.c for the engine and the
 // mapping); nine character sliders, -10..+10 around flat.
@@ -1221,6 +1260,8 @@ bool musicsettings_fade_enabled(void) { return config_get_bool("audio", "fade", 
 
 bool musicsettings_endless_shuffle(void) { return config_get_bool("player", "endless_shuffle", false); }
 
+bool musicsettings_open_player_on_tap(void) { return config_get_bool("player", "open_player_on_tap", true); }
+
 // The setters below are also called by the control centre, which can sit open
 // on top of this page, so the chevrons have to be repainted from here.
 static void refresh_active_chevrons(void);
@@ -1292,6 +1333,7 @@ static void screen_loaded_cb(lv_event_t *e) {
 	refresh_filter_checks();
 	// Back from either page: the chevron follows what was left switched on.
 	refresh_active_chevrons();
+	lineout_refresh();
 }
 
 // The row asks which folders first; the scan page opens only from there,
@@ -1809,11 +1851,18 @@ static void build_display_page(gui_config_t *cfg) {
 }
 
 static lv_obj_t *endless_shuffle_switch;
+static lv_obj_t *open_player_switch;
 static lv_obj_t *mono_switch;
 
 static void mono_cb(lv_event_t *e) {
 	(void)e;
 	mono_set_enabled(lv_obj_has_state(mono_switch, LV_STATE_CHECKED));
+}
+
+static void open_player_cb(lv_event_t *e) {
+	(void)e;
+	config_set_bool("player", "open_player_on_tap", lv_obj_has_state(open_player_switch, LV_STATE_CHECKED));
+	config_save();
 }
 
 static void endless_shuffle_cb(lv_event_t *e) {
@@ -1885,6 +1934,12 @@ static void build_playback_page(gui_config_t *cfg) {
 	settingsrow_toggle(container, "musicsettings_mono_audio", &mono_switch, mono_cb);
 	if (mono_get_enabled()) {
 		lv_obj_add_state(mono_switch, LV_STATE_CHECKED);
+	}
+
+	// Off: a tapped track starts playing and the list stays on screen.
+	settingsrow_toggle(container, "musicsettings_open_player_on_tap", &open_player_switch, open_player_cb);
+	if (musicsettings_open_player_on_tap()) {
+		lv_obj_add_state(open_player_switch, LV_STATE_CHECKED);
 	}
 
 	// Which of the two shuffles "Play in random order" starts. The mode button
@@ -2006,6 +2061,9 @@ void musicsettings_init(gui_config_t *cfg) {
 	}
 	gain_refresh();
 	theme_register_refresh(gain_refresh);
+
+	settingsrow_toggle(container, "quickpanel_line_out", &lineout_switch, lineout_toggle_cb);
+	lineout_refresh();
 
 	// How loud DSD comes out. The DAC is the only thing that plays it here, so
 	// this is the only place its level can be touched at all.
