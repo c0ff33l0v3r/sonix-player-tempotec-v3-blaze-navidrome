@@ -85,6 +85,13 @@ void led_set_wifi_transfer(bool active);
 // computer still sending music into the jack.
 void led_set_bt_receiver(bool active);
 
+// The codec the receiver is taking in, as bluealsa names it ("" when none). In
+// receiver mode it picks a fixed colour, the one the on-screen indicator uses:
+// SBC yellow, AAC green, aptX and aptX HD magenta, LDAC cyan; any other keeps
+// the BT receiver colour from the LED page. Safe from the receiver thread: it
+// only records the codec, and the next led_set_bt_receiver() poll lights it.
+void led_set_bt_codec(const char *codec);
+
 // DAC mode. Nothing plays through audio.c there, so led_update_playback() sees
 // a stopped player and the LED went out twenty seconds after the screen did,
 // with the computer still sending music. While the host streams, the rate gets

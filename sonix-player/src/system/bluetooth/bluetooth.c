@@ -200,6 +200,11 @@ static int g_pending_volume = -1; // coalesces a held volume key into one write
 // loop, neither of which may block on D-Bus.
 static bt_stream_t g_rx_stream;
 static unsigned g_rx_serial; // moves every time the worker reads the line above
+// What that device offers, for the page's codec menu. Read once per sender: the
+// offer is fixed for the link, and the one in use is g_rx_stream.codec.
+static char g_rx_codecs[BT_MAX_CODECS][BT_CODEC_MAX];
+static int g_rx_codec_count;
+static char g_rx_codecs_of[BT_MAC_MAX]; // the sender the list above is for
 
 static void post_job(const job_t *job);
 
@@ -2659,6 +2664,19 @@ static void do_read_receiver(void) {
 	bool sending = btstack_audio_source(mac, sizeof(mac));
 	bool have = sending && btstack_stream_info(mac, true, &info);
 
+	pthread_mutex_lock(&lock);
+	bool known = sending && g_rx_codec_count > 0 && strcmp(g_rx_codecs_of, mac) == 0;
+	pthread_mutex_unlock(&lock);
+	if (sending && !known) {
+		char codecs[BT_MAX_CODECS][BT_CODEC_MAX];
+		int count = btstack_codecs_dir(mac, true, codecs, BT_MAX_CODECS, NULL, 0);
+		pthread_mutex_lock(&lock);
+		g_rx_codec_count = count;
+		memcpy(g_rx_codecs, codecs, sizeof(codecs));
+		snprintf(g_rx_codecs_of, sizeof(g_rx_codecs_of), "%s", mac);
+		pthread_mutex_unlock(&lock);
+	}
+
 	// What the sender is doing, read outright: bluez announces every later
 	// change, but nothing has been announced yet at the moment the link comes
 	// up, and that is exactly when the first key can arrive.
@@ -2679,6 +2697,9 @@ static void do_read_receiver(void) {
 		g_rx_stream.bits = info.bits;
 	} else {
 		memset(&g_rx_stream, 0, sizeof(g_rx_stream));
+	}
+	if (!sending) {
+		g_rx_codec_count = 0;
 	}
 	g_rx_serial++;
 	g_serial++;
@@ -2729,9 +2750,8 @@ bool bluetooth_receiver_stream(bt_stream_t *out) {
 }
 
 // What the phone offered on the link that is up, and which of them it is using.
-// Unlike the headphone direction this is read on the spot rather than cached:
-// the list is only ever wanted while the receiver page is open, and a poll for
-// it would be a D-Bus round trip every half second for nothing.
+// Cached by the worker (do_read_receiver), once per sender: read on the spot it
+// was a blocking D-Bus call on the interface thread, racing the worker's own.
 int bluetooth_receiver_codecs(char out[][BT_CODEC_MAX], int max, char *selected, int selected_size) {
 	if (selected && selected_size) {
 		selected[0] = '\0';
@@ -2740,11 +2760,15 @@ int bluetooth_receiver_codecs(char out[][BT_CODEC_MAX], int max, char *selected,
 		return 0;
 	}
 
-	char mac[BT_MAC_MAX];
-	if (!btstack_audio_source(mac, sizeof(mac))) {
-		return 0;
+	// The worker's copy, not the bus: this runs on the interface thread.
+	pthread_mutex_lock(&lock);
+	int count = g_rx_codec_count < max ? g_rx_codec_count : max;
+	memcpy(out, g_rx_codecs, (size_t)count * sizeof(out[0]));
+	if (selected && selected_size) {
+		snprintf(selected, (size_t)selected_size, "%s", g_rx_stream.codec);
 	}
-	return btstack_codecs_dir(mac, true, out, max, selected, selected_size ? (size_t)selected_size : 0);
+	pthread_mutex_unlock(&lock);
+	return count;
 }
 
 bool bluetooth_receiver_track(bt_track_t *out) {

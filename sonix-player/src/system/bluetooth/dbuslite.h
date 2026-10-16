@@ -202,8 +202,8 @@ dbus_writer_t *dbus_call_begin(dbus_conn_t *c, const char *destination, const ch
 bool dbus_call_send(dbus_conn_t *c, int timeout_ms, char *err_out, size_t err_size);
 
 // A reader over the body of the reply the last dbus_call_send() got, for the
-// calls whose answer is the point -- Properties.Get. Valid until the next call
-// on this connection, and only meaningful after one that returned true. Bodies
+// calls whose answer is the point -- Properties.Get. Valid until this thread's
+// next call, and only meaningful after one that returned true. Bodies
 // past a few hundred bytes are not kept: nothing read here is that big.
 void dbus_reply_reader(dbus_conn_t *c, dbus_reader_t *r);
 

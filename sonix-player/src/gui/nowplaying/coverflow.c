@@ -162,6 +162,7 @@
 
 #define CF_GLOW_MAX_W (CF_MID_W - 2 * CF_GLOW_INSET + 2 * CF_GLOW_REACH)
 #define CF_GLOW_MAX_H CF_GLOW_MAX_W
+#define CF_GLOW_FULL_H (CF_MID_W - 2 * CF_GLOW_INSET) // the caster facing the front
 
 typedef struct {
 	lv_obj_t *image;         // the record: the only object a place has
@@ -210,6 +211,9 @@ static lv_obj_t *glow_obj;
 static lv_image_dsc_t glow_dsc;
 static uint8_t *glow_map; // the alpha map, always CF_GLOW_MAX_W wide whatever is drawn in it
 static int glow_map_w = -1, glow_map_h = -1; // the caster it was painted for
+static bool glow_map_exact; // painted for that caster, not cut out of glow_full
+static uint8_t *glow_full;  // the map for the tallest caster, which a drag cuts the others out of
+static bool column_moving;  // a finger or a throw has the column, see place_glow()
 // Filled in as the places are laid out: the record nearest the middle wins.
 static int32_t glow_best;
 static int glow_bottom;
@@ -845,7 +849,7 @@ static void faces_rotate(int delta) {
 //
 // The buffer is always the full width so the rows of a short map still line up:
 // LVGL reads the stride from the descriptor, not from the width.
-static void glow_paint(int gw, int gh) {
+static void glow_paint(uint8_t *map, int gw, int gh) {
 	static const uint8_t bayer[16] = {0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5};
 
 	int w = gw + 2 * CF_GLOW_REACH;
@@ -885,7 +889,7 @@ static void glow_paint(int gw, int gh) {
 	for (int y = 0; y < h; y++) {
 		int off = y - cy;
 		int qy = (off < 0 ? -off : off) - (hh - r);
-		uint8_t *row = glow_map + (size_t)y * CF_GLOW_MAX_W;
+		uint8_t *row = map + (size_t)y * CF_GLOW_MAX_W;
 		const uint8_t *dither = &bayer[(y & 3) * 4];
 
 		for (int x = 0; x < w; x++) {
@@ -914,7 +918,41 @@ static void glow_paint(int gw, int gh) {
 			row[x] = (uint8_t)(a < 0 ? 0 : (a > 255 ? 255 : a));
 		}
 	}
+}
 
+// The same map, cut out of glow_full instead of worked out: two copies of rows,
+// no arithmetic per pixel. A shorter caster differs from the tallest only in
+// how many of the rows between its top and bottom corners there are, and those
+// rows are all the same row. So its top half is glow_full's top half, and its
+// bottom half is glow_full's, moved up by what the caster lost.
+//
+// Exact but for the dither below the middle, which can come out two rows out of
+// phase. That is only ever seen while the column moves: at rest the map is
+// painted again (place_glow). False when there is no cutting to do, for a
+// caster too short to have straight sides.
+static bool glow_cut(int gw, int gh) {
+	int hh = gh / 2;
+	if (!glow_full || gw != CF_MID_W - CF_GLOW_INSET * 2 || gh > CF_GLOW_FULL_H || hh < CF_GLOW_RADIUS) {
+		return false;
+	}
+	size_t stride = CF_GLOW_MAX_W;
+	int top = CF_GLOW_REACH + hh;
+	int rows = gh + 2 * CF_GLOW_REACH - top;
+	int from = CF_GLOW_REACH + 2 * (CF_GLOW_FULL_H / 2) - hh;
+	memcpy(glow_map, glow_full, (size_t)top * stride);
+	// An odd caster has a row more than glow_full has left: its last row, which
+	// is past the reach of the light.
+	int last = CF_GLOW_FULL_H + 2 * CF_GLOW_REACH;
+	int copied = from + rows > last ? last - from : rows;
+	memcpy(glow_map + (size_t)top * stride, glow_full + (size_t)from * stride, (size_t)copied * stride);
+	memset(glow_map + (size_t)(top + copied) * stride, 0, (size_t)(rows - copied) * stride);
+	return true;
+}
+
+// Hands LVGL the map for a caster of gw x gh.
+static void glow_show(int gw, int gh) {
+	int w = gw + 2 * CF_GLOW_REACH;
+	int h = gh + 2 * CF_GLOW_REACH;
 	glow_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
 	glow_dsc.header.cf = LV_COLOR_FORMAT_A8;
 	glow_dsc.header.w = (uint32_t)w;
@@ -957,10 +995,17 @@ static void place_glow(void) {
 		gh = CF_GLOW_MIN_H;
 	}
 
-	// The map is repainted only when the caster's shape changes, which during a
-	// drag is once a frame and while the column is still is never.
-	if (gw != glow_map_w || gh != glow_map_h) {
-		glow_paint(gw, gh);
+	// The map is redone only when the caster's shape changes, which during a
+	// drag is once a frame and while the column is still is never. Moving, it is
+	// cut out of the tallest one rather than painted: painting is the dearest
+	// thing in a frame of the drag, dearer than turning both records. Come to
+	// rest, the cut one is painted over properly.
+	if (gw != glow_map_w || gh != glow_map_h || (!column_moving && !glow_map_exact)) {
+		glow_map_exact = !(column_moving && glow_cut(gw, gh));
+		if (glow_map_exact) {
+			glow_paint(glow_map, gw, gh);
+		}
+		glow_show(gw, gh);
 		glow_map_w = gw;
 		glow_map_h = gh;
 	}
@@ -1031,6 +1076,7 @@ static void scroll_set(int32_t value) {
 		return;
 	}
 	scroll = value;
+	column_moving = true;
 	int nearest = (int)((scroll + CF_ONE / 2) >> 16);
 	relayout();
 	if (nearest != centre) {
@@ -1046,6 +1092,7 @@ static void scroll_anim_cb(void *var, int32_t v) {
 
 // The column has come to rest.
 static void scroll_idle(void) {
+	column_moving = false;
 	relayout();
 	lv_timer_resume(poll_timer);
 }
@@ -1408,21 +1455,27 @@ static void buffers_free(void) {
 		lv_obj_set_hidden(glow_obj, true);
 	}
 	big_free(glow_map, (size_t)CF_GLOW_MAX_W * CF_GLOW_MAX_H);
+	big_free(glow_full, (size_t)CF_GLOW_MAX_W * CF_GLOW_MAX_H);
 	glow_map = NULL;
+	glow_full = NULL;
 	glow_map_w = -1;
 	glow_map_h = -1;
 }
 
 static bool buffers_alloc(void) {
 	glow_map = big_alloc((size_t)CF_GLOW_MAX_W * CF_GLOW_MAX_H);
+	glow_full = big_alloc((size_t)CF_GLOW_MAX_W * CF_GLOW_MAX_H);
 	glow_map_w = -1;
 	glow_map_h = -1;
+	if (glow_full) {
+		glow_paint(glow_full, CF_MID_W - CF_GLOW_INSET * 2, CF_GLOW_FULL_H);
+	}
 	for (int i = 0; i < CF_SLOTS; i++) {
 		cf_slot_t *slot = &slots[i];
 		slot->warp_max_h = slot_max_height(i);
 		slot->face = big_alloc(face_bytes());
 		slot->warp = big_alloc(warp_bytes(slot));
-		if (!slot->face || !slot->warp || !glow_map) {
+		if (!slot->face || !slot->warp || !glow_map || !glow_full) {
 			buffers_free();
 			return false;
 		}
@@ -1482,6 +1535,7 @@ static bool sheet_prepare(void) {
 		centre = at;
 	}
 	layout_base = INT32_MIN;
+	column_moving = false;
 	sheet_ready = true;
 
 	relayout();

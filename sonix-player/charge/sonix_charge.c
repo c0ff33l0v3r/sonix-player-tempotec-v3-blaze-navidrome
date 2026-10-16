@@ -38,7 +38,7 @@
 #define BLANK_NODE "/sys/class/graphics/fb0/blank"
 #define BACKLIGHT_NODE "/sys/class/backlight/backlight_pwm0/brightness"
 #define LED_NODE "/sys/class/leds/sgm31324-leds/led_pattern"
-#define PATTERN_RED "6"
+#define PATTERN_RED 6 // unless the LED page chose another colour for charging
 #define PATTERN_NONE "5"
 #define PATTERN_BLUE "1"
 #define RELEASE_WAIT_MS 3000 // after the long press, the reboot waits this long for the key to come up
@@ -140,19 +140,20 @@ static long now_ms(void) {
 	return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
 }
 
-// [screen] brightness from the player's settings, the level the user chose.
-static int configured_brightness(void) {
+// A positive number from the player's settings ([section] key = value), or
+// `value` when it is not there.
+static int configured_int(const char *section, const char *key, int value) {
 	FILE *f = fopen(CONFIG_FILE, "r");
-	int value = 40;
 	if (!f) {
 		return value;
 	}
 	char line[256];
-	bool in_screen = false;
+	size_t section_len = strlen(section), key_len = strlen(key);
+	bool in_section = false;
 	while (fgets(line, sizeof(line), f)) {
 		if (line[0] == '[') {
-			in_screen = strncmp(line, "[screen]", 8) == 0;
-		} else if (in_screen && strncmp(line, "brightness", 10) == 0) {
+			in_section = strncmp(line + 1, section, section_len) == 0 && line[section_len + 1] == ']';
+		} else if (in_section && strncmp(line, key, key_len) == 0 && strchr(" =", line[key_len])) {
 			char *eq = strchr(line, '=');
 			if (eq && atoi(eq + 1) > 0) {
 				value = atoi(eq + 1);
@@ -290,8 +291,16 @@ int main(void) {
 		fprintf(stderr, "sonix_charge: no usable framebuffer\n");
 		// Nothing to show on, but the LED and the buttons still do their job.
 	}
-	brightness = configured_brightness();
-	write_str(LED_NODE, PATTERN_RED);
+	// [screen] brightness, the level the user chose, and the charging colour
+	// from the LED page (state 6, LED_STATE_CHARGING in the player's led.h).
+	brightness = configured_int("screen", "brightness", 40);
+	int charging_pattern = configured_int("led", "colour_6", PATTERN_RED);
+	if (charging_pattern > 16) {
+		charging_pattern = PATTERN_RED;
+	}
+	char pattern_str[8];
+	snprintf(pattern_str, sizeof(pattern_str), "%d", charging_pattern);
+	write_str(LED_NODE, pattern_str);
 	note("started");
 
 	int keys = open(KEYS_DEV, O_RDONLY | O_NONBLOCK);

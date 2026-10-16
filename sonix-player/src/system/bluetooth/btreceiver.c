@@ -7,6 +7,7 @@
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
+#include "src/system/device/led.h"
 
 #include <alsa/asoundlib.h>
 #include <pthread.h>
@@ -187,6 +188,7 @@ static void publish_format(const char *device, const bt_stream_t *info) {
 	pthread_mutex_lock(&lock);
 	snprintf(state.device, sizeof(state.device), "%s", device ? device : "");
 	snprintf(state.codec, sizeof(state.codec), "%s", info->codec);
+	led_set_bt_codec(info->codec);
 	state.sample_rate = info->rate;
 	state.channels = info->channels;
 	state.bits = info->bits;
@@ -717,6 +719,7 @@ void btreceiver_stop(void) {
 	// page the next time it opens, and would name a phone that has gone.
 	state.device[0] = '\0';
 	state.codec[0] = '\0';
+	led_set_bt_codec("");
 	state.sample_rate = 0;
 	state.channels = 0;
 	state.bits = 0;

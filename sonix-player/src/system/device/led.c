@@ -1,6 +1,7 @@
 #include "led.h"
 
 #include <stdio.h>
+#include <strings.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -87,6 +88,8 @@ static bool s_podcast;		 // what is playing is a podcast episode
 static bool s_dsd;			 // ...or a DSD file, whatever its carrier rate
 static bool s_wifi_transfer; // a Wi-Fi transfer is active
 static bool s_bt_receiver;	 // Bluetooth receiver mode is on
+static int s_bt_codec_pattern; // ...the codec's fixed colour, 0 for none (set from the receiver thread)
+static int s_bt_codec_shown;	 // ...and the one apply() last saw
 static bool s_dac_active;	 // DAC mode is on: the gadget is up
 static bool s_dac_streaming; // ...and the computer is actually sending audio
 static int s_dac_rate;
@@ -218,7 +221,8 @@ static void apply(void) {
 		// branch at the top never fires and without this one the LED went dark
 		// twenty seconds after the screen did -- with music still coming out of
 		// the jack.
-		pattern = STATE_PATTERN(BT_RX);
+		s_bt_codec_shown = __atomic_load_n(&s_bt_codec_pattern, __ATOMIC_RELAXED);
+		pattern = s_bt_codec_shown ? s_bt_codec_shown : STATE_PATTERN(BT_RX);
 	} else if (s_dac_active) {
 		// The mode is up but the computer is not sending anything yet. Same
 		// argument as the transfer above: with the screen dark the LED is the
@@ -331,11 +335,23 @@ void led_set_wifi_transfer(bool active) {
 }
 
 void led_set_bt_receiver(bool active) {
-	if (active == s_bt_receiver) {
+	if (active == s_bt_receiver && __atomic_load_n(&s_bt_codec_pattern, __ATOMIC_RELAXED) == s_bt_codec_shown) {
 		return;
 	}
 	s_bt_receiver = active;
 	apply();
+}
+
+void led_set_bt_codec(const char *codec) {
+	// Fixed, like the indicator they match: yellow, green, magenta (the page's
+	// 13, aptX HD included), cyan.
+	int pattern = !codec								? 0
+				  : strcasecmp(codec, "SBC") == 0		? 2
+				  : strcasecmp(codec, "AAC") == 0		? 8
+				  : strncasecmp(codec, "aptX", 4) == 0 ? 13
+				  : strcasecmp(codec, "LDAC") == 0		? 3
+														: 0;
+	__atomic_store_n(&s_bt_codec_pattern, pattern, __ATOMIC_RELAXED);
 }
 
 void led_set_enabled(bool enabled) {

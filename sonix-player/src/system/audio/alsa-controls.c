@@ -764,6 +764,8 @@ static int write_output_route(int route) {
 	// a balanced reconfiguration, for the delay below, with a single-ended plug
 	// in the socket.
 	int other = (route == 3) ? 2 : (route == 2 ? 1 : 2);
+	// Said before the writes: the boot freeze after an update is suspected inside them.
+	printf("set output: writing route %d, then %d\n", other, route);
 	alsa_set_control("Output Port Switch", other);
 	usleep(30 * 1000); // the driver mutes and needs a short delay before the change
 	return alsa_set_control("Output Port Switch", route);

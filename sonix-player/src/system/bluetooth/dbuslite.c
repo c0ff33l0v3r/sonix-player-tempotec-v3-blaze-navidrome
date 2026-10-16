@@ -508,8 +508,14 @@ struct dbus_conn {
 	uint32_t out_reply_serial;
 	char out_error[DBUS_NAME_MAX];
 
-	// The one call waiting for its answer. One is enough: the calls this
-	// player makes are made one after another from a single thread.
+	// One call in flight at a time, from _begin until its reply is in. The
+	// fields below hold the one call waiting for its answer, and a second
+	// caller on another thread -- the interface asking for a codec list while
+	// the Bluetooth worker is mid-call -- would overwrite waiting_serial: one
+	// of the two replies is thrown away and its caller sits out the whole
+	// timeout. Taken before write_lock and never by the reader thread, whose
+	// handlers only reply and never call.
+	pthread_mutex_t call_lock;
 	pthread_mutex_t reply_lock;
 	pthread_cond_t reply_cond;
 	uint32_t waiting_serial;
@@ -847,6 +853,7 @@ static dbus_writer_t *out_begin(dbus_conn_t *c, uint8_t type) {
 
 dbus_writer_t *dbus_call_begin(dbus_conn_t *c, const char *destination, const char *path, const char *interface,
 							   const char *member, const char *signature) {
+	pthread_mutex_lock(&c->call_lock); // released by dbus_call_send
 	dbus_writer_t *w = out_begin(c, DBUS_TYPE_METHOD_CALL);
 	set_str(c->out_destination, sizeof(c->out_destination), destination);
 	set_str(c->out_path, sizeof(c->out_path), path);
@@ -855,6 +862,15 @@ dbus_writer_t *dbus_call_begin(dbus_conn_t *c, const char *destination, const ch
 	set_str(c->out_signature, sizeof(c->out_signature), signature);
 	return w;
 }
+
+// The last reply this thread's dbus_call_send() got, read by dbus_reply_reader().
+// shortcut: a thread that exits keeps its buffer (a few hundred bytes); the
+// threads that call are long-lived. Free it from a pthread key destructor if
+// short-lived callers appear.
+static __thread uint8_t *reply_body;
+static __thread size_t reply_body_size;
+static __thread size_t reply_body_len;
+static __thread bool reply_big_endian;
 
 static void deadline_in(struct timespec *ts, int ms) {
 	clock_gettime(CLOCK_REALTIME, ts);
@@ -883,6 +899,8 @@ bool dbus_call_send(dbus_conn_t *c, int timeout_ms, char *err_out, size_t err_si
 	bool sent = send_current(c);
 	pthread_mutex_unlock(&c->write_lock);
 	if (!sent) {
+		reply_body_len = 0;
+		pthread_mutex_unlock(&c->call_lock);
 		return false;
 	}
 
@@ -899,18 +917,28 @@ bool dbus_call_send(dbus_conn_t *c, int timeout_ms, char *err_out, size_t err_si
 	if (err_out && err_size) {
 		snprintf(err_out, err_size, "%s", c->reply_error);
 	}
+	// The body becomes this thread's, by swapping buffers: the next caller's
+	// reply is copied into the connection's one while this caller still reads.
+	uint8_t *mine = c->reply_body;
+	size_t mine_size = c->reply_body_size;
+	c->reply_body = reply_body;
+	c->reply_body_size = reply_body_size;
+	reply_body = mine;
+	reply_body_size = mine_size;
+	reply_body_len = c->reply_arrived ? c->reply_body_len : 0;
+	reply_big_endian = c->reply_big_endian;
 	c->waiting_serial = 0;
 	pthread_mutex_unlock(&c->reply_lock);
+	pthread_mutex_unlock(&c->call_lock);
 	return ok;
 }
 
 void dbus_reply_reader(dbus_conn_t *c, dbus_reader_t *r) {
+	(void)c;
 	memset(r, 0, sizeof(*r));
-	pthread_mutex_lock(&c->reply_lock);
-	r->data = c->reply_body;
-	r->len = c->reply_body_len;
-	r->big_endian = c->reply_big_endian;
-	pthread_mutex_unlock(&c->reply_lock);
+	r->data = reply_body;
+	r->len = reply_body_len;
+	r->big_endian = reply_big_endian;
 }
 
 dbus_writer_t *dbus_reply_begin(dbus_conn_t *c, const dbus_msg_t *call, const char *signature) {
@@ -1207,6 +1235,7 @@ static dbus_conn_t *connect_system(const char *address, dbus_method_cb on_call, 
 	c->on_call = on_call;
 	c->user = user;
 	pthread_mutex_init(&c->write_lock, NULL);
+	pthread_mutex_init(&c->call_lock, NULL);
 	pthread_mutex_init(&c->reply_lock, NULL);
 	pthread_cond_init(&c->reply_cond, NULL);
 
@@ -1262,6 +1291,7 @@ void dbus_disconnect(dbus_conn_t *c) {
 	}
 	close(c->fd);
 	pthread_mutex_destroy(&c->write_lock);
+	pthread_mutex_destroy(&c->call_lock);
 	pthread_mutex_destroy(&c->reply_lock);
 	pthread_cond_destroy(&c->reply_cond);
 	free(c->read_buf);
