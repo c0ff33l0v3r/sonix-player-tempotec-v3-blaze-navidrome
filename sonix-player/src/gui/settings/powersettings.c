@@ -28,7 +28,7 @@ static const struct {
 	int minutes;
 	const char *label;
 } AUTO_OFF[] = {
-	{15, "power_15_minutes"}, {30, "power_30_minutes"}, {60, "power_1_hour"}, {120, "power_2_hours"}, {180, "power_3_hours"}, {360, "power_6_hours"},
+	{5, "power_5_minutes"}, {10, "power_10_minutes"}, {15, "power_15_minutes"}, {30, "power_30_minutes"}, {60, "power_1_hour"}, {120, "power_2_hours"}, {180, "power_3_hours"}, {360, "power_6_hours"},
 };
 #define AUTO_OFF_COUNT ((int)(sizeof(AUTO_OFF) / sizeof(AUTO_OFF[0])))
 
@@ -56,14 +56,23 @@ static const struct {
 	{7, "led_colour_red_blink"},   {13, "led_colour_purple"}, {11, "led_colour_white"},
 };
 #define LED_COLOUR_COUNT ((int)(sizeof(LED_COLOURS) / sizeof(LED_COLOURS[0])))
-#define LED_PREVIEW_MS 2000
+#define LED_PREVIEW_MS 3000
 
 static const char *const LED_STATE_LABELS[LED_STATE_COUNT] = {
 	[LED_STATE_IDLE] = "led_state_idle",		   [LED_STATE_PCM_48K] = "led_state_pcm_48k",
-	[LED_STATE_PCM_192K] = "led_state_pcm_192k",   [LED_STATE_PCM_HI] = "led_state_pcm_hi",
+	[LED_STATE_PCM_192K] = "led_state_pcm_192k",   [LED_STATE_PCM_384K] = "led_state_pcm_384k",
 	[LED_STATE_DSD] = "led_state_dsd",			   [LED_STATE_PODCAST] = "led_state_podcast",
 	[LED_STATE_CHARGING] = "led_state_charging",   [LED_STATE_WIFI] = "led_state_wifi",
-	[LED_STATE_BT_RX] = "led_state_bt_receiver",
+	[LED_STATE_BT_RX] = "led_state_bt_receiver",	[LED_STATE_PCM_96K] = "led_state_pcm_96k",
+	[LED_STATE_PCM_768K] = "led_state_pcm_768k",
+};
+
+// The rows in page order: the enum is in saved-index order, with the PCM ranges
+// added later at its end.
+static const led_state_t LED_STATE_ORDER[LED_STATE_COUNT] = {
+	LED_STATE_IDLE,		  LED_STATE_PCM_48K, LED_STATE_PCM_96K,	 LED_STATE_PCM_192K,
+	LED_STATE_PCM_384K,	  LED_STATE_PCM_768K, LED_STATE_DSD,	 LED_STATE_PODCAST,
+	LED_STATE_CHARGING,	  LED_STATE_WIFI,	 LED_STATE_BT_RX,
 };
 
 static lv_obj_t *led_colours_screen;
@@ -111,9 +120,10 @@ static void led_colour_row_cb(lv_event_t *e) {
 static void build_led_colours_page(gui_config_t *cfg) {
 	led_colours_screen = lv_obj_create(NULL);
 	lv_obj_t *container = settingsrow_page(led_colours_screen, cfg, "power_led_colours");
-	for (int s = 0; s < LED_STATE_COUNT; s++) {
+	for (int i = 0; i < LED_STATE_COUNT; i++) {
+		led_state_t s = LED_STATE_ORDER[i];
 		settingsrow_add(container, LED_STATE_LABELS[s], &led_colour_values[s], led_colour_row_cb, (void *)(intptr_t)s);
-		led_colour_label((led_state_t)s);
+		led_colour_label(s);
 	}
 	lv_obj_t *note = lv_label_create(container);
 	lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
@@ -145,7 +155,7 @@ static int auto_off_index(void) {
 			return i;
 		}
 	}
-	return 1;
+	return 3; // the 30 minute default
 }
 
 // --- applying them ---
@@ -181,7 +191,12 @@ void powersettings_apply(void) {
 	for (int s = 0; s < LED_STATE_COUNT; s++) {
 		char key[24];
 		snprintf(key, sizeof(key), "colour_%d", s);
-		int pattern = (int)config_get_int("led", key, 0);
+		// A range split off later, never set, follows the colour saved for the
+		// one it used to be part of (88.2-96 was "up to 192", 768 "above 192").
+		int fallback = s == LED_STATE_PCM_96K	 ? led_state_pattern(LED_STATE_PCM_192K)
+					   : s == LED_STATE_PCM_768K ? led_state_pattern(LED_STATE_PCM_384K)
+												 : 0;
+		int pattern = (int)config_get_int("led", key, fallback);
 		if (led_colour_index(pattern) >= 0) {
 			led_set_state_pattern((led_state_t)s, pattern);
 		}

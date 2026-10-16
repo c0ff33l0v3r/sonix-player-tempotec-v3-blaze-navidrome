@@ -1598,12 +1598,14 @@ void power_screen_on(void) {
 	frameprof_begin(PROF_WAKE_UNBLANK);
 	if (!lit) {
 		screen_power(true); // panel, backlight and touch controller back up
-		// The unblank lights the backlight before there is a picture: dark
-		// until the repaint below is up, or the panel shows black first.
-		// MIN and not 0: after some resumes from mem the backlight never comes
-		// back from 0 (black screen until reboot), while level changes above 0 still work.
-		backlight_write(BRIGHTNESS_MIN);
 	}
+	// The unblank lights the backlight before there is a picture: dark
+	// until the repaint below is up, or the panel shows black first.
+	// MIN and not 0: after some resumes from mem the backlight never comes
+	// back from 0 (black screen until reboot), while level changes above 0 still work.
+	// The lit panel needs it too: its backlight sits at the 0 of the fast
+	// window, and a straight 0 -> max write leaves it black.
+	backlight_write(BRIGHTNESS_MIN);
 	frameprof_end(PROF_WAKE_UNBLANK);
 	WAKE_STEP("unblank");
 

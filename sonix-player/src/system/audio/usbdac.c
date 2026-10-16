@@ -2,6 +2,7 @@
 
 #include "usbdac.h"
 
+#include "src/system/audio/alsa-controls.h"
 #include "src/system/audio/audio.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
@@ -455,6 +456,28 @@ static bool wait_for_node(void) {
 	return access(UAC_NODE, F_OK) == 0;
 }
 
+// DoP: DSD packed into PCM, which is what a computer without the
+// manufacturer's ASIO driver sends -- MusicBee over a generic ASIO driver plays
+// a DSD64 file as 176.4 kHz PCM. Every 32-bit word carries the marker in its
+// top byte, 0x05 and 0xFA by turns, the same in both channels. Thirty-two
+// frames of that never happen by chance in music, nor in PCM silence (0x00).
+#define DOP_CHECK_FRAMES 32
+
+static bool looks_like_dop(const unsigned char *bytes, ssize_t count) {
+	if (count < DOP_CHECK_FRAMES * 8) {
+		return false;
+	}
+	unsigned char previous = 0;
+	for (int i = 0; i < DOP_CHECK_FRAMES; i++) {
+		unsigned char left = bytes[i * 8 + 3], right = bytes[i * 8 + 7];
+		if (left != right || (left != 0x05 && left != 0xFA) || left == previous) {
+			return false;
+		}
+		previous = left;
+	}
+	return true;
+}
+
 static void *audio_main(void *arg) {
 	(void)arg;
 
@@ -462,6 +485,7 @@ static void *audio_main(void *arg) {
 	int buffer_size = 0;
 	int open_rate = 0, open_bits = 0;
 	bool output_open = false;
+	bool dop = false, open_dop = false;
 
 	struct uac_format current = {0};
 
@@ -488,8 +512,10 @@ static void *audio_main(void *arg) {
 					continue;
 				}
 				audio_external_end();
+				set_dac_dop(0);
 				output_open = false;
 				open_rate = open_bits = 0;
+				dop = open_dop = false;
 				pthread_mutex_lock(&lock);
 				state.streaming = false;
 				touch();
@@ -532,11 +558,15 @@ static void *audio_main(void *arg) {
 			buffer_size = want;
 		}
 
-		if (!output_open || fmt.rate != open_rate || bits != open_bits) {
+		if (!output_open || fmt.rate != open_rate || bits != open_bits || dop != open_dop) {
 			if (output_open) {
 				audio_external_end();
 				output_open = false;
 			}
+			// Before the stream opens, as for a DSD track: with DOP_EN off the
+			// DAC plays a DoP stream as white noise at full level.
+			set_dac_dop(dop);
+			open_dop = dop;
 			// DSD is handed to the DAC as it comes; the chip does the rest.
 			output_open = audio_external_begin_latency(fmt.rate, 2, dsd ? 32 : bits, output_ms());
 			if (!output_open) {
@@ -555,13 +585,13 @@ static void *audio_main(void *arg) {
 			// set to -- but if this number moves when the host setting changes,
 			// it is the one to map.
 			printf("usbdac: host is sending %d Hz, %s (format=%d flags=%d), output buffer %d ms\n", fmt.rate,
-				   dsd ? "DSD" : "32 bit PCM", fmt.format, fmt.flags, output_ms());
+				   dsd ? "DSD" : (dop ? "DoP" : "32 bit PCM"), fmt.format, fmt.flags, output_ms());
 			pthread_mutex_lock(&lock);
 			state.streaming = true;
-			state.sample_rate = fmt.rate;
+			state.sample_rate = dop ? fmt.rate * 16 : fmt.rate; // DoP: 16 DSD bits a PCM frame
 			state.bits = bits;
 			state.channels = 2;
-			state.dsd = dsd;
+			state.dsd = dsd || dop;
 			state.error[0] = '\0';
 			touch();
 			pthread_mutex_unlock(&lock);
@@ -577,6 +607,14 @@ static void *audio_main(void *arg) {
 			continue;
 		}
 
+		// A switch between PCM and DoP reopens the output with DOP_EN set to
+		// match; this buffer was read for the old mode and is dropped.
+		bool now_dop = !dsd && looks_like_dop((const unsigned char *)buffer, got);
+		if (now_dop != dop) {
+			dop = now_dop;
+			continue;
+		}
+
 		// Eight bytes to a frame, and audio_external_write() counts frames.
 		if (output_open) {
 			audio_external_write(buffer, (int)(got / 8));
@@ -586,6 +624,7 @@ static void *audio_main(void *arg) {
 	if (output_open) {
 		audio_external_end();
 	}
+	set_dac_dop(0);
 	free(buffer);
 
 	pthread_mutex_lock(&lock);

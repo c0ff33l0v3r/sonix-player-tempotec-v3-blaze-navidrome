@@ -88,7 +88,8 @@ static void refresh(void) {
 	// host negotiated, so a bit depth printed here would always read 32.
 	char text[64];
 	if (st.dsd) {
-		snprintf(text, sizeof(text), "DSD  %d Hz", st.sample_rate);
+		// DSD64 = 2.8224 MHz, 64 times 44.1 kHz.
+		snprintf(text, sizeof(text), "DSD%d  %.4f MHz", st.sample_rate / 44100, st.sample_rate / 1e6);
 	} else if (st.sample_rate % 1000 == 0) {
 		snprintf(text, sizeof(text), "%d kHz", st.sample_rate / 1000);
 	} else {

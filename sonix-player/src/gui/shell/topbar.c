@@ -688,7 +688,7 @@ static void timer_update_cb(lv_timer_t *timer) {
 	usbdac_state_t dac;
 	usbdac_get_state(&dac);
 	bool dac_live = dac.active && usb_vbus_present();
-	led_set_dac(dac_live, dac_live && dac.streaming, dac.sample_rate);
+	led_set_dac(dac_live, dac_live && dac.streaming, dac.sample_rate, dac.dsd);
 }
 
 // Where the clock sits in the bar: centred on its own, first in the volume group

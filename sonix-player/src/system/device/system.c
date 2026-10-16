@@ -1483,13 +1483,24 @@ static bool mapped_action_repeats(keymap_button_t button) {
 // track change moves to the RELEASE: deciding it on the way down would change
 // track and then seek inside the new one, both from a single press.
 //
-// The step is deliberately coarse and constant. A ramp reads well on a screen
-// where the position is visible; with the player in a pocket, "so many seconds
-// per second" is the thing a thumb can aim with.
+// The step grows the longer the key stays down, in bands rather than one jump,
+// the way the stock firmware does it: a short hold nudges, a long one crosses
+// the track. The same curve is used by the on-screen buttons (player.c).
 // ---------------------------------------------------------------------------
 #define SEEK_HOLD_MS 500	 // held this long: it is a seek, not a skip
 #define SEEK_REPEAT_MS 250	 // and another step every quarter second
-#define SEEK_STEP_SECONDS 5.0
+
+// How far one step goes once the key has been down `held_ms`. A short track
+// caps it at a thirtieth of its length, so a three-minute song takes several
+// seconds to cross rather than one.
+static double seek_step_seconds(uint32_t held_ms, int total_secs) {
+	double step = held_ms < 1000 ? 2.0 : held_ms < 2000 ? 5.0 : held_ms < 4000 ? 10.0 : held_ms < 7000 ? 20.0 : 30.0;
+	double cap = total_secs / 30.0;
+	if (cap < 2.0) {
+		cap = 2.0;
+	}
+	return step < cap ? step : cap;
+}
 
 static bool mapped_action_seeks(keymap_button_t button) {
 	keymap_action_t action = effective_action(button);
@@ -1501,7 +1512,7 @@ static bool mapped_action_seeks(keymap_button_t button) {
 // and the seek itself happens when the button is let go (device_state.h).
 // Refuses on anything with no position to move along -- a live radio stream has
 // neither a length nor a point to come back to.
-static void seek_step(keymap_button_t button) {
+static void seek_step(keymap_button_t button, uint32_t held_ms) {
 	keymap_action_t action = effective_action(button);
 	if (action != KEYMAP_ACTION_NEXT && action != KEYMAP_ACTION_PREV) {
 		return;
@@ -1513,7 +1524,8 @@ static void seek_step(keymap_button_t button) {
 		return;
 	}
 
-	device_state_scrub_by((action == KEYMAP_ACTION_NEXT) ? SEEK_STEP_SECONDS : -SEEK_STEP_SECONDS);
+	double step = seek_step_seconds(held_ms, state.progress_total_secs);
+	device_state_scrub_by((action == KEYMAP_ACTION_NEXT) ? step : -step);
 }
 
 // WHAT REPEATS IS THE ACTION, NOT THE KEY.
@@ -1548,14 +1560,14 @@ static bool key_seeks_held(int code, bool headset) {
 
 static void run_mapped_action(keymap_button_t button);
 
-static void repeat_held(int code, bool headset) {
+static void repeat_held(int code, bool headset, uint32_t held_ms) {
 	if (headset) {
 		apply_volume_step(code);
 		return;
 	}
 	keymap_button_t button = keymap_button_for_code(code);
 	if (mapped_action_seeks(button)) {
-		seek_step(button);
+		seek_step(button, held_ms);
 		return;
 	}
 	run_mapped_action(button);
@@ -1782,7 +1794,7 @@ static void *input_thread_func(void *arg) {
 				}
 				bool seeking = key_seeks_held(held, info->headset);
 				if (!suppressed) {
-					repeat_held(held, info->headset);
+					repeat_held(held, info->headset, now - held_since);
 				}
 				if (seeking) {
 					// From here the release has nothing left to do: the press

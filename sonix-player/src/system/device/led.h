@@ -91,7 +91,9 @@ void led_set_bt_receiver(bool active);
 // the colour a local track of that rate would; while the mode is merely up, the
 // LED stays on the idle colour rather than being darkened by the standby
 // option -- the same reasoning as the transfer above.
-void led_set_dac(bool active, bool streaming, int sample_rate);
+// `dsd` true is a DoP stream: white, whatever the carrier rate, as in
+// led_update_playback().
+void led_set_dac(bool active, bool streaming, int sample_rate, bool dsd);
 
 // The LED master switch. Off keeps the LED dark whatever else is
 // going on -- with one exception, the same one the stock player makes: a
@@ -112,17 +114,22 @@ void led_set_idle_off(bool enabled);
 void led_set_standby(bool standby);
 
 // The states whose colour can be chosen (Power > LED colours), each mapped to
-// one of the controller's patterns ([led] colour_<state> in the config).
+// one of the controller's patterns ([led] colour_<state> in the config). The
+// index is what gets saved, so new states go at the end: the PCM ranges were
+// three (up to 48, up to 192, above 192 kHz) and became five, the two added
+// after BT_RX.
 typedef enum {
 	LED_STATE_IDLE,
-	LED_STATE_PCM_48K,
-	LED_STATE_PCM_192K,
-	LED_STATE_PCM_HI,
+	LED_STATE_PCM_48K,	// 44.1-48 kHz
+	LED_STATE_PCM_192K, // 176.4-192 kHz
+	LED_STATE_PCM_384K, // 352.8-384 kHz
 	LED_STATE_DSD,
 	LED_STATE_PODCAST,
 	LED_STATE_CHARGING,
 	LED_STATE_WIFI,
 	LED_STATE_BT_RX,
+	LED_STATE_PCM_96K,	// 88.2-96 kHz
+	LED_STATE_PCM_768K, // above 384 kHz
 	LED_STATE_COUNT,
 } led_state_t;
 

@@ -4937,6 +4937,32 @@ static bool external_wait_room(long *last_progress_ms) {
 	return true;
 }
 
+// Under external_lock. The software volume on a copy of the frames, in the
+// format the source opened with: the caller's buffer is const, and may be
+// handed in again. NULL when the copy cannot be grown.
+static s24_scratch_t external_vol;
+static const void *external_scaled(const void *frames, int count) {
+	size_t samples = (size_t)count * (size_t)external_channels;
+	if (samples > external_vol.capacity) {
+		// Four bytes a sample, which also holds S16 and S24_3LE.
+		int32_t *grown = realloc(external_vol.data, samples * sizeof(int32_t));
+		if (!grown) {
+			return NULL;
+		}
+		external_vol.data = grown;
+		external_vol.capacity = samples;
+	}
+	memcpy(external_vol.data, frames, (size_t)count * (size_t)external_frame_bytes);
+	if (external_bits == 16) {
+		swvolume_apply_s16((short *)external_vol.data, (int)samples);
+	} else if (external_bits == 24) {
+		swvolume_apply_s24_3le((unsigned char *)external_vol.data, (int)samples);
+	} else {
+		swvolume_apply_s32(external_vol.data, (int)samples);
+	}
+	return external_vol.data;
+}
+
 int audio_external_write(const void *frames, int count) {
 	pthread_mutex_lock(&external_lock);
 
@@ -4951,6 +4977,18 @@ int audio_external_write(const void *frames, int count) {
 	if (!external_follow_output()) {
 		pthread_mutex_unlock(&external_lock);
 		return 0;
+	}
+
+	// The volume, under the decode loop's rule: a device on the USB-C port
+	// with no control of its own. Without it a receiver plays at full scale.
+	// No DoP check: the USB DAC mode, the one source that sends DSD, has the
+	// port as a gadget, where no USB-C device can be in circuit.
+	if (swvolume_active()) {
+		frames = external_scaled(frames, count);
+		if (!frames) {
+			pthread_mutex_unlock(&external_lock);
+			return 0; // silence, not the stream at full scale
+		}
 	}
 
 	int written = 0;

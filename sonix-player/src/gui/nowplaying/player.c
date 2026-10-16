@@ -4250,17 +4250,29 @@ void player_screen_next(void) {
 	frameprof_end(PROF_PROGRESS);
 }
 
-// Held, << and >> seek like the transport keys do (system.c seek_step): 5 s
-// every quarter second. The release of a hold is not also a skip.
+// Held, << and >> seek like the transport keys do (system.c seek_step), a step
+// every quarter second that grows with the hold. The release is not also a skip.
 #define TOUCH_SEEK_REPEAT_MS 250
-#define TOUCH_SEEK_STEP_SECONDS 5.0
 static bool touch_seeked;
 static uint32_t touch_seek_last;
+static uint32_t touch_seek_start;
+
+// The step grows with the hold, as for the keys: keep in step with
+// seek_step_seconds() in system.c.
+static double touch_seek_step_seconds(uint32_t held_ms, int total_secs) {
+	double step = held_ms < 1000 ? 2.0 : held_ms < 2000 ? 5.0 : held_ms < 4000 ? 10.0 : held_ms < 7000 ? 20.0 : 30.0;
+	double cap = total_secs / 30.0;
+	if (cap < 2.0) {
+		cap = 2.0;
+	}
+	return step < cap ? step : cap;
+}
 
 static void touch_seek_event_cb(lv_event_t *e) {
 	lv_event_code_t code = lv_event_get_code(e);
 	if (code == LV_EVENT_PRESSED) {
 		touch_seeked = false;
+		touch_seek_start = lv_tick_get();
 		return;
 	}
 	// The scrub only moves a number until it is committed, as the keys do on release.
@@ -4281,7 +4293,7 @@ static void touch_seek_event_cb(lv_event_t *e) {
 	}
 	touch_seeked = true;
 	touch_seek_last = lv_tick_get();
-	double step = TOUCH_SEEK_STEP_SECONDS;
+	double step = touch_seek_step_seconds(lv_tick_elaps(touch_seek_start), state.progress_total_secs);
 	device_state_scrub_by(lv_event_get_user_data(e) ? step : -step);
 }
 

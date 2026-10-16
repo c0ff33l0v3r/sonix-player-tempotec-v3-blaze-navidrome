@@ -50,12 +50,16 @@ static int s_state_pattern[LED_STATE_COUNT] = {
 	[LED_STATE_IDLE] = PATTERN_IDLE_AQUA,
 	[LED_STATE_PCM_48K] = PATTERN_PCM_48K,
 	[LED_STATE_PCM_192K] = PATTERN_PCM_192K,
-	[LED_STATE_PCM_HI] = PATTERN_PCM_HI,
+	[LED_STATE_PCM_384K] = PATTERN_PCM_HI,
 	[LED_STATE_DSD] = PATTERN_DSD_WHITE,
 	[LED_STATE_PODCAST] = PATTERN_PODCAST_PURPLE,
 	[LED_STATE_CHARGING] = PATTERN_CHARGING_RED,
 	[LED_STATE_WIFI] = PATTERN_WIFI_TRANSFER,
 	[LED_STATE_BT_RX] = PATTERN_BT_RECEIVER,
+	// The two ranges split off later keep the colour they had before: 88.2-96
+	// was part of "up to 192", 768 of "above 192".
+	[LED_STATE_PCM_96K] = PATTERN_PCM_192K,
+	[LED_STATE_PCM_768K] = PATTERN_PCM_HI,
 };
 #define STATE_PATTERN(s) s_state_pattern[LED_STATE_##s]
 
@@ -74,6 +78,9 @@ static int red_trigger_state = -1; // -1 unknown, 0 "none", 1 "breathing"
 // everything -- the stock LED state machine applies its charging override
 // after the playback colour -- and playback wins over idle.
 static bool s_charging;
+// A colour being previewed holds the LED: the playback updates that come
+// several times a second would otherwise cut it short.
+static bool s_previewing;
 static bool s_playing;
 static int s_rate;
 static bool s_podcast;		 // what is playing is a podcast episode
@@ -83,6 +90,7 @@ static bool s_bt_receiver;	 // Bluetooth receiver mode is on
 static bool s_dac_active;	 // DAC mode is on: the gadget is up
 static bool s_dac_streaming; // ...and the computer is actually sending audio
 static int s_dac_rate;
+static bool s_dac_dsd;		 // ...and what it sends is DoP
 
 static bool s_led_enabled = true; // the LED master switch
 static bool s_idle_off_enabled;
@@ -122,17 +130,24 @@ static void set_pattern(int pattern) {
 }
 
 static int rate_pattern(int sample_rate) {
-	// The same rate thresholds the stock player uses. A DSD file is told apart
-	// by its own flag (see led_update_playback): over DoP its rate is that of
-	// the PCM carrying it. A source at a DSD bit rate is white all the same.
+	// The OG manual's five ranges, each family's top rate the boundary (a rate in
+	// between goes up to the next). A DSD file is told apart by its own flag
+	// (see led_update_playback): over DoP its rate is that of the PCM carrying
+	// it. A source at a DSD bit rate is white all the same.
 	if (sample_rate >= 2822400) {
 		return STATE_PATTERN(DSD);
 	}
+	if (sample_rate > 384000) {
+		return STATE_PATTERN(PCM_768K);
+	}
 	if (sample_rate > 192000) {
-		return STATE_PATTERN(PCM_HI);
+		return STATE_PATTERN(PCM_384K);
+	}
+	if (sample_rate > 96000) {
+		return STATE_PATTERN(PCM_192K);
 	}
 	if (sample_rate > 48000) {
-		return STATE_PATTERN(PCM_192K);
+		return STATE_PATTERN(PCM_96K);
 	}
 	return STATE_PATTERN(PCM_48K);
 }
@@ -145,6 +160,9 @@ static time_t idle_window_start(void) {
 }
 
 static void apply(void) {
+	if (s_previewing) {
+		return;
+	}
 	// s_charging is "a charge is going in", not "a cable is in": the caller
 	// takes the battery being full, or held at its limit, out of it, and hands
 	// this a settled answer rather than a reading that is still wobbling. See
@@ -181,7 +199,9 @@ static void apply(void) {
 		// the LED went dark twenty seconds after the screen did -- with the
 		// computer still sending music. The rate the host chose gets the same
 		// colour a local track of that rate would.
-		pattern = charging_now ? STATE_PATTERN(CHARGING) : rate_pattern(s_dac_rate);
+		pattern = charging_now ? STATE_PATTERN(CHARGING)
+				  : s_dac_dsd  ? STATE_PATTERN(DSD)
+							   : rate_pattern(s_dac_rate);
 	} else if (charging_now) {
 		// Never darkened by the standby option: a charge in progress stays
 		// visible.
@@ -291,13 +311,14 @@ void led_update_playback(bool playing, int sample_rate, bool podcast, bool dsd) 
 	apply();
 }
 
-void led_set_dac(bool active, bool streaming, int sample_rate) {
-	if (active == s_dac_active && streaming == s_dac_streaming && sample_rate == s_dac_rate) {
+void led_set_dac(bool active, bool streaming, int sample_rate, bool dsd) {
+	if (active == s_dac_active && streaming == s_dac_streaming && sample_rate == s_dac_rate && dsd == s_dac_dsd) {
 		return;
 	}
 	s_dac_active = active;
 	s_dac_streaming = streaming;
 	s_dac_rate = sample_rate;
+	s_dac_dsd = dsd;
 	apply();
 }
 
@@ -354,9 +375,13 @@ int led_state_pattern(led_state_t state) { return (state >= 0 && state < LED_STA
 
 // Shown as it is chosen; led_preview_end() puts back what the state of the
 // player calls for.
-void led_preview(int pattern) { set_pattern(pattern); }
+void led_preview(int pattern) {
+	s_previewing = true;
+	set_pattern(pattern);
+}
 
 void led_preview_end(void) {
+	s_previewing = false;
 	current_pattern = -1; // the preview wrote behind apply()'s back
 	apply();
 }
