@@ -123,10 +123,11 @@ patch_blaze_ldac() {
 # The rootfs partition of the V3 Blaze is 45 MiB (mtd2).
 BLAZE_ROOTFS_MAX=47185920
 
-# What else goes on the V3 Blaze to fit that partition: a debugging tool and
-# the leap-second ("right/") copy of the time zones. Nothing on the device
-# reads either.
-BLAZE_TRIM=(usr/bin/strace usr/share/zoneinfo/right)
+# What else goes on the V3 Blaze to fit that partition: a debugging tool, the
+# leap-second ("right/") copy of the time zones, and the stock player's codec
+# plugins (Sonix decodes on its own; nothing left in the image names them).
+BLAZE_TRIM=(usr/bin/strace usr/share/zoneinfo/right
+	usr/lib/libwma.so usr/lib/libaac.so usr/lib/libmp3.so usr/lib/libdsd2pcm.so usr/lib/libopus.so usr/lib/libvorbis.so)
 
 # The working folders always go, whether the run succeeded or not.
 cleanup() { rm -rf "$WORK_DIR" "$SQUASH_DIR" "$MERGED_SQUASHFS" 2>/dev/null || true; }
