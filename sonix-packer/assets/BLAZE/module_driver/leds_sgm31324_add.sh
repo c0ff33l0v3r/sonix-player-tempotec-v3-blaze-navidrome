@@ -24,4 +24,6 @@ echo regs="00000000000000000006"  > sgm31324
 echo regs="000E7D00686601070106"  > sgm31324
 echo regs="00000000510007001206"  > sgm31324
 echo regs="0000000045001F000006"  > sgm31324
+# Pattern 15: solid red for the LED page, the red channel on its own at the current of pattern 6.
+echo regs="00000000500000002F06"  > sgm31324
 echo register > sgm31324

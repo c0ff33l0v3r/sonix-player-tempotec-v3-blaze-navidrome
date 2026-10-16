@@ -213,10 +213,12 @@ void power_set_auto_off(bool enabled, uint32_t minutes);
 void power_set_screen_off_enabled(bool enabled);
 void power_set_screen_off_timeout(uint32_t ms);
 
-// Suspend-to-RAM (about 60 s after the screen goes dark), driven by the switch
+// Suspend-to-RAM (by default 60 s after the screen goes dark), driven by the switch
 // in the Power settings. No effect on the simulator: /sys/power/state does not
 // exist there.
 void power_set_standby_enabled(bool enabled);
+// How long after the screen goes dark; 15 s at the least.
+void power_set_standby_seconds(uint32_t seconds);
 
 // Powers the Bluetooth radio and its daemons down, in order, through
 // bluetooth_power_down_stack(). The stock init script starts the whole stack at

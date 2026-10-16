@@ -32,11 +32,19 @@ static const struct {
 };
 #define AUTO_OFF_COUNT ((int)(sizeof(AUTO_OFF) / sizeof(AUTO_OFF[0])))
 
+static const struct {
+	int seconds;
+	const char *label;
+} STANDBY[] = {
+	{30, "power_30_seconds"}, {60, "power_1_minute"}, {120, "power_2_minutes"}, {180, "power_3_minutes"}, {300, "power_5_minutes"},
+};
+#define STANDBY_COUNT ((int)(sizeof(STANDBY) / sizeof(STANDBY[0])))
+
 static lv_obj_t *charge_value, *charge_slider;
 static lv_obj_t *auto_off_switch, *auto_off_value, *auto_off_slider, *auto_off_card;
 static lv_obj_t *led_on_switch, *led_off_switch, *led_off_card;
 static lv_obj_t *key_lock_switch;
-static lv_obj_t *standby_switch;
+static lv_obj_t *standby_switch, *standby_value, *standby_slider, *standby_card;
 static lv_obj_t *charge_note;
 static lv_obj_t *axp_limit_switch, *axp_current_switch; // the R1's two, instead of the slider
 
@@ -44,8 +52,8 @@ static lv_obj_t *axp_limit_switch, *axp_current_switch; // the R1's two, instead
 //
 // One row per state; a tap moves it to the next colour and shows it on the LED
 // for a moment. The patterns are the ones leds_sgm31324_add.sh registers on
-// the Blaze (12-14 added there by hand); 9 and 10 are left out, they look the
-// same as 14 and 13.
+// the Blaze (12-15 added there by hand); 9 and 10 are left out, they look the
+// same as 14 and 13. 7, the blinking red, is left out too: breathing and solid are enough.
 static const struct {
 	int pattern;
 	const char *label;
@@ -53,7 +61,8 @@ static const struct {
 	{5, "led_colour_off"},		   {1, "led_colour_blue"},	 {3, "led_colour_cyan"},
 	{14, "led_colour_dark_blue"},  {8, "led_colour_green"},	 {12, "led_colour_green_blink"},
 	{2, "led_colour_yellow"},	   {4, "led_colour_orange"}, {6, "led_colour_red_breathing"},
-	{7, "led_colour_red_blink"},   {13, "led_colour_purple"}, {11, "led_colour_white"},
+	{15, "led_colour_red"},		   {13, "led_colour_purple"},
+	{11, "led_colour_white"},
 };
 #define LED_COLOUR_COUNT ((int)(sizeof(LED_COLOURS) / sizeof(LED_COLOURS[0])))
 #define LED_PREVIEW_MS 3000
@@ -158,6 +167,16 @@ static int auto_off_index(void) {
 	return 3; // the 30 minute default
 }
 
+static int standby_index(void) {
+	int seconds = (int)config_get_int("power", "standby_mem_seconds", 60);
+	for (int i = 0; i < STANDBY_COUNT; i++) {
+		if (STANDBY[i].seconds == seconds) {
+			return i;
+		}
+	}
+	return 1; // the 1 minute default
+}
+
 // --- applying them ---
 
 static void set_checked(lv_obj_t *sw, bool on) {
@@ -182,6 +201,7 @@ void powersettings_apply(void) {
 	// Suspend-to-RAM standby, on by default: saves battery by suspending the
 	// player shortly after the screen goes off.
 	power_set_standby_enabled(config_get_bool("power", "standby_mem", true));
+	power_set_standby_seconds((uint32_t)STANDBY[standby_index()].seconds);
 
 	// The LED master switch comes first: with it off there is nothing for the
 	// standby option to turn off, and led.c keeps the charge indicator alive
@@ -219,6 +239,7 @@ static void refresh_labels(void) {
 		set_checked(axp_current_switch, config_get_bool("power", "charge_500ma", false));
 	}
 	lv_label_set_text(auto_off_value, tr(AUTO_OFF[auto_off_index()].label));
+	lv_label_set_text(standby_value, tr(STANDBY[standby_index()].label));
 
 	// The LED master switch, and the standby option that hangs off it: with the
 	// LED switched off entirely there is nothing left for the standby option to
@@ -246,11 +267,9 @@ static void refresh_labels(void) {
 
 	set_checked(key_lock_switch, config_get_bool("power", "lock_keys_screen_off", false));
 
-	if (config_get_bool("power", "standby_mem", true)) {
-		lv_obj_add_state(standby_switch, LV_STATE_CHECKED);
-	} else {
-		lv_obj_remove_state(standby_switch, LV_STATE_CHECKED);
-	}
+	bool standby = config_get_bool("power", "standby_mem", true);
+	set_checked(standby_switch, standby);
+	settingsrow_toggle_slider_expanded(standby_card, standby);
 
 	// One card: the slider is only on it while the toggle is on.
 	bool auto_off = config_get_bool("power", "auto_off", false);
@@ -291,6 +310,15 @@ static void auto_off_changed_cb(lv_event_t *e) {
 	(void)e;
 	int index = (int)lv_slider_get_value(auto_off_slider);
 	config_set_int("power", "auto_off_minutes", AUTO_OFF[index].minutes);
+	config_save();
+	powersettings_apply();
+	refresh_labels();
+}
+
+static void standby_changed_cb(lv_event_t *e) {
+	(void)e;
+	int index = (int)lv_slider_get_value(standby_slider);
+	config_set_int("power", "standby_mem_seconds", STANDBY[index].seconds);
 	config_save();
 	powersettings_apply();
 	refresh_labels();
@@ -346,7 +374,9 @@ void powersettings_init(gui_config_t *cfg) {
 	// off to save battery, and playback resumes on wake. On by default. What it
 	// waits for is the screen going dark, and that timeout lives on the Screen
 	// page, beside the brightness it belongs with.
-	settingsrow_toggle(container, "power_standby_mem", &standby_switch, standby_toggled_cb);
+	standby_card = settingsrow_toggle_slider(container, "power_standby_mem", STANDBY_COUNT, &standby_switch,
+											 &standby_value, &standby_slider, standby_toggled_cb, standby_changed_cb);
+	lv_slider_set_value(standby_slider, standby_index(), LV_ANIM_OFF);
 	lv_obj_t *standby_note = lv_label_create(container);
 	lv_label_set_long_mode(standby_note, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(standby_note, lv_pct(100));

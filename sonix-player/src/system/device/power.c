@@ -801,6 +801,14 @@ void power_set_standby_enabled(bool enabled) {
 	g_mem_instant_wakes = 0;
 }
 
+// The wait after the screen goes dark, set from the same settings page.
+void power_set_standby_seconds(uint32_t seconds) {
+	if (seconds < 15) {
+		seconds = 15; // any lower risks the device sleeping under the fingers
+	}
+	g_mem_after_ms = seconds * 1000u;
+}
+
 // What the kernel says about the last suspend: counters and, above all, the
 // device or the step that made the attempt fail. It lives in debugfs, which may
 // not be mounted on this firmware, so both known paths are tried.
@@ -1985,10 +1993,7 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 	if (g_mem_instant_wakes_max < 1) {
 		g_mem_instant_wakes_max = 1;
 	}
-	if (mem_secs < 15) {
-		mem_secs = 15; // any lower risks the device sleeping under the fingers
-	}
-	g_mem_after_ms = (uint32_t)mem_secs * 1000u;
+	power_set_standby_seconds(mem_secs > 0 ? (uint32_t)mem_secs : 0);
 
 	// The radios go down on their own clock, not the Standby toggle's: they are
 	// worth switching off whether or not the SoC is going to sleep.

@@ -558,6 +558,35 @@ static void refresh_play_icon(const device_state_t *state) {
 	lv_obj_set_hidden(play_icon, false);
 }
 
+// The LED's colour for what the player is doing, on the jack timer's quarter
+// second: on the five-second poll a computer starting or changing its stream in
+// DAC mode took up to five seconds to show. Each call is cheap when nothing
+// moved -- led.c only writes the driver when the pattern changes.
+static void led_poll(const device_state_t *state) {
+	led_update_playback(state->status == AUDIO_STATUS_PLAYING, state->stream_sample_rate,
+						!state->live && podcastcache_is_episode(state->current_file),
+						!state->live && audio_get_dsd_multiple() > 0);
+	// Wi-Fi transfer takes the same route: its pattern stays lit, screen off
+	// included, for as long as the transfer is on. The switch rather than the
+	// process, because the server takes a moment to come up and to die -- the
+	// light would lag the toggle in both directions.
+	led_set_wifi_transfer(wifitransfer_get_enabled());
+
+	// And Bluetooth receiver mode, which like the transfer is a thing the
+	// player is doing rather than something it is playing: the blue stays on
+	// for as long as the mode is, screen off included.
+	led_set_bt_receiver(btreceiver_is_active());
+
+	// And DAC mode, which plays nothing through audio.c and so reads as a
+	// stopped player above. Only while the cable is really there: the mode is
+	// turned off from its own page and nowhere else, so a player unplugged and
+	// pocketed would otherwise keep the LED lit against the standby setting.
+	usbdac_state_t dac;
+	usbdac_get_state(&dac);
+	bool dac_live = dac.active && usb_vbus_present();
+	led_set_dac(dac_live, dac_live && dac.streaming, dac.sample_rate, dac.dsd);
+}
+
 // The things noticed with the hands, on their own fast timer: what is in the
 // jacks, what is on the USB-C port, and whether the charger is in. Everything
 // here returns at once when nothing has changed.
@@ -576,6 +605,7 @@ static void jack_timer_cb(lv_timer_t *timer) {
 	device_state_t state;
 	device_state_get(&state);
 	int percent = parse_percent(state.battery_percent);
+	led_poll(&state);
 
 	// "Charging" out of the power supplies means a cable that is supplying,
 	// which stays true long after the battery has stopped taking anything. What
@@ -661,34 +691,6 @@ static void timer_update_cb(lv_timer_t *timer) {
 
 	topbar_refresh_volume((int)state.volume);
 	refresh_play_icon(&state);
-
-	// The battery and the charge LED ride jack_timer instead, which runs often
-	// enough for plugging the charger in to show at once. What is on this poll
-	// is what nobody is standing over -- the playback colour, Wi-Fi transfer,
-	// DAC mode.
-	led_update_playback(state.status == AUDIO_STATUS_PLAYING, state.stream_sample_rate,
-						!state.live && podcastcache_is_episode(state.current_file),
-						!state.live && audio_get_dsd_multiple() > 0);
-	// Wi-Fi transfer takes the same route: its pattern stays lit, screen off
-	// included, for as long as the transfer is on. The switch rather than the
-	// process, because this poll is five seconds apart and the server takes a
-	// moment to come up and to die -- the light would lag the toggle by most of
-	// a poll in both directions.
-	led_set_wifi_transfer(wifitransfer_get_enabled());
-
-	// And Bluetooth receiver mode, which like the transfer is a thing the
-	// player is doing rather than something it is playing: the blue stays on
-	// for as long as the mode is, screen off included.
-	led_set_bt_receiver(btreceiver_is_active());
-
-	// And DAC mode, which plays nothing through audio.c and so reads as a
-	// stopped player above. Only while the cable is really there: the mode is
-	// turned off from its own page and nowhere else, so a player unplugged and
-	// pocketed would otherwise keep the LED lit against the standby setting.
-	usbdac_state_t dac;
-	usbdac_get_state(&dac);
-	bool dac_live = dac.active && usb_vbus_present();
-	led_set_dac(dac_live, dac_live && dac.streaming, dac.sample_rate, dac.dsd);
 }
 
 // Where the clock sits in the bar: centred on its own, first in the volume group
