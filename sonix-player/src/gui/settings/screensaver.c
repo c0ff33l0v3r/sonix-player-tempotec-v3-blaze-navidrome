@@ -238,6 +238,7 @@ static char shown_file[512];
 static const void *shown_cover;
 
 static void refresh_content(void);
+static void promote_next(void);
 
 // Runs while the screensaver is up. The clock is the obvious reason, but the
 // important one is the track: the player frees its artwork at every track
@@ -250,6 +251,12 @@ static void clock_timer_cb(lv_timer_t *timer) {
 	// up on it -- a short dark spell, or a slow card. It is only stored, never
 	// swapped in: the picture must not change while it is being looked at.
 	collect_next();
+	// ...unless there is no picture yet, only the note: then nothing is being
+	// looked at that could change.
+	if (!image_pic.pixels && next_ready && screensaver_is_visible()) {
+		promote_next();
+		refresh_content();
+	}
 
 	// The picture after the one on screen is asked for as soon as there is room
 	// for it -- at start-up, after a card goes in, right after a swap -- rather
@@ -507,7 +514,11 @@ bool screensaver_prepare(void) {
 
 	if (screensaver_is_visible()) {
 		collect_next();
-		if (!waking) {
+		// Waking only collects, so the picture does not change under the eye --
+		// but with the note up (nothing was decoded yet when the panel went
+		// dark, the usual case right after the screensaver was dismissed) the
+		// picture that landed meanwhile goes up.
+		if (!waking || !image_pic.pixels) {
 			promote_next();
 		}
 		refresh_content();
