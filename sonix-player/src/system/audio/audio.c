@@ -4702,6 +4702,9 @@ bool audio_suspend_freeze(int timeout_ms) {
 	hold_flush_request = true;
 	pthread_cond_broadcast(&audio_cond);
 	pthread_mutex_unlock(&audio_mutex);
+	// A track paused with the device handed back sits in paused_wait_released()
+	// for up to a second; standby should not wait out that second.
+	playback_wake();
 
 	// Wait for the real teardown: context dead, PCM closed, gapless empty.
 	bool clean = false;
