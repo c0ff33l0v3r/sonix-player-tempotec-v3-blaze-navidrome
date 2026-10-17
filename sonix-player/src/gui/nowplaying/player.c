@@ -59,9 +59,11 @@
 #include "src/system/audio/waveform.h"
 #include "src/system/net/wifi.h"
 
+#include "lvgl/src/core/lv_obj_draw_private.h"
 #include "lvgl/src/core/lv_obj_event_private.h"
 #include "lvgl/src/font/lv_font_private.h"
 #include "lvgl/src/misc/lv_text_private.h"
+#include "lvgl/src/widgets/slider/lv_slider_private.h"
 #include "lvgl/src/misc/lv_text_ap.h"
 #include "src/gui/shell/unchanged.h"
 #include "lvgl/lvgl.h"
@@ -900,6 +902,42 @@ static int bar_value(double position) {
 	return (int)((px * 1000 + len - 1) / len);
 }
 
+// lv_slider_set_value() invalidates the whole slider with its knob's margin --
+// 480x54, the row with both clocks -- for a knob that moved a pixel or two.
+// Here only the strip from the knob as last drawn to where it will be is
+// invalidated, the same margin wide on each side; the whole-slider path is
+// kept for when there is no drawn knob yet or LVGL is animating the value.
+static void progress_slider_set(int value) {
+	lv_slider_t *slider = (lv_slider_t *)progress_slider;
+	lv_bar_t *bar = &slider->bar;
+	value = LV_CLAMP(bar->min_value, value, bar->max_value);
+	if (value == bar->cur_value) {
+		return;
+	}
+	lv_area_t drawn = slider->right_knob_area;
+	if (lv_anim_get(&bar->cur_value_anim, NULL) || lv_area_get_width(&drawn) <= 1 ||
+		bar->max_value <= bar->min_value) {
+		lv_slider_set_value(progress_slider, value, LV_ANIM_OFF);
+		return;
+	}
+	lv_area_t coords;
+	lv_obj_get_coords(progress_slider, &coords);
+	int32_t left = coords.x1 + lv_obj_get_style_pad_left(progress_slider, LV_PART_MAIN);
+	int32_t len = lv_area_get_width(&coords) - lv_obj_get_style_pad_left(progress_slider, LV_PART_MAIN) -
+				  lv_obj_get_style_pad_right(progress_slider, LV_PART_MAIN);
+	int32_t end = left + (int32_t)((int64_t)(value - bar->min_value) * len / (bar->max_value - bar->min_value));
+	int32_t half = lv_area_get_width(&drawn) / 2 + 2; // the knob, and a rounding pixel either way
+	int32_t ext = lv_obj_get_ext_draw_size(progress_slider);
+	lv_area_t dirty = {
+		.x1 = LV_MIN(drawn.x1, end - half) - ext,
+		.y1 = coords.y1 - ext,
+		.x2 = LV_MAX(drawn.x2, end + half) + ext,
+		.y2 = coords.y2 + ext,
+	};
+	bar->cur_value = value;
+	lv_obj_invalidate_area(progress_slider, &dirty);
+}
+
 // The other way round: the second of the file that slider value `value` is.
 static double view_seconds(int value) { return view_start + view_length * value / 1000.0; }
 
@@ -910,7 +948,7 @@ static void set_progress_label(double current_secs, double total_secs) {
 	view_update(current_secs, total_secs);
 	double shown = 0;
 	if (view_length > 0) {
-		lv_slider_set_value(progress_slider, bar_value(current_secs), LV_ANIM_OFF);
+		progress_slider_set(bar_value(current_secs));
 		shown = current_secs - view_start;
 		if (shown < 0) {
 			shown = 0;
@@ -5045,9 +5083,7 @@ static void smooth_timer_cb(lv_timer_t *timer) {
 	}
 
 	int value = bar_value(seconds);
-	if (value != lv_slider_get_value(progress_slider)) {
-		lv_slider_set_value(progress_slider, value, LV_ANIM_OFF);
-	}
+	progress_slider_set(value);
 	wave_preview(seconds);
 	lyrics_follow(seconds);
 }
