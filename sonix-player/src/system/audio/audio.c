@@ -1817,7 +1817,13 @@ static void track_started(void) {
 // playback thread used, how many writes needed recovering, and MemAvailable.
 // While a stream plays the thread runs SCHED_RR on a single core, so whatever
 // it uses is taken from the interface first.
-#define HEALTH_PERIOD_MS 10000
+//
+// A minute, not ten seconds. At ten the two lines were a seventh of the whole
+// log on the card -- 360 lines an hour of listening, each one a read of
+// /proc/stat, the interface's stat and /proc/meminfo on top of the card write
+// -- and a figure averaged over a minute is the steadier of the two anyway.
+// A window broken by a pause is still thrown away rather than reported.
+#define HEALTH_PERIOD_MS 60000
 
 static volatile unsigned write_recoveries; // counted in pcm_write_recover()
 
