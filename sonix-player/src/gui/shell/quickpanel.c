@@ -1690,6 +1690,7 @@ static void sonixlink_clicked_cb(lv_event_t *e) {
 	}
 
 	sonixlink_set_enabled(want);
+	sonixlink_pump_pace();
 	toggled();
 }
 

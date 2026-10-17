@@ -742,8 +742,8 @@ static void apply_queue_edit(const sonixlink_command_t *cmd) {
 }
 
 // The rate the current state calls for: fast enough that the app sees a
-// progress bar move, slow while nothing is listening, slower still when the
-// service is off -- which is nearly always.
+// progress bar move, slow while nothing is listening, and the slowest (the
+// timer is paused anyway) while the service is off -- nearly always.
 static int pump_period(void) {
 	if (!sonixlink_get_enabled()) {
 		return PUMP_IDLE_MS;
@@ -784,11 +784,12 @@ static void auto_off_check(void) {
 static void pump_cb(lv_timer_t *timer) {
 	lv_timer_set_period(timer, pump_period());
 	if (!sonixlink_get_enabled()) {
+		sonixlink_pump_pace();
 		return;
 	}
 	auto_off_check();
 	if (!sonixlink_get_enabled()) {
-		lv_timer_set_period(timer, pump_period());
+		sonixlink_pump_pace();
 		return;
 	}
 
@@ -799,10 +800,20 @@ static void pump_cb(lv_timer_t *timer) {
 	publish_state();
 }
 
-static void pump_pace(void) {
-	if (pump_timer) {
-		lv_timer_set_period(pump_timer, pump_period());
+// Puts the pump back at the rate the current state calls for, or to sleep:
+// while SonixLink is off no command can arrive and nothing is listening for
+// the state, so the timer is paused rather than ticking every two seconds to
+// find that out. Whoever switches the service on wakes it (sonixlink_pump_pace).
+void sonixlink_pump_pace(void) {
+	if (!pump_timer) {
+		return;
 	}
+	if (!sonixlink_get_enabled()) {
+		lv_timer_pause(pump_timer);
+		return;
+	}
+	lv_timer_set_period(pump_timer, pump_period());
+	lv_timer_resume(pump_timer);
 }
 
 // ---------------------------------------------------------------------------
@@ -845,7 +856,7 @@ static void page_poll_cb(lv_timer_t *timer) {
 	if (!link_available()) {
 		lv_obj_remove_state(toggle, LV_STATE_CHECKED);
 		sonixlink_set_enabled(false);
-		pump_pace();
+		sonixlink_pump_pace();
 		refresh();
 	}
 }
@@ -867,7 +878,7 @@ static void toggle_changed_cb(lv_event_t *e) {
 		// must not be holding a stale picture when it does.
 		publish_state();
 	}
-	pump_pace();
+	sonixlink_pump_pace();
 	refresh();
 }
 
@@ -958,11 +969,13 @@ void sonixlink_page_init(gui_config_t *cfg) {
 	page_timer = lv_timer_create(page_poll_cb, PAGE_POLL_MS, NULL);
 	lv_timer_pause(page_timer);
 
-	// This one never stops: it is the bridge between the network thread and
-	// playback, and the app pressing next while another page is open still has
-	// to be served. It only slows down while SonixLink is off.
+	// While SonixLink is on this one never stops: it is the bridge between the
+	// network thread and playback, and the app pressing next while another page
+	// is open still has to be served. While it is off the timer is paused
+	// (sonixlink_pump_pace), and the switches -- this page's, the control
+	// centre's -- wake it.
 	pump_timer = lv_timer_create(pump_cb, PUMP_IDLE_MS, NULL);
-	pump_pace();
+	sonixlink_pump_pace();
 
 	lv_obj_add_event_cb(sonixlink_screen, screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 	lv_obj_add_event_cb(sonixlink_screen, switched_elsewhere_cb, LV_EVENT_REFRESH, NULL);
