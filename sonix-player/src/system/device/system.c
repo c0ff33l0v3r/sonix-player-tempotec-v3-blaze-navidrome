@@ -13,6 +13,7 @@
 #include <sys/statvfs.h>
 #include <sys/wait.h>
 #include <poll.h>
+#include <sys/inotify.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/socket.h>
@@ -2215,6 +2216,8 @@ static void start_headset_input_thread(void) {
 
 #define BT_INPUT_SCAN_MS 2000
 #define USB_INPUT_SCAN_MS 3000
+// With inotify, a rescan this often even with no event (see bt_input_wait).
+#define INPUT_RESCAN_MS 60000
 #define BT_INPUT_MAX 4 // remotes connected at once, Bluetooth and USB together
 
 static pthread_mutex_t bt_input_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -2563,13 +2566,49 @@ static void *bt_input_thread_func(void *arg) {
 	return NULL;
 }
 
+// Waits until /dev/input may have changed. Blocks on inotify, so with no
+// remote coming or going the thread does not wake at all, instead of every 2-3
+// seconds; mdev creating or removing a node is the event. The timeout is a
+// safety net for an event missed, and `soon` asks for the old pace while a
+// Bluetooth node sits there waiting for Bluetooth to be switched on, which
+// changes nothing in /dev/input. Without inotify (watch < 0) it is the old
+// sleep, at the old pace.
+static void bt_input_wait(int watch, bool usb_only, bool soon) {
+	int pace = usb_only ? USB_INPUT_SCAN_MS : BT_INPUT_SCAN_MS;
+	if (watch < 0) {
+		usleep((useconds_t)pace * 1000);
+		return;
+	}
+	struct pollfd pfd = {.fd = watch, .events = POLLIN};
+	if (poll(&pfd, 1, soon ? pace : INPUT_RESCAN_MS) > 0) {
+		// The events themselves are not needed: the scan reads the directory.
+		char buf[512] __attribute__((aligned(__alignof__(struct inotify_event))));
+		while (read(watch, buf, sizeof(buf)) > 0) {
+		}
+	}
+}
+
 static void *bt_input_scan_thread(void *arg) {
 	(void)arg;
 	int last_node_count = bt_input_node_count();
+	int watch = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+	if (watch >= 0 && inotify_add_watch(watch, "/dev/input", IN_CREATE | IN_DELETE | IN_MOVED_TO) < 0) {
+		close(watch);
+		watch = -1;
+	}
+	if (watch < 0) {
+		printf("input: no inotify on /dev/input (%s), scanning every few seconds\n", strerror(errno));
+	}
+	// The first pass has the old pace's wait in front of it whatever happens:
+	// on a restart with the headphones connected the node is already there,
+	// and no event will ever announce it.
+	bool soon = true;
 	for (;;) {
 		// With Bluetooth off only a USB remote can appear.
 		bool usb_only = !bluetooth_get_enabled();
-		usleep((usb_only ? USB_INPUT_SCAN_MS : BT_INPUT_SCAN_MS) * 1000);
+		bt_input_wait(watch, usb_only, soon);
+		usb_only = !bluetooth_get_enabled();
+		soon = false;
 
 		int count = bt_input_node_count();
 		if (count >= 0 && count != last_node_count) {
@@ -2594,7 +2633,11 @@ static void *bt_input_scan_thread(void *arg) {
 			if ((size_t)snprintf(node, sizeof(node), "/dev/input/%s", e->d_name) >= sizeof(node)) {
 				continue;
 			}
-			int bus = bt_input_is_remote(node, usb_only);
+			int bus = bt_input_is_remote(node, false);
+			if (bus && bus != BUS_USB && usb_only) {
+				soon = true; // a Bluetooth remote, taken once Bluetooth is on
+				continue;
+			}
 			if (!bus || !bt_input_claim(node)) {
 				continue;
 			}
