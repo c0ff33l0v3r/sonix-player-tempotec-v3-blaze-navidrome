@@ -1647,6 +1647,22 @@ void power_keep_animations_paused(void) {
 	}
 }
 
+void power_align_standby_timers(void) {
+	if (g_screen_on || !g_power_timer || lv_timer_get_paused(g_power_timer)) {
+		return;
+	}
+	uint32_t grid = g_power_timer->last_run;
+	for (lv_timer_t *t = lv_timer_get_next(NULL); t; t = lv_timer_get_next(t)) {
+		if (t == g_power_timer || t->paused || t->period < POWER_TICK_STANDBY_MS) {
+			continue;
+		}
+		// Back onto the tick's second: due a little earlier, never later.
+		// Signed, for a timer that last ran before the tick did.
+		int32_t off = (int32_t)(t->last_run - grid) % POWER_TICK_STANDBY_MS;
+		t->last_run -= (uint32_t)(off < 0 ? off + POWER_TICK_STANDBY_MS : off);
+	}
+}
+
 void power_screen_on(void) {
 	waveform_set_screen_on(true);
 	if (g_screen_on) {

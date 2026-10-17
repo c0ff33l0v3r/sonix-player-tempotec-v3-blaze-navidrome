@@ -115,6 +115,19 @@ bool power_screen_is_on(void);
 // back to sleep; power_screen_on() catches every animation up on the way back.
 void power_keep_animations_paused(void);
 
+// For the main loop too, after power_keep_animations_paused(). With the panel
+// dark the interface's timers -- the battery and jack polls, the progress
+// tick, the bridges, Last.fm, the low-battery check -- each woke the player on
+// a phase of its own: a second apart in period, but milliseconds apart in
+// phase, so six of them made six wakeups a second where one would do. This
+// puts every running timer of a second or longer back on the power tick's
+// second (POWER_TICK_STANDBY_MS), moving it earlier by under a second and never
+// later, so they all fall due in the pass the tick wakes for. It runs after
+// every pass because each callback stamps its own start time, a few
+// milliseconds after the one before it, and a timer readied or resumed off the
+// beat would otherwise stay off it. Nothing with the screen on.
+void power_align_standby_timers(void);
+
 // --- Activity notifications (thread-safe; call from any thread) ---
 // Reset the idle timers because the user did something (e.g. a physical
 // button press). Touch input is already accounted for automatically.

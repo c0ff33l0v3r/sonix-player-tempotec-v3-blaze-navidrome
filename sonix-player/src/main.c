@@ -2942,6 +2942,7 @@ int main(int argc, char **argv) {
 		uint32_t time_till_next = lv_timer_handler();
 		frameprof_pass_end();
 		power_keep_animations_paused();
+		power_align_standby_timers();
 		uint32_t max_sleep = power_screen_is_on() ? MAIN_LOOP_MAX_SLEEP_MS : MAIN_LOOP_MAX_SLEEP_OFF_MS;
 		if (time_till_next > max_sleep) {
 			time_till_next = max_sleep; // also catches LV_NO_TIMER_READY
