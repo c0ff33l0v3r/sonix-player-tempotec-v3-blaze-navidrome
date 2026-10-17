@@ -138,11 +138,11 @@ static void apply_command(const dlna_command_t *cmd) {
 	}
 }
 
-// How slowly the pump ticks while DLNA is off, or on with no track of its own.
-// It cannot stop entirely, since it is also what notices DLNA being switched
-// on, but with the service down no command can arrive, and with it up every
-// command rings the pump itself. (Touching the switch also re-paces it
-// directly, below.)
+// How slowly the pump ticks while DLNA is on with no track of its own: every
+// command rings the pump itself, so this is only the safety net. While DLNA is
+// off the pump is paused outright -- no command can arrive -- and the switch
+// rings it awake (dlna_set_enabled calls the same hook), from this page, the
+// control centre or anywhere else.
 #define PUMP_IDLE_MS 2000
 
 static lv_timer_t *pump_timer;
@@ -153,11 +153,17 @@ static uint32_t pump_period(void) {
 	return dlna_get_enabled() && dlna_owns_playback() ? PUMP_MS : PUMP_IDLE_MS;
 }
 
-// Puts the pump back at the rate the current state calls for.
+// Puts the pump back at the rate the current state calls for, or to sleep.
 static void pump_pace(void) {
-	if (pump_timer) {
-		lv_timer_set_period(pump_timer, pump_period());
+	if (!pump_timer) {
+		return;
 	}
+	if (!dlna_get_enabled()) {
+		lv_timer_pause(pump_timer);
+		return;
+	}
+	lv_timer_set_period(pump_timer, pump_period());
+	lv_timer_resume(pump_timer);
 }
 
 // The doorbell: one gui_post per burst, however many seeks a dragged slider
@@ -167,7 +173,8 @@ static volatile int pump_rung;
 static void pump_now(void *user) {
 	(void)user;
 	__sync_lock_release(&pump_rung);
-	if (pump_timer) {
+	pump_pace(); // awake if the switch just came on
+	if (pump_timer && dlna_get_enabled()) {
 		lv_timer_ready(pump_timer);
 	}
 }
@@ -438,10 +445,11 @@ void dlna_page_init(gui_config_t *cfg) {
 	page_timer = lv_timer_create(page_poll_cb, PAGE_POLL_MS, NULL);
 	lv_timer_pause(page_timer);
 
-	// This timer never stops, not even with the screen off: it is the bridge
-	// between the network thread and playback, and a phone pushing a track
-	// while another page is open still has to be served. It only runs fast
-	// while DLNA owns the track; commands ring it (command_queued).
+	// While DLNA is on this timer never stops, not even with the screen off:
+	// it is the bridge between the network thread and playback, and a phone
+	// pushing a track while another page is open still has to be served. It
+	// only runs fast while DLNA owns the track; commands ring it
+	// (command_queued). While DLNA is off it is paused (pump_pace).
 	pump_timer = lv_timer_create(pump_cb, PUMP_IDLE_MS, NULL);
 	pump_pace();
 	dlna_set_command_hook(command_queued);

@@ -1299,6 +1299,10 @@ void dlna_set_enabled(bool on) {
 	desired_on = on;
 	pthread_cond_signal(&ctl_cond);
 	pthread_mutex_unlock(&ctl_lock);
+
+	if (command_hook) {
+		command_hook(); // the UI pump, asleep while DLNA was off
+	}
 }
 
 bool dlna_get_enabled(void) {
