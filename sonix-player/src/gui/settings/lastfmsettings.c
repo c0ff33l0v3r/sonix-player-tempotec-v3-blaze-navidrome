@@ -316,10 +316,13 @@ static void tick_cb(lv_timer_t *t) {
 	audio_get_progress(&position, &duration);
 	bool skip = radio_is_active() || audiobook_is_playing() || podcastcache_is_episode(file);
 
-	// Once a second while there is something playing to count, a session to
-	// report on or the page up to show it; otherwise nothing is moving but the
-	// occasional login that finished elsewhere.
-	lv_timer_set_period(t, playing || lastfm_active() || lv_screen_active() == page_screen ? TICK_MS : 5000);
+	// Once a second while there is something playing to count or the page up
+	// to show it; otherwise nothing is moving but the occasional login that
+	// finished elsewhere. A signed-in account no longer keeps it at once a
+	// second while paused: the first tick after a resume counts the time since
+	// from the track's own position (lastfm_note_playback), so slowing down
+	// costs the scrobble nothing.
+	lv_timer_set_period(t, playing || lv_screen_active() == page_screen ? TICK_MS : 5000);
 
 	// The player's own count of plays, by the same rule, whether Last.fm is in
 	// use or not.

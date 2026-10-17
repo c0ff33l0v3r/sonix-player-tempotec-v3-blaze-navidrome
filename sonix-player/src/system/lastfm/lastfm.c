@@ -1326,11 +1326,20 @@ void lastfm_note_playback(const lastfm_playback_t *now) {
 		announce = true;
 	}
 
+	double step = t - play.last_tick;
 	if (now->playing && play.was_playing) {
-		double step = t - play.last_tick;
 		// A longer gap is the device having been asleep, not listening.
 		if (step > 0 && step < 5.0) {
 			play.listened += step;
+		}
+	} else if (now->playing && same && !again) {
+		// Resumed since the last tick. The tick slows to one in five seconds
+		// while nothing plays, so the stretch between the resume and this tick
+		// is counted from the track itself: how far it moved, never more than
+		// the clock moved (a seek made while paused is not listening).
+		double moved = now->position - play.last_position;
+		if (moved > 0 && moved <= step) {
+			play.listened += moved;
 		}
 	}
 	play.was_playing = now->playing;
