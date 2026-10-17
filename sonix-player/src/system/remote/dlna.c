@@ -350,11 +350,30 @@ static void control_send(const char *message) {
 static pthread_mutex_t outbox_lock = PTHREAD_MUTEX_INITIALIZER;
 // Rung by control_post() and by service_stop(): the heartbeat sleeps on it
 // rather than waking ten times a second to look at an empty outbox.
-static pthread_cond_t outbox_filled = PTHREAD_COND_INITIALIZER;
+//
+// On the monotonic clock, not the wall clock a static initializer gives: the
+// heartbeat's position deadline is an absolute time, and on the wall clock a
+// clock set back while it waits (ntpdate on joining Wi-Fi, the time set by
+// hand) left the reports asleep for however far it went back -- a check
+// before the wait cannot reach a wait already under way. Set up once, by
+// whichever of its users comes first (outbox_cond_init).
+static pthread_cond_t outbox_filled;
+static pthread_once_t outbox_cond_once = PTHREAD_ONCE_INIT;
+
+static void outbox_cond_setup(void) {
+	pthread_condattr_t attr;
+	pthread_condattr_init(&attr);
+	pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+	pthread_cond_init(&outbox_filled, &attr);
+	pthread_condattr_destroy(&attr);
+}
+
+static void outbox_cond_init(void) { pthread_once(&outbox_cond_once, outbox_cond_setup); }
 static char outbox[OUTBOX][64];
 static int outbox_head, outbox_count;
 
 static void control_post(const char *message) {
+	outbox_cond_init();
 	pthread_mutex_lock(&outbox_lock);
 	if (outbox_count == OUTBOX) {
 		outbox_head = (outbox_head + 1) % OUTBOX; // drop the oldest
@@ -1072,21 +1091,14 @@ static void *heartbeat_worker(void *unused) {
 	(void)unused;
 	thread_be_background("dlna position");
 
+	outbox_cond_init();
 	int last_sent = -1;
+	// On the cond's clock, the monotonic one (see outbox_filled).
 	struct timespec due;
-	clock_gettime(CLOCK_REALTIME, &due);
+	clock_gettime(CLOCK_MONOTONIC, &due);
 	due.tv_sec += POSITION_EVERY_MS / 1000;
 	while (!server_stopping) {
 		bool report = false;
-		// The deadline is on the wall clock (the cond's): a clock set back,
-		// by ntpdate on joining Wi-Fi, must not leave the reports asleep for
-		// however far it went back. Never more than one period away.
-		struct timespec now;
-		clock_gettime(CLOCK_REALTIME, &now);
-		if (due.tv_sec > now.tv_sec + POSITION_EVERY_MS / 1000 + 1) {
-			due = now;
-			due.tv_sec += POSITION_EVERY_MS / 1000;
-		}
 		pthread_mutex_lock(&outbox_lock);
 		while (!server_stopping && outbox_count == 0) {
 			if (pthread_cond_timedwait(&outbox_filled, &outbox_lock, &due) == ETIMEDOUT) {
@@ -1104,7 +1116,7 @@ static void *heartbeat_worker(void *unused) {
 		if (!report) {
 			continue; // only a message: the position deadline stands
 		}
-		clock_gettime(CLOCK_REALTIME, &due);
+		clock_gettime(CLOCK_MONOTONIC, &due);
 		due.tv_sec += POSITION_EVERY_MS / 1000;
 
 		if (!dlna_owns_playback()) {
@@ -1210,6 +1222,7 @@ static void service_stop(void) {
 	fetch_abandon();
 	server_stopping = true;
 	// The heartbeat may be asleep until its next position report.
+	outbox_cond_init();
 	pthread_mutex_lock(&outbox_lock);
 	pthread_cond_broadcast(&outbox_filled);
 	pthread_mutex_unlock(&outbox_lock);
