@@ -17,7 +17,11 @@
 #define CALL_TIMEOUT_MS 3000
 #define RETRY_MS 3000	 // between attempts to reach bluealsa on the bus
 #define TICK_MS 250		 // while waiting for the output to move over
-#define IDLE_WAIT_MS 600 // with nothing to bridge
+#define IDLE_WAIT_MS 600 // between passes over a live stream
+// With no stream at all, which is nearly always: every change that could give
+// it work (a stream, the sync switch, a level) rings `wake`, so the timeout is
+// only a safety net, not a beat.
+#define UNBRIDGED_WAIT_MS 30000
 
 #define BT_VOLUME_MAX 127
 #define PATH_MAX_LEN 160
@@ -316,6 +320,7 @@ static void *btvolume_worker(void *unused) {
 				conn = NULL;
 			}
 			state = BTV_IDLE;
+			wait_ms = UNBRIDGED_WAIT_MS;
 		} else if (!conn) {
 			if ((uint32_t)(now_ms() - last_try) >= RETRY_MS || last_try == 0) {
 				last_try = now_ms();
