@@ -42,6 +42,7 @@
 #include "src/system/core/logging.h"
 #include "src/system/device/usb.h"
 #include "src/system/audio/usbdac.h"
+#include "src/system/audio/usbaudio.h"
 #include "src/system/gearboy/gearboy.h"
 #include "src/system/audio/metronome.h"
 #include "src/system/device/led.h"
@@ -1018,8 +1019,6 @@ void power_quiet_audio_for_shutdown(void) {
 	audio_quiet_output_for_power_off();
 }
 
-#define CHARGE_SCREEN_BIN "/usr/bin/sonix_charge"
-
 void power_shutdown(void) {
 	// Where the music had got to, before anything else stops. The player's own
 	// poll writes this only every ten seconds while playing and on a change of
@@ -1027,9 +1026,6 @@ void power_shutdown(void) {
 	// position seeked to while paused, which changes no state at all, would
 	// never be written.
 	device_state_remember_flush();
-
-	// Off means off: the next start by the cable is the charging screen again.
-	axp_charge_boot_done(false);
 
 	// The time goes into the RTC before anything else, exactly as the stock
 	// player does on its way out: whatever the clock has learned since it was
@@ -1068,19 +1064,6 @@ void power_shutdown(void) {
 	// unmounted.
 	storage_release_for_shutdown();
 	sync();
-
-	// With the cable in nothing would light the device again by itself, and
-	// the stock player stays on a charging screen then: this process becomes
-	// sonix_charge (a battery, the red LED, the power button), which is what
-	// "off" looks like on a cable. The Blaze's image has it; elsewhere (or if
-	// the exec fails) the charging screen built into the player takes over.
-	if (usb_vbus_present() && access(CHARGE_SCREEN_BIN, X_OK) == 0) {
-		power_screen_off();
-		for (int fd = 3; fd < 1024; fd++) {
-			close(fd); // the input devices must be free for it
-		}
-		execl(CHARGE_SCREEN_BIN, CHARGE_SCREEN_BIN, (char *)NULL);
-	}
 
 	// With the cable in, off is the charging screen, as on the stock player:
 	// the device restarts into it (chargescreen.h) rather than powering down.
@@ -1921,9 +1904,19 @@ static void power_timer_cb(lv_timer_t *timer) {
 		g_mem_active_ms = now;
 	}
 
+	// And a DAC on the USB-C port: the player powers it, so VBUS above never moves.
+	// usbaudio_active() follows the topbar's poll, which keeps running in standby.
+	static int dac_last = -1;
+	int dac_now = usbaudio_active() ? 1 : 0;
+	bool dac_changed = dac_last >= 0 && dac_now != dac_last;
+	dac_last = dac_now;
+	if (dac_changed) {
+		g_mem_active_ms = now;
+	}
+
 	// A cable or headphones plugged or pulled light the screen, like the power
 	// button does, and count as activity so the idle timer does not blank it again at once.
-	if ((usb_changed || jack_changed) && !g_screen_on) {
+	if ((usb_changed || jack_changed || dac_changed) && !g_screen_on) {
 		power_screen_on();
 		power_notify_activity();
 		lv_display_trigger_activity(g_disp);
@@ -2122,9 +2115,6 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 	g_last_button_activity_ms = now;
 	g_last_playing_ms = now;
 	g_ignore_button_until = now;
-
-	// Started: a later restart of the player is not a charge-only start.
-	axp_charge_boot_done(true);
 
 	g_last_active_boot_ms = boottime_ms(); // the wall-clock idle marker starts now
 

@@ -193,11 +193,17 @@ static bool cable_in(void) {
 
 static void led(charge_led_t state) {
 	switch (state) {
-	case CHARGE_LED_RED:
-		write_str(LED_PATTERN_NODE, "6");
+	case CHARGE_LED_RED: {
+		// The charging colour picked on the Blaze's LED page ([led] colour_6,
+		// LED_STATE_CHARGING), the breathing red where none is.
+		long pattern = config_get_int("led", "colour_6", 6);
+		char buf[8];
+		snprintf(buf, sizeof(buf), "%ld", pattern >= 1 && pattern <= 21 ? pattern : 6L);
+		write_str(LED_PATTERN_NODE, buf);
 		write_str(LED_RED_TRIGGER_NODE, "breathing");
 		write_str(LED_BLUE_NODE, "0");
 		break;
+	}
 	case CHARGE_LED_START:
 		write_str(LED_PATTERN_NODE, "1");
 		write_str(LED_RED_TRIGGER_NODE, "none");
@@ -719,11 +725,6 @@ static bool wanted_mp2731(uint8_t source, bool cable) {
 }
 
 static bool wanted(void) {
-	// The Blaze's image has a charging screen of its own (sonix_charge), which
-	// its launcher starts before the player and which shares REG07h's 0 and 1.
-	if (access("/usr/bin/sonix_charge", X_OK) == 0) {
-		return false;
-	}
 	uint8_t mark, source;
 	if (!axpcharge_reg_read(AXP_REG_MARK, &mark)) {
 		return false;

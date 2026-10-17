@@ -380,7 +380,7 @@ void led_set_standby(bool standby) {
 
 
 void led_set_state_pattern(led_state_t state, int pattern) {
-	if (state < 0 || state >= LED_STATE_COUNT || pattern < 1 || pattern > 16) {
+	if (state < 0 || state >= LED_STATE_COUNT || pattern < 1 || pattern > 21) {
 		return;
 	}
 	s_state_pattern[state] = pattern;

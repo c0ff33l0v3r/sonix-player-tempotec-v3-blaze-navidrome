@@ -618,16 +618,6 @@ build_one() {
 		say ""
 	fi
 
-	# sonix_charge: the charging screen the Blaze's launcher starts when the
-	# cable lit the device (sonix_player.sh), and the player execs on a power-off
-	# with the cable in. Built by `make target` next to sonix_player.
-	if [ "$MODEL_DIR" = "BLAZE" ] && [ -f "$SCRIPT_DIR/sonix_charge" ]; then
-		cp -f "$SCRIPT_DIR/sonix_charge" "$SQUASH_DIR/usr/bin/sonix_charge"
-		chmod 755 "$SQUASH_DIR/usr/bin/sonix_charge"
-		say "    usr/bin/sonix_charge installed (755)"
-		say ""
-	fi
-
 	# ==========================================================================
 	# 6. The stock interface's resources
 	# ==========================================================================

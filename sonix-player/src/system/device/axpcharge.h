@@ -31,16 +31,11 @@ void axpcharge_set(bool limit_voltage, bool limit_current);
 // tick.
 void axpcharge_tick(void);
 
-// True while the voltage cap is on and the PMIC reports the charge as done:
-// the cable is in and nothing more goes into the battery. As of the last tick.
+// True while the voltage cap is on and the PMIC reports the charge as done, or
+// while the charge is stopped until the battery is down to the cap: nothing
+// more goes into the battery. As of the last tick.
 bool axpcharge_holding(void);
 
-// The one byte of the PMIC's data buffer (REG07h) that the charging screen
-// reads: 1 once the player has started (so a restart of it is not taken for
-// the cable having lit the device), 0 at power-off. sonix_player.sh and
-// sonix_charge look at it together with the PMIC's power-on source. No-op on
-// the host.
-void axp_charge_boot_done(bool done);
 // One register of the PMIC, read or written over the same bus. Both players
 // have the AXP2101, whichever of them charges. False when it does not answer,
 // and always on the host.

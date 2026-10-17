@@ -36,6 +36,13 @@ lv_obj_t *remap_screen;
 // play/pause over next -- so there it is one photo, the media side's files, cut
 // off at the bottom and sitting on the bottom edge, with four taller rows.
 //
+// The V3 Blaze has its volume buttons on the right flank, under the power
+// button, and previous, play/pause and next in a row under the screen: one
+// photo of the whole device, the flank's rows beside it as on the R1 and the
+// front buttons' rows under it, stepped so that no leader crosses another row.
+// The device is black, and so is its one photo, in every theme: its metal
+// flank and textured frame stand out even on the black one.
+//
 // The photos live in /usr/resource/sonix/gui rather than in the binary, and are
 // loaded when the page opens and freed when it closes: a picture seen once a
 // year does not stay resident on a 64 MB device.
@@ -53,6 +60,7 @@ lv_obj_t *remap_screen;
 #define PHOTO_PLAY_LIGHT SONIX_RESOURCE_DIR "/gui/remap-play-light.png"
 #define PHOTO_VOL_DARK SONIX_RESOURCE_DIR "/gui/remap-vol-dark.png"
 #define PHOTO_VOL_LIGHT SONIX_RESOURCE_DIR "/gui/remap-vol-light.png"
+#define PHOTO_BLAZE SONIX_RESOURCE_DIR "/gui/remap-blaze.png"
 #define PHOTO_MAX_BYTES (2 * 1024 * 1024)
 
 // Length of the leader line tying a row to its button, and the row heights.
@@ -93,6 +101,30 @@ static const hit_t R1_HITS[] = {
 	{KEYMAP_BTN_PLAY, 360, 66},
 	{KEYMAP_BTN_NEXT, 426, 67},
 };
+
+// The Blaze's flank, under the power button, and its three front buttons by
+// the centre of each in the photo, the right-hand one first: the order their
+// rows go down in.
+static const hit_t BLAZE_FLANK_HITS[] = {
+	{KEYMAP_BTN_VOL_UP, 167, 40}, // a pixel or two apart from the buttons' centres,
+	{KEYMAP_BTN_VOL_DOWN, 209, 40}, // 38 apart: the rows would touch
+};
+
+typedef struct {
+	keymap_button_t button;
+	int x, y;
+} front_key_t;
+
+static const front_key_t BLAZE_FRONT_KEYS[] = {
+	{KEYMAP_BTN_NEXT, 159, 383},
+	{KEYMAP_BTN_PLAY, 118, 375},
+	{KEYMAP_BTN_PREV, 77, 366},
+};
+
+#define BLAZE_ROW_H 40
+#define FRONT_HIT 44	   // the touch square over a front button
+#define FRONT_ROW_GAP 6	   // between the front buttons' rows, and above the first
+#define FRONT_LEADER_IN 14 // a front row starts this far left of its leader, under its text
 
 // How wide the touch zone over a flank is: the buttons sit on its outer edge,
 // on the right of a right flank and on the left of a left one.
@@ -528,6 +560,47 @@ static void pick_clicked_cb(lv_event_t *e) {
 // building the page
 // ---------------------------------------------------------------------------
 
+// The leader line tying a button to its row. Eighteen pixels of nothing, but
+// without it rows stacked next to closely spaced buttons have to be matched up
+// by eye.
+static void add_leader(int x, int y, int w, int h) {
+	lv_obj_t *leader = lv_obj_create(remap_screen);
+	lv_obj_remove_style_all(leader);
+	lv_obj_set_pos(leader, x, y);
+	lv_obj_set_size(leader, w, h);
+	lv_obj_set_style_bg_color(leader, theme()->text_secondary, 0);
+	lv_obj_set_style_bg_opa(leader, LV_OPA_40, 0);
+}
+
+// The row saying what a button does. It is touchable too, because a 260-pixel
+// target is easier to hit than an 86-pixel one.
+static void add_row(keymap_button_t button, int x, int y, int w) {
+	lv_obj_t *row = lv_btn_create(remap_screen);
+	rows[button] = row;
+	lv_obj_set_pos(row, x, y);
+	lv_obj_set_size(row, w, row_h);
+	lv_obj_add_style(row, &theme_style_card, 0);
+	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
+	lv_obj_set_style_radius(row, 10, 0);
+	lv_obj_set_style_border_width(row, 0, 0);
+	lv_obj_set_style_shadow_width(row, 0, 0);
+	lv_obj_set_style_pad_hor(row, 14, 0);
+	lv_obj_set_scrollable(row, false);
+	lv_obj_add_event_cb(row, pick_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)button);
+
+	lv_obj_t *value = lv_label_create(row);
+	value_labels[button] = value;
+	lv_label_set_long_mode(value, LV_LABEL_LONG_DOT);
+	lv_obj_set_width(value, w - 28);
+	// One line, cut with dots: the rows sit a few pixels apart, and a name
+	// that wrapped would spill out of its row onto the next one. The size
+	// is chosen with the text, in refresh_values().
+	lv_obj_set_height(value, lv_font_get_line_height(row_font));
+	lv_obj_add_style(value, &theme_style_text, 0);
+	lv_obj_set_style_text_font(value, row_font, 0);
+	lv_obj_align(value, LV_ALIGN_LEFT_MID, 0, 0);
+}
+
 // One side: the photo, and next to each button a row saying what it does, on
 // the far side of the photo from the device's body.
 static void build_side(side_t *side, gui_config_t *cfg) {
@@ -565,64 +638,37 @@ static void build_side(side_t *side, gui_config_t *cfg) {
 		lv_obj_set_scrollable(zone, false);
 		lv_obj_add_event_cb(zone, pick_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)hit->button);
 
-		// The leader line tying a button to its row. Eighteen pixels of nothing,
-		// but without it rows stacked next to closely spaced buttons have to be
-		// matched up by eye.
-		lv_obj_t *leader = lv_obj_create(remap_screen);
-		lv_obj_remove_style_all(leader);
-		lv_obj_set_pos(leader, leader_x, centre - 1);
-		lv_obj_set_size(leader, LEADER_W, 2);
-		lv_obj_set_style_bg_color(leader, theme()->text_secondary, 0);
-		lv_obj_set_style_bg_opa(leader, LV_OPA_40, 0);
+		add_leader(leader_x, centre - 1, LEADER_W, 2);
 
-		// The row: what that button does. It is touchable too, because a
-		// 260-pixel target is easier to hit than an 86-pixel one.
-		lv_obj_t *row = lv_btn_create(remap_screen);
-		rows[hit->button] = row;
-		lv_obj_set_pos(row, col_x, centre - row_h / 2);
-		lv_obj_set_size(row, col_w, row_h);
-		lv_obj_add_style(row, &theme_style_card, 0);
-		lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_set_style_radius(row, 10, 0);
-		lv_obj_set_style_border_width(row, 0, 0);
-		lv_obj_set_style_shadow_width(row, 0, 0);
-		lv_obj_set_style_pad_hor(row, 14, 0);
-		lv_obj_set_scrollable(row, false);
-		lv_obj_add_event_cb(row, pick_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)hit->button);
-
-		lv_obj_t *value = lv_label_create(row);
-		value_labels[hit->button] = value;
-		lv_label_set_long_mode(value, LV_LABEL_LONG_DOT);
-		lv_obj_set_width(value, col_w - 28);
-		// One line, cut with dots: the rows sit a few pixels apart, and a name
-		// that wrapped would spill out of its row onto the next one. The size
-		// is chosen with the text, in refresh_values().
-		lv_obj_set_height(value, lv_font_get_line_height(row_font));
-		lv_obj_add_style(value, &theme_style_text, 0);
-		lv_obj_set_style_text_font(value, row_font, 0);
-		lv_obj_align(value, LV_ALIGN_LEFT_MID, 0, 0);
+		add_row(hit->button, col_x, centre - row_h / 2, col_w);
 	}
 }
 
-// A player with no photos here (the V3 Blaze): one row per button, named, with
-// what it does on the right, and the double click under them. The same
-// chooser and dialog as the photo pages.
-static const hit_t LIST_BUTTONS[] = {
-	{KEYMAP_BTN_PLAY, 0, 0},   {KEYMAP_BTN_PREV, 0, 0},		{KEYMAP_BTN_NEXT, 0, 0},
-	{KEYMAP_BTN_VOL_UP, 0, 0}, {KEYMAP_BTN_VOL_DOWN, 0, 0},
-};
+// The Blaze's front buttons: a touch square on each, a leader dropping from it
+// and its row under the photo, the right-hand button's first, each row starting
+// just left of its own leader. Returns the y under the last row.
+static int build_front_keys(const side_t *side, gui_config_t *cfg) {
+	int y = side->y + side->h + FRONT_ROW_GAP;
+	for (size_t i = 0; i < sizeof(BLAZE_FRONT_KEYS) / sizeof(BLAZE_FRONT_KEYS[0]); i++) {
+		const front_key_t *key = &BLAZE_FRONT_KEYS[i];
+		int cx = side->x + key->x, cy = side->y + key->y;
 
-static void build_list(gui_config_t *cfg) {
-	lv_obj_t *container = settingsrow_page(remap_screen, cfg, "remap_buttons");
-	int count = (int)(sizeof(LIST_BUTTONS) / sizeof(LIST_BUTTONS[0]));
-	for (int i = 0; i < count; i++) {
-		keymap_button_t button = LIST_BUTTONS[i].button;
-		rows[button] = settingsrow_add(container, BUTTON_NAMES[button], &value_labels[button], pick_clicked_cb,
-									   (void *)(intptr_t)button);
+		lv_obj_t *zone = lv_obj_create(remap_screen);
+		lv_obj_remove_style_all(zone);
+		lv_obj_set_pos(zone, cx - FRONT_HIT / 2, cy - FRONT_HIT / 2);
+		lv_obj_set_size(zone, FRONT_HIT, FRONT_HIT);
+		lv_obj_set_clickable(zone, true);
+		lv_obj_set_scrollable(zone, false);
+		lv_obj_add_event_cb(zone, pick_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)key->button);
+
+		int leader_top = cy + FRONT_HIT / 2 - 6;
+		add_leader(cx - 1, leader_top, 2, y - leader_top);
+
+		int x = cx - FRONT_LEADER_IN;
+		add_row(key->button, x, y, cfg->screen_width - x - cfg->padding);
+		y += row_h + FRONT_ROW_GAP;
 	}
-	settingsrow_add(container, "remap_double_click", &double_value, double_open_cb, NULL);
-	build_double_dialog(cfg, LIST_BUTTONS, count);
-	refresh_double();
+	return y;
 }
 
 static void screen_loaded_cb(lv_event_t *e) {
@@ -659,18 +705,6 @@ void remap_init(gui_config_t *cfg) {
 	}
 	bool one_flank = model && model->one_flank;
 
-	if (model && model->remap_list) {
-		row_h = ROW_H;
-		row_font = &font_ui_22;
-		fonts_register_change(refresh_values);
-		build_list(cfg);
-		refresh_values();
-		lv_obj_add_event_cb(remap_screen, screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
-		lv_obj_add_event_cb(remap_screen, screen_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
-		switcher_attach_back_gesture(remap_screen);
-		return;
-	}
-
 	lv_obj_t *title = settingsrow_title(remap_screen, cfg, "remap_buttons");
 	settingsrow_title_corner_slots(title, cfg, 0);
 
@@ -678,6 +712,33 @@ void remap_init(gui_config_t *cfg) {
 	row_font = one_flank ? &font_ui_22 : &font_ui_20;
 	// The size refresh_values() settles on depends on the text size.
 	fonts_register_change(refresh_values);
+
+	if (model && model->front_keys) {
+		// The photo on the left edge under the title, the flank's rows beside
+		// it, the front buttons' rows below.
+		row_h = BLAZE_ROW_H;
+		play_side.dark = play_side.light = PHOTO_BLAZE;
+		play_side.hits = BLAZE_FLANK_HITS;
+		play_side.hit_count = (int)(sizeof(BLAZE_FLANK_HITS) / sizeof(BLAZE_FLANK_HITS[0]));
+		play_side.rows_on_right = true;
+		play_side.w = 236;
+		play_side.h = 415;
+		play_side.x = cfg->padding; // the whole device, not a cut: clear of the edge
+		play_side.y = settingsrow_content_top(cfg);
+		build_side(&play_side, cfg);
+		build_front_keys(&play_side, cfg);
+		// No double click: every action already has a button of its own here, unlike
+		// on the R1. One set on the old list page would act with nothing to undo it.
+		if (keymap_double_enabled()) {
+			keymap_set_double(KEYMAP_BTN_COUNT, KEYMAP_ACTION_NONE);
+		}
+		refresh_values();
+		lv_obj_add_event_cb(remap_screen, screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+		lv_obj_add_event_cb(remap_screen, screen_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
+		switcher_attach_back_gesture(remap_screen);
+		theme_register_refresh(refresh_theme); // the photo is blended against the page colour
+		return;
+	}
 
 	// Sizes are those of the files; positions put the photos where the design
 	// has them. The R3 Pro II's right flank starts under the title and its left

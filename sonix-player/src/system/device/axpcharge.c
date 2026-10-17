@@ -28,7 +28,6 @@ void axpcharge_set(bool limit_voltage, bool limit_current) {
 }
 void axpcharge_tick(void) {}
 bool axpcharge_holding(void) { return false; }
-void axp_charge_boot_done(bool done) { (void)done; }
 bool axpcharge_reg_read(uint8_t reg, uint8_t *value) {
 	(void)reg;
 	(void)value;
@@ -68,6 +67,17 @@ bool axpcharge_reg_write(uint8_t reg, uint8_t value) {
 #define AXP_VOLTAGE_CAP 3u
 #define AXP_VOLTAGE_STOCK 5u
 
+// The cap goes on only once the battery is down to about it. Lowered under a
+// fuller one (4.20 V against 4.35 V) the PMIC flags battery over-voltage when
+// the cable goes in, and pulling the cable then cuts the power (REG21h=0x20,
+// DCDC under-voltage). 90 mV over was seen to be harmless; this leaves room
+// for a reading taken under load. Until then the stock driver's own switch
+// stops the charge, so the battery stays where it is; its probe puts the
+// charge current back at every boot, so nothing is left stuck at zero.
+#define BATTERY_UV_NODE "/sys/class/power_supply/battery/voltage_now"
+#define CHARGER_SWITCH_NODE "/sys/class/power_supply/axp_battery/charger"
+#define CAP_ARM_UV 4230000L
+
 // How often the tick re-asserts the switches, and retries after a failure.
 #define REASSERT_MS 5000
 
@@ -78,6 +88,7 @@ bool axpcharge_reg_write(uint8_t reg, uint8_t value) {
 static bool configured;
 static bool want_voltage, want_current;
 static bool holding;
+static bool charge_stopped; // by us, through CHARGER_SWITCH_NODE
 static long long next_ms;
 
 // The voltage to go back to: the register as first found, unless it already
@@ -138,6 +149,37 @@ static bool set_field(uint8_t reg, uint8_t mask, uint8_t target) {
 	return (v & mask) == target;
 }
 
+// shortcut: no voltage reading counts as low enough, the cap's old behaviour, so
+// a model without the node (the R1?) is unchanged; give it its own node if it shuts off too.
+static long battery_uv(void) {
+	long uv = 0;
+	FILE *f = fopen(BATTERY_UV_NODE, "r");
+	if (f) {
+		if (fscanf(f, "%ld", &uv) != 1) {
+			uv = 0;
+		}
+		fclose(f);
+	}
+	return uv;
+}
+
+static void stop_charge(bool stop) {
+	if (stop == charge_stopped) {
+		return;
+	}
+	FILE *f = fopen(CHARGER_SWITCH_NODE, "w");
+	if (!f) {
+		return;
+	}
+	bool ok = fputs(stop ? "0" : "1", f) >= 0;
+	ok = fclose(f) == 0 && ok;
+	if (ok) {
+		charge_stopped = stop;
+		printf("axpcharge: charge %s (battery %ld uV)\n",
+			   stop ? "stopped until the battery is down to the cap" : "resumed", battery_uv());
+	}
+}
+
 static int current_ma(unsigned n) { return n <= 8 ? (int)n * 25 : 200 + ((int)n - 8) * 100; }
 
 static bool apply_voltage(void) {
@@ -151,7 +193,12 @@ static bool apply_voltage(void) {
 			voltage_stock = v & AXP_VOLTAGE_MASK;
 		}
 	}
-	return set_field(AXP_REG_VOLTAGE, AXP_VOLTAGE_MASK, want_voltage ? AXP_VOLTAGE_CAP : voltage_stock);
+	bool cap = want_voltage;
+	if (cap && (v & AXP_VOLTAGE_MASK) != AXP_VOLTAGE_CAP && battery_uv() > CAP_ARM_UV) {
+		cap = false;
+	}
+	stop_charge(want_voltage && !cap);
+	return set_field(AXP_REG_VOLTAGE, AXP_VOLTAGE_MASK, cap ? AXP_VOLTAGE_CAP : voltage_stock);
 }
 
 // On: a current above the cap is saved, then lowered; one already at or below
@@ -187,7 +234,7 @@ static bool apply(void) {
 	ok = apply_current() && ok;
 
 	uint8_t status;
-	holding = want_voltage && axp_read(AXP_REG_STATUS, &status) && (status & 7u) == AXP_STATUS_DONE;
+	holding = want_voltage && (charge_stopped || (axp_read(AXP_REG_STATUS, &status) && (status & 7u) == AXP_STATUS_DONE));
 	return ok;
 }
 
@@ -237,11 +284,6 @@ void axpcharge_tick(void) {
 
 bool axpcharge_holding(void) { return holding; }
 
-// REG07h, a byte of the PMIC's data buffer; the power-on source (REG20h) is
-// read by the scripts.
-#define AXP_REG_SEEN 0x07
-
-void axp_charge_boot_done(bool done) { axp_write(AXP_REG_SEEN, done ? 1 : 0); }
 bool axpcharge_reg_read(uint8_t reg, uint8_t *value) { return axp_read(reg, value); }
 bool axpcharge_reg_write(uint8_t reg, uint8_t value) { return axp_write(reg, value); }
 

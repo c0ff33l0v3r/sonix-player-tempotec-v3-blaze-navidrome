@@ -28,7 +28,8 @@ static const struct {
 	int minutes;
 	const char *label;
 } AUTO_OFF[] = {
-	{5, "power_5_minutes"}, {10, "power_10_minutes"}, {15, "power_15_minutes"}, {30, "power_30_minutes"}, {60, "power_1_hour"}, {120, "power_2_hours"}, {180, "power_3_hours"}, {360, "power_6_hours"},
+	// 15 minutes at the shortest: less shuts the player off under a paused album.
+	{15, "power_15_minutes"}, {30, "power_30_minutes"}, {60, "power_1_hour"}, {120, "power_2_hours"}, {180, "power_3_hours"}, {360, "power_6_hours"},
 };
 #define AUTO_OFF_COUNT ((int)(sizeof(AUTO_OFF) / sizeof(AUTO_OFF[0])))
 
@@ -60,16 +61,21 @@ static lv_obj_t *axp_limit_switch, *axp_current_switch; // the R1's two, instead
 //
 // One row per state; a tap moves it to the next colour and shows it on the LED
 // for a moment. The patterns are the ones leds_sgm31324_add.sh registers on
-// the Blaze (12-15 added there by hand); 9 and 10 are left out, they look the
+// the Blaze (12-21 added there by hand); 9 and 10 are left out, they look the
 // same as 14 and 13. 7, the blinking red, is left out too: breathing and solid are enough.
 static const struct {
 	int pattern;
 	const char *label;
 } LED_COLOURS[] = {
-	{5, "led_colour_off"},		   {1, "led_colour_blue"},	 {3, "led_colour_cyan"},
-	{14, "led_colour_dark_blue"},  {8, "led_colour_green"},	 {12, "led_colour_green_blink"},
-	{2, "led_colour_yellow"},	   {4, "led_colour_orange"}, {6, "led_colour_red_breathing"},
-	{15, "led_colour_red"},		   {13, "led_colour_purple"},
+	{5, "led_colour_off"},
+	{1, "led_colour_blue"},			 {17, "led_colour_blue_breathing"},
+	{3, "led_colour_cyan"},			 {18, "led_colour_cyan_breathing"},
+	{14, "led_colour_dark_blue"},	 {16, "led_colour_blue_blink"},
+	{8, "led_colour_green"},		 {12, "led_colour_green_blink"},
+	{2, "led_colour_yellow"},		 {19, "led_colour_yellow_breathing"},
+	{4, "led_colour_orange"},		 {20, "led_colour_orange_breathing"},
+	{15, "led_colour_red"},			 {6, "led_colour_red_breathing"},
+	{13, "led_colour_purple"},		 {21, "led_colour_purple_breathing"},
 	{11, "led_colour_white"},
 };
 #define LED_COLOUR_COUNT ((int)(sizeof(LED_COLOURS) / sizeof(LED_COLOURS[0])))
@@ -167,12 +173,15 @@ static int charge_index(void) {
 
 static int auto_off_index(void) {
 	int minutes = (int)config_get_int("power", "auto_off_minutes", 30);
+	if (minutes < AUTO_OFF[0].minutes) {
+		return 0; // the 5 and 10 minutes earlier versions offered
+	}
 	for (int i = 0; i < AUTO_OFF_COUNT; i++) {
 		if (AUTO_OFF[i].minutes == minutes) {
 			return i;
 		}
 	}
-	return 3; // the 30 minute default
+	return 1; // the 30 minute default
 }
 
 // A wait saved by hand that is not one of these lands on the next one up,
