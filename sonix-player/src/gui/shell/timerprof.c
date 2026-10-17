@@ -9,6 +9,7 @@
 // keep their user data, since the timer itself is unchanged.
 
 #include "src/system/core/frameprof.h"
+#include "src/system/core/wakeprof.h"
 
 #include "lvgl/lvgl.h"
 
@@ -86,6 +87,9 @@ static void timer_trampoline(lv_timer_t *timer) {
 		return;
 	}
 	lv_timer_cb_t cb = s->cb;
+	if (wakeprof_on) {
+		wakeprof_note_timer((void *)cb);
+	}
 	if (!frameprof_timing()) {
 		cb(timer);
 		return;

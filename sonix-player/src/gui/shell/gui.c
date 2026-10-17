@@ -3,6 +3,7 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <sys/eventfd.h>
+#include <sys/prctl.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,6 +20,7 @@
 #include "src/gui/bluetooth/btaudio.h"
 #include "src/gui/bluetooth/btsettings.h"
 #include "src/gui/shell/confirm.h"
+#include "src/system/core/wakeprof.h"
 #include "src/gui/shell/corners.h"
 #include "src/gui/settings/bootlogopage.h"
 #include "src/gui/settings/kblayoutpage.h"
@@ -127,6 +129,7 @@ static lv_timer_t *popup_timer;
 typedef struct {
 	void (*cb)(void *);
 	void *user;
+	char thread[16]; // the poster's name, kept only for wakeprof.c
 } gui_post_t;
 
 static pthread_mutex_t post_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -176,9 +179,13 @@ bool gui_post(void (*cb)(void *), void *user) {
 		return false;
 	}
 	bool queued = false;
+	gui_post_t entry = {cb, user, ""};
+	if (wakeprof_on) {
+		prctl(PR_GET_NAME, entry.thread, 0, 0, 0); // 16 bytes, as the field is
+	}
 	pthread_mutex_lock(&post_lock);
 	if (post_count < GUI_POST_MAX) {
-		post_ring[(post_head + post_count) % GUI_POST_MAX] = (gui_post_t){cb, user};
+		post_ring[(post_head + post_count) % GUI_POST_MAX] = entry;
 		post_count++;
 		queued = true;
 	} else {
@@ -223,6 +230,9 @@ static void post_drain_cb(lv_timer_t *timer) {
 		pthread_mutex_unlock(&post_lock);
 
 		// Outside the lock: the callback may post in turn.
+		if (wakeprof_on) {
+			wakeprof_note_post((void *)entry.cb, entry.thread);
+		}
 		entry.cb(entry.user);
 	}
 }

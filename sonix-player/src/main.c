@@ -21,6 +21,7 @@
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/gui.h"
 #include "src/system/core/frameprof.h"
+#include "src/system/core/wakeprof.h"
 #include "src/gui/shell/toast.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/settings/powersettings.h"
@@ -2930,6 +2931,7 @@ int main(int argc, char **argv) {
 	// variable, which also lowers the threshold (the computer is many times
 	// faster than the device).
 	frameprof_init(frameprof_wanted(), getenv("SONIX_FRAMEPROF") ? (unsigned)atoi(getenv("SONIX_FRAMEPROF")) : 0);
+	wakeprof_init();
 
 #ifndef HOST_BUILD
 	lock_code_start();
@@ -2941,6 +2943,7 @@ int main(int argc, char **argv) {
 		frameprof_pass_begin();
 		uint32_t time_till_next = lv_timer_handler();
 		frameprof_pass_end();
+		wakeprof_pass_end();
 		power_keep_animations_paused();
 		power_align_standby_timers();
 		uint32_t max_sleep = power_screen_is_on() ? MAIN_LOOP_MAX_SLEEP_MS : MAIN_LOOP_MAX_SLEEP_OFF_MS;
@@ -2949,10 +2952,14 @@ int main(int argc, char **argv) {
 		}
 
 		struct pollfd wake = {.fd = gui_post_wake_fd(), .events = POLLIN};
-		if (poll(&wake, 1, (int)time_till_next) > 0) {
+		bool rung = poll(&wake, 1, (int)time_till_next) > 0;
+		if (rung) {
 			// Something was posted: drain the queue now instead of waiting
 			// for the bridge's own timer to come round.
 			gui_post_service();
+		}
+		if (wakeprof_on) {
+			wakeprof_woke(rung);
 		}
 	}
 
