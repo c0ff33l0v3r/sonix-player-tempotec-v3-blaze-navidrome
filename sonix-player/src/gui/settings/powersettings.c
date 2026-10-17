@@ -444,7 +444,8 @@ void powersettings_init(gui_config_t *cfg) {
 	settingsrow_toggle(container, "power_led_on", &led_on_switch, led_on_toggled_cb);
 	led_off_card = settingsrow_toggle(container, "power_led_off_in_standby", &led_off_switch, led_off_toggled_cb);
 	// Only where the palette above is what the LED module registers.
-	if (sysinfo_model()->ak4493) {
+	const sysinfo_model_t *model = sysinfo_model(); // NULL on an unknown device or the simulator
+	if (model && model->ak4493) {
 		build_led_colours_page(cfg);
 		settingsrow_add(container, "power_led_colours", NULL, switch_screen_cb, led_colours_screen);
 	}

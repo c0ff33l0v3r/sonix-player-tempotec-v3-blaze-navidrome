@@ -1134,7 +1134,7 @@ bool btstack_connect_avrcp(const char *address, int timeout_ms) {
 	// The remote controller (0x110E) first: it is the profile whose connect
 	// bluez runs for a phone that has just linked (audio-avrcp-target, in the
 	// log of a working link). The remote target (0x110C) is the other half.
-	char err[DBUS_NAME_MAX];
+	char err[DBUS_NAME_MAX] = ""; // connect_profile_uuid can return before writing it
 	if (connect_profile_uuid(address, UUID_AVRCP_REMOTE, timeout_ms, err, sizeof(err))) {
 		return true;
 	}
