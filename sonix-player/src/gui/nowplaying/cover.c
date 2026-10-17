@@ -1921,10 +1921,19 @@ static void thumb_wipe_old_dir(const char *dir) {
 // Schema plus pragma. synchronous=OFF because this is only a cache: an entry
 // lost to a card pulled mid-write recomputes itself, and every fsync saved is
 // smoother scrolling.
+//
+// journal_mode=TRUNCATE, as every other database in the player has. The
+// default (DELETE) creates thumbnails-journal on the card for every write and
+// unlinks it after: two exFAT directory-entry updates per transaction, and
+// this database is written on every track change (the picture's id, its
+// colour, the player cover moved to the front). Truncating the same file
+// leaves the directory alone and keeps the journal, so a player killed
+// mid-write still rolls back as before.
 static bool thumb_db_prepare_schema(sqlite3 *db) {
 	char *err = NULL;
 	if (sqlite3_exec(db,
 					 "PRAGMA synchronous=OFF;"
+					 "PRAGMA journal_mode=TRUNCATE;"
 					 // SQLite's own default is 2 MB of page cache per
 					 // connection, which browsing one big folder fills and
 					 // keeps filled for the rest of the session. Every other
@@ -2826,9 +2835,12 @@ static bool player_cover_load(uint64_t id, int w, int h, cover_image_t *out) {
 	}
 	if (blob && sqlite3_prepare_v2(thumb_db,
 								   "UPDATE player_covers SET used = (SELECT IFNULL(MAX(used), 0) + 1 FROM player_covers)"
-								   " WHERE key = ?1",
+								   " WHERE key = ?1 AND used < (SELECT MAX(used) FROM player_covers)",
 								   -1, &stmt, NULL) == SQLITE_OK) {
-		// Moved to the front of the queue the pruning deletes from.
+		// Moved to the front of the queue the pruning deletes from -- unless it
+		// is at the front already, which is every track of an album after the
+		// first: an UPDATE that matches no row touches no page, so the card is
+		// not written (journal, page, truncate) just to restate the order.
 		sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
 		sqlite3_step(stmt);
 		sqlite3_finalize(stmt);
