@@ -119,6 +119,11 @@ unsigned audio_loop_turns(void);
 void audio_set_gapless(bool enabled);
 bool audio_get_gapless(void);
 
+// Told when the screen goes dark or comes back. While it is dark the playback
+// thread is woken by the built-in card once every half buffer instead of once
+// every period: see deep_wait_turn() in audio.c.
+void audio_set_screen_on(bool on);
+
 // Fade: ramp the last seconds of a track down to silence and the first seconds
 // of the next up from it. One decoder means the two cannot truly overlap, so
 // this is the ramp-out/ramp-in version of the effect. `seconds` is clamped to

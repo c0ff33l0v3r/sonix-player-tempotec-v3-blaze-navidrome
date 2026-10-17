@@ -992,6 +992,81 @@ static snd_pcm_uframes_t chunk_for(snd_pcm_uframes_t period, int sample_rate) {
 	return chunk;
 }
 
+// With the screen dark, the playback thread is woken half as often as the
+// buffer is deep rather than once a period.
+//
+// The avail_min of one period is what wakes it: the card raises an interrupt
+// per period, the poll in pcm_wait_or_wake() comes back on every one of them,
+// and a turn decodes and writes that one period -- eleven times a second at
+// 44.1 kHz, every second of a pocketed album. Each is the single core coming
+// out of its wait instruction, a context switch to a real-time thread, the
+// poll, the alsa-lib plug walk and the ioctls of a write. With the screen lit
+// a turn has to stay short, because the interface is waiting behind it. With
+// the screen dark nothing is waiting, and the same audio can be decoded and
+// written in four times fewer, four times longer turns.
+//
+// Half the buffer and not all of it: a write is only made once that much has
+// played, so the other half is what is left in hand when the thread wakes --
+// some 370 ms at any rate, against a turn that decodes 370 ms of music in a
+// few. Only the built-in card: a USB DAC's buffer is already cut to 400 ms
+// and its queue is re-scaled at a volume change (requeue_rescale), and a
+// Bluetooth PCM is paced by its link, not by a clock.
+static volatile bool screen_dark;
+
+void audio_set_screen_on(bool on) { screen_dark = !on; }
+
+// The avail_min `pcm` currently waits for, 0 when it cannot say. Also read off
+// the handle without a syscall.
+static snd_pcm_uframes_t pcm_avail_min(snd_pcm_t *pcm) {
+	snd_pcm_sw_params_t *sw;
+	snd_pcm_sw_params_alloca(&sw);
+	snd_pcm_uframes_t now = 0;
+	if (snd_pcm_sw_params_current(pcm, sw) < 0 || snd_pcm_sw_params_get_avail_min(sw, &now) < 0) {
+		return 0;
+	}
+	return now;
+}
+
+// Puts `pcm` on an avail_min of `frames`. Asked every turn and compared with
+// the handle's own value rather than remembered, so a handle reopened after a
+// pause, a reroute or a recovery (which comes back on one period) is caught
+// at its first turn. Only the change itself costs an ioctl.
+static void pcm_sync_avail_min(snd_pcm_t *pcm, snd_pcm_uframes_t frames) {
+	if (!pcm || pcm_avail_min(pcm) == frames) {
+		return;
+	}
+	snd_pcm_sw_params_t *sw;
+	snd_pcm_sw_params_alloca(&sw);
+	if (snd_pcm_sw_params_current(pcm, sw) >= 0 && snd_pcm_sw_params_set_avail_min(pcm, sw, frames) >= 0 &&
+		snd_pcm_sw_params(pcm, sw) >= 0) {
+		fprintf(stderr, "audio[%ld]: woken every %lu frames\n", log_ms(), (unsigned long)frames);
+	}
+}
+
+// The frames a turn handles on `pcm`, with the handle's avail_min put to
+// match: `chunk` and one period while the screen is lit (or `deep` is false),
+// half the buffer in whole periods while it is dark. Other outputs are left
+// exactly as they were opened. Not with the fade on: it is one gain per turn,
+// and four times longer turns would be four times coarser steps.
+static snd_pcm_uframes_t deep_wait_turn(snd_pcm_t *pcm, snd_pcm_uframes_t chunk, snd_pcm_uframes_t period, bool deep) {
+	const char *name = pcm ? snd_pcm_name(pcm) : NULL;
+	if (!name || strcmp(name, AUDIO_DEFAULT_PCM) != 0) {
+		return chunk;
+	}
+	snd_pcm_uframes_t turn = chunk;
+	snd_pcm_uframes_t wake = period;
+	// The sizes the driver settled on, read off the handle.
+	snd_pcm_uframes_t buffer = 0, settled = 0;
+	if (deep && screen_dark && !fade_enabled && snd_pcm_get_params(pcm, &buffer, &settled) >= 0 && settled > 0) {
+		snd_pcm_uframes_t half = (buffer / 2 / settled) * settled;
+		if (half > chunk) {
+			turn = wake = half;
+		}
+	}
+	pcm_sync_avail_min(pcm, wake);
+	return turn;
+}
+
 // How long the end of a track waits after closing a bluealsa PCM, before the
 // next track opens one. See the call site.
 #define BT_REOPEN_SETTLE_MS 200
@@ -2469,11 +2544,20 @@ static snd_pcm_sframes_t pcm_write_recover(snd_pcm_t **pcm, const void *buf, snd
 			room = false;
 			bool bluetooth = pcm_is_bluetooth(*pcm);
 			long give_up_at = log_ms() + 2000;
+			// Each poll lasts at least as long as the avail_min it waits for:
+			// with the screen dark that is half the buffer (deep_wait_turn), and
+			// a 100 ms timeout would wake the thread three times for nothing on
+			// every turn. A command still ends the wait at once (the wake fd).
+			int wait_ms = 100;
+			snd_pcm_uframes_t avail_min = bluetooth ? 0 : pcm_avail_min(*pcm);
+			if (rate > 0 && avail_min > 0 && (long)avail_min * 1000 / rate + 100 > wait_ms) {
+				wait_ms = (int)((long)avail_min * 1000 / rate + 100);
+			}
 			while (!room && log_ms() < give_up_at) {
 				if (playback_reader_should_abort()) {
 					return -EINTR; // a command is pending: the main loop handles it
 				}
-				int r = bluetooth ? pcm_wait_bluetooth(*pcm, 100) : pcm_wait_or_wake(*pcm, 100);
+				int r = bluetooth ? pcm_wait_bluetooth(*pcm, 100) : pcm_wait_or_wake(*pcm, wait_ms);
 				if (r != 0) {
 					room = true; // ready (1) or error (<0): the writei will say which
 				}
@@ -3610,6 +3694,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// In the track's frames: one chunk decimated is one chunk at the device.
 	snd_pcm_uframes_t chunk_frames = decimated_chunk(period_size, out_rate, decim_factor);
 	void *buffer = malloc(chunk_frames * frame_bytes);
+	snd_pcm_uframes_t buffer_cap = chunk_frames; // frames `buffer` holds: a dark-screen turn grows it
 	if (!buffer) {
 		fprintf(stderr, "Audio: Out of memory for period buffer\n");
 		snd_pcm_close(pcm_handle);
@@ -3867,7 +3952,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 						break;
 					}
 					snd_pcm_uframes_t new_chunk = decimated_chunk(new_period, out_rate, decim_factor);
-					if (new_chunk > chunk_frames) {
+					if (new_chunk > buffer_cap) {
 						void *bigger = realloc(buffer, new_chunk * frame_bytes);
 						if (!bigger) {
 							snd_pcm_close(pcm_handle);
@@ -3880,6 +3965,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 							break;
 						}
 						buffer = bigger;
+						buffer_cap = new_chunk;
 					}
 					chunk_frames = new_chunk;
 					period_size = new_period;
@@ -3933,12 +4019,27 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		// same at normal speed, and deliberately not at any other.
 		uint64_t frames_read;
 		uint64_t input_frames;
+		// How much this turn handles: more, and woken less often, while the
+		// screen is dark (deep_wait_turn). Not on a decimated track, whose turns
+		// are kept short on purpose (DECIMATED_TURN_MS), nor on DoP, whose
+		// stream end is timed off the queue.
+		snd_pcm_uframes_t turn_frames =
+			deep_wait_turn(pcm_handle, chunk_frames, period_size, decim_factor == 1 && !passthrough);
+		if (turn_frames > buffer_cap) {
+			void *bigger = realloc(buffer, turn_frames * frame_bytes);
+			if (bigger) {
+				buffer = bigger;
+				buffer_cap = turn_frames;
+			} else {
+				turn_frames = deep_wait_turn(pcm_handle, chunk_frames, period_size, false);
+			}
+		}
 		// Before the decode, as a seek or a resume this turn has just emptied
 		// the stream (see playback_follow).
 		playback_follow(pcm_handle);
 		health_mark(&health);
 		if (out_bits == 32) {
-			frames_read = decoder_read_pcm_frames_s32(dec, chunk_frames, (int32_t *)buffer);
+			frames_read = decoder_read_pcm_frames_s32(dec, turn_frames, (int32_t *)buffer);
 			input_frames = frames_read;
 			health_lap(&health, STAGE_READ);
 			if (frames_read != 0 && decim_factor > 1) {
@@ -3971,10 +4072,10 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 
 			if (stretch) {
 				speed_set_factor(stretch, want_speed);
-				frames_read = (uint64_t)speed_pull(stretch, (short *)buffer, (int)chunk_frames, decoder_fill, &fill_ctx,
+				frames_read = (uint64_t)speed_pull(stretch, (short *)buffer, (int)turn_frames, decoder_fill, &fill_ctx,
 												   &input_frames);
 			} else {
-				frames_read = decoder_read_pcm_frames_s16(dec, chunk_frames, (short *)buffer);
+				frames_read = decoder_read_pcm_frames_s16(dec, turn_frames, (short *)buffer);
 				input_frames = frames_read;
 			}
 			health_lap(&health, STAGE_READ);
@@ -4006,7 +4107,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		// streaming app. (What the read already produced is still played below:
 		// the gap starts after the last good sample.)
 		uint64_t read_count = decim_factor > 1 ? input_frames : frames_read;
-		if (decoder_is_growing(dec) && (read_count < chunk_frames || decoder_take_starved(dec))) {
+		if (decoder_is_growing(dec) && (read_count < turn_frames || decoder_take_starved(dec))) {
 			rebuffer_after_short_read(dec, sample_rate, (uint64_t)(bytes_played / frame_bytes));
 			if (frames_read == 0) {
 				// Nothing at all came out: retry after refilling. Falling
@@ -4185,6 +4286,9 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	bool kept_empty = !keep_open && gapless_enabled && !played_to_the_end && skip_hold_prepare(pcm_handle, passthrough, is_paused);
 	keep_open = keep_open || kept_empty;
 	if (keep_open) {
+		// Handed on at the avail_min it was opened with: the next track may be
+		// a WAV, whose loop knows nothing of the dark-screen one.
+		deep_wait_turn(pcm_handle, chunk_frames, period_size, false);
 		gapless_hold(pcm_handle, channels, out_rate, out_bits, period_size, kept_empty);
 		pcm_handle = NULL;
 	}
