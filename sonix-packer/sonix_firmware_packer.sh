@@ -130,12 +130,16 @@ BLAZE_ROOTFS_MAX=47185920
 # script (Sonix runs BlueZ), BlueZ's test and debug tools (btmon stays: the
 # player's Bluetooth log runs it), obexd, ntpd (the clock uses ntpdate), and the
 # stock player's codepage tables. About 6 MB, none of it in RAM at runtime.
+# And the boot script for AIC Wi-Fi: the Blaze has a Cypress chip (cywdhd), so it
+# only repeats what S43 has just done -- reads back the macaddr.txt S43 wrote and
+# sets the same address -- and waits up to 3 s for wlan0 doing it.
 BLAZE_TRIM=(usr/bin/strace usr/share/zoneinfo/right
 	usr/lib/libwma.so usr/lib/libaac.so usr/lib/libmp3.so usr/lib/libdsd2pcm.so usr/lib/libopus.so usr/lib/libvorbis.so
 	usr/bin/bsa_server usr/bin/bt_enable_bsa.sh
 	usr/bin/hcidump usr/bin/bccmd usr/bin/ciptool usr/bin/rctest usr/bin/l2test usr/bin/gatttool usr/bin/bluetoothctl
 	usr/bin/bt-network usr/bin/bt-obex usr/libexec/bluetooth/obexd
-	usr/sbin/ntpd usr/resource/unicode)
+	usr/sbin/ntpd usr/resource/unicode
+	etc/init.d/S52wifi_aic_init_config)
 
 # The working folders always go, whether the run succeeded or not.
 cleanup() { rm -rf "$WORK_DIR" "$SQUASH_DIR" "$MERGED_SQUASHFS" 2>/dev/null || true; }
