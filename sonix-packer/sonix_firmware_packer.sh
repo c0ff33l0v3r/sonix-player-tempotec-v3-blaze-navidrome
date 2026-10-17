@@ -126,8 +126,16 @@ BLAZE_ROOTFS_MAX=47185920
 # What else goes on the V3 Blaze to fit that partition: a debugging tool, the
 # leap-second ("right/") copy of the time zones, and the stock player's codec
 # plugins (Sonix decodes on its own; nothing left in the image names them).
+# Then what nothing in the image starts any more: the Broadcom BSA stack and its
+# script (Sonix runs BlueZ), BlueZ's test and debug tools (btmon stays: the
+# player's Bluetooth log runs it), obexd, ntpd (the clock uses ntpdate), and the
+# stock player's codepage tables. About 6 MB, none of it in RAM at runtime.
 BLAZE_TRIM=(usr/bin/strace usr/share/zoneinfo/right
-	usr/lib/libwma.so usr/lib/libaac.so usr/lib/libmp3.so usr/lib/libdsd2pcm.so usr/lib/libopus.so usr/lib/libvorbis.so)
+	usr/lib/libwma.so usr/lib/libaac.so usr/lib/libmp3.so usr/lib/libdsd2pcm.so usr/lib/libopus.so usr/lib/libvorbis.so
+	usr/bin/bsa_server usr/bin/bt_enable_bsa.sh
+	usr/bin/hcidump usr/bin/bccmd usr/bin/ciptool usr/bin/rctest usr/bin/l2test usr/bin/gatttool usr/bin/bluetoothctl
+	usr/bin/bt-network usr/bin/bt-obex usr/libexec/bluetooth/obexd
+	usr/sbin/ntpd usr/resource/unicode)
 
 # The working folders always go, whether the run succeeded or not.
 cleanup() { rm -rf "$WORK_DIR" "$SQUASH_DIR" "$MERGED_SQUASHFS" 2>/dev/null || true; }
