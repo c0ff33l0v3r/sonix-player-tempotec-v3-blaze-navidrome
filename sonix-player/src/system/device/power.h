@@ -96,6 +96,11 @@ void display_set_rotated(bool rotated);
 // reuse is safe.
 uint16_t *display_capture_frame(int *out_w, int *out_h);
 
+// True where the interface is drawn at the layout's size and shrunk 2/3 onto
+// the panel (the V3 Blaze): one panel pixel is then a pixel and a half of
+// what LVGL draws.
+bool display_is_scaled(void);
+
 // --- Screen control (must be called on the LVGL/main thread) ---
 void power_screen_on(void);
 void power_screen_off(void);

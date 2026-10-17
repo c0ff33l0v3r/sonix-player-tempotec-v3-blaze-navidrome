@@ -1312,6 +1312,8 @@ static lv_display_t *init_host_display(void) {
 void display_wake_begin(lv_display_t *disp) { (void)disp; }
 void display_wake_end(lv_display_t *disp) { (void)disp; }
 void display_mirror_page(void) {}
+// The window is the layout's own size: nothing is shrunk.
+bool display_is_scaled(void) { return false; }
 
 // The folder that stands in for the memory card: SONIX_SD_ROOT, else the
 // documents folder named by XDG, else ~/Documents or ~/Documenti.
@@ -1988,6 +1990,8 @@ static lv_display_t *try_panned_display(void) {
 	printf("fb: double-buffered, page flip on FBIOPAN_DISPLAY (%ux%u)\n", fb_var.xres, fb_var.yres);
 	return disp;
 }
+
+bool display_is_scaled(void) { return fb_scaled; }
 
 // A copy of what the panel is showing right now.
 //

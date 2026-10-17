@@ -230,6 +230,32 @@ static bool text_is_moving(lv_obj_t *label) {
 	return anim && anim->act_time > 0;
 }
 
+// The scroll in whole panel pixels where the interface is shrunk 2/3 (see
+// display_is_scaled()). LVGL moves the text one layout pixel at a time, a new
+// frame each -- 55 a second at SCROLL_SPEED_PX_S -- and on that panel a layout
+// pixel is two thirds of a real one, so most of those frames only smear the
+// letters a little further between the same two panel pixels, and each costs
+// the strip's redraw and its shrink into both framebuffer pages. Snapped to
+// the nearest offset at or short of a whole panel pixel from the start, the
+// text moves one panel pixel per frame at the same speed, 37 frames a second.
+//
+// lv_label builds its animation itself and takes no path from the template,
+// and builds it again at every text, size or style change (keeping its
+// place), so the path is put back each time fade_pick() runs, which is after
+// every one of those. A frame or two of the plain path in between costs
+// nothing that shows.
+static int32_t scroll_path_panel_px(const lv_anim_t *a) {
+	int32_t d = lv_anim_path_linear(a) - a->start_value;
+	return a->start_value + d * 2 / 3 * 3 / 2;
+}
+
+static void scroll_snap(lv_obj_t *label) {
+	lv_anim_t *anim = lv_anim_get(label, NULL);
+	if (anim && display_is_scaled() && anim->path_cb == lv_anim_path_linear) {
+		anim->path_cb = scroll_path_panel_px;
+	}
+}
+
 // Puts the right mask of the pair on the label, or none at all.
 static void fade_pick(fade_label_t *entry) {
 	const lv_image_dsc_t *want = NULL;
@@ -243,6 +269,7 @@ static void fade_pick(fade_label_t *entry) {
 	if (lv_obj_get_style_bitmap_mask_src(entry->label, LV_PART_MAIN) != want) {
 		lv_obj_set_style_bitmap_mask_src(entry->label, want, 0);
 	}
+	scroll_snap(entry->label);
 }
 
 // A parked label (see the end of this file) is not moving and keeps the mask
