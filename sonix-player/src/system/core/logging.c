@@ -27,6 +27,16 @@
 #define LOG_SUBDIR ".local"
 #define LOG_FILE_NAME "sonix_player.log"
 
+// Nothing ever shortened the log: left on, it reached 8 MB and more, which is
+// a file nobody can read or send, and every boot appended to the end of a
+// cluster chain that only grew. When it is past this size on opening, it is
+// renamed to sonix_player.log.old (replacing the one before) and a fresh file
+// is started, so the card holds at most twice this and the run being
+// reported always starts near the top of a file. On opening only, not
+// mid-run: a rename under the writer thread would mean moving the log, with
+// the drain that waits on that very thread.
+#define LOG_ROTATE_BYTES (4L * 1024 * 1024)
+
 // The player prints a good deal before the card is mounted: which block device
 // it found, what the battery reported, whether the clock survived. That cannot
 // go to the card yet and must not go to the device's own storage, so it is held
@@ -221,6 +231,14 @@ static bool queue_writing; // the writer holds bytes it has taken out
 static bool queue_running; // the writer thread exists (never in a forked child)
 static unsigned long queue_dropped;
 
+// Set while stdout and stderr lead to /dev/null, which with "Log to microSD"
+// off -- the default -- is all the time. Every printed line used to go through
+// the queue regardless: the lock, a signal that woke the writer thread (a
+// context switch per line on one core) and a write() into /dev/null. Now emit()
+// drops it on the spot. The stamp is still worked out and the line tap still
+// sees every line, so the Bluetooth log is unchanged.
+static bool log_discarding;
+
 static void ring_put(const char *data, size_t size) {
 	size_t tail = (queue_head + queue_len) % QUEUE_BYTES;
 	size_t first = QUEUE_BYTES - tail < size ? QUEUE_BYTES - tail : size;
@@ -257,6 +275,9 @@ static bool queue_record(int fd, const char *data, size_t size) {
 // Bytes for descriptor `fd`: into the queue while the writer runs, straight
 // to the descriptor before it starts and in a forked child.
 static void emit(int fd, const char *data, size_t size) {
+	if (log_discarding) {
+		return;
+	}
 	if (!queue_running) {
 		write_all(fd, data, size);
 		return;
@@ -390,6 +411,7 @@ static void queue_drain(void) {
 // be neither unlocked nor taken in the child, whose thread has another id.
 static void queue_after_fork_child(void) {
 	queue_running = false;
+	log_discarding = false; // the child's descriptors are its own business
 	pthread_mutex_init(&queue_lock, NULL);
 }
 
@@ -643,6 +665,8 @@ static bool redirect_to(FILE *stream) {
 	}
 	active_stream = stream;
 	synced_size = -1;
+	log_discarding = false; // open_null_log() sets it again for its sink
+	stamp_day = -1; // a new file starts with the date, even if /dev/null had it
 	return true;
 }
 
@@ -694,6 +718,13 @@ static bool open_sd_log(void) {
 		return false;
 	}
 
+	struct stat st;
+	if (stat(sd_log_path, &st) == 0 && st.st_size > LOG_ROTATE_BYTES) {
+		char old_path[sizeof(sd_log_path) + 8];
+		snprintf(old_path, sizeof(old_path), "%s.old", sd_log_path);
+		rename(sd_log_path, old_path); // failing leaves it appending, as before
+	}
+
 	FILE *file = fopen(sd_log_path, "ae");
 	if (!file) {
 		return false;
@@ -720,6 +751,7 @@ static void open_null_log(void) {
 	if (sink) {
 		if (redirect_to(sink)) {
 			usb_stream = NULL; // redirect_to has just closed it
+			log_discarding = true;
 		} else {
 			fclose(sink);
 		}
@@ -1031,6 +1063,30 @@ static bool kmsg_tried;
 // interface that comes and goes.
 #define KMSG_LEVEL_MAX 4
 
+// Vendor drivers that print routine events at warning level, every time. On
+// a log from the Blaze they were most of what the kernel put in the player's
+// log -- 43% of the file's bytes, each one a read here, a stamped line through
+// the queue and a write to the card: the touch controller's ten lines for
+// every screen-off and wake, the codec's line per volume step, the SDIO card
+// reader's CIS tuples, the Wi-Fi driver's line per DHCP and EAPOL packet.
+// None of them ever explained anything. Dropped before they are counted
+// against KMSG_LINES_PER_CALL; an oops is looked for before this, so nothing
+// here can hide one. The codec's mute and rate lines stay: those are what a
+// pop or a silent output looks like from the kernel's side.
+static const char *const KERNEL_NOISE[] = {
+	"<<-GTP-INFO->>", "(GTP INT IRQ)", "queuing unknown CIS tuple", "DHCP - ", "ETHER_TYPE_",
+	"Got BRCM event packet", "lch volume: ", "rch volume: ",
+};
+
+static bool kernel_line_noise(const char *text) {
+	for (size_t i = 0; i < sizeof(KERNEL_NOISE) / sizeof(KERNEL_NOISE[0]); i++) {
+		if (strstr(text, KERNEL_NOISE[i])) {
+			return true;
+		}
+	}
+	return false;
+}
+
 // Lines copied per call; the rest are counted, not printed. No cap once the
 // kernel has died: the whole report is wanted.
 #define KMSG_LINES_PER_CALL 20
@@ -1075,6 +1131,9 @@ static bool kmsg_copy(void) {
 			// Before the report is printed: printing and writing it out go
 			// through the same kernel that has just failed.
 			oops_guard_arm();
+		}
+		if (!oops_seen && kernel_line_noise(text)) {
+			continue;
 		}
 		if (!oops_seen && printed >= KMSG_LINES_PER_CALL) {
 			skipped++;
