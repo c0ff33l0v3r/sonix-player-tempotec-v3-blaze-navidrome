@@ -1083,6 +1083,11 @@ static void install_signal_guards(void) {
 // The longest the main loop will ever sleep between passes of
 // lv_timer_handler(). See the loop itself for why this cap exists.
 #define MAIN_LOOP_MAX_SLEEP_MS 250
+// And with the screen off, when standby is held off (the charger, a Bluetooth
+// link) or not reached yet: nothing is drawn and nobody touches, the buttons
+// and every other thread wake the loop through gui_post, and a timer that is
+// due sooner still sets the wait. The watchdog waits five seconds for a pass.
+#define MAIN_LOOP_MAX_SLEEP_OFF_MS 1000
 
 // ---------------------------------------------------------------------------
 // Kinetic scroll tuning.
@@ -2908,7 +2913,8 @@ int main(int argc, char **argv) {
 	// unread (the input device is polled by a timer too), the clock stopped.
 	//
 	// A quarter of a second is the ceiling because that is the standby budget
-	// this player runs to: four wakeups a second with nothing to do.
+	// this player runs to: four wakeups a second with nothing to do. With the
+	// screen off it is a second (MAIN_LOOP_MAX_SLEEP_OFF_MS).
 	//
 	// The wait is a poll() on the gui_post wake descriptor rather than a
 	// usleep() (see gui.c), so a thread that posts wakes the loop at once and
@@ -2932,8 +2938,9 @@ int main(int argc, char **argv) {
 		uint32_t time_till_next = lv_timer_handler();
 		frameprof_pass_end();
 		power_keep_animations_paused();
-		if (time_till_next > MAIN_LOOP_MAX_SLEEP_MS) {
-			time_till_next = MAIN_LOOP_MAX_SLEEP_MS; // also catches LV_NO_TIMER_READY
+		uint32_t max_sleep = power_screen_is_on() ? MAIN_LOOP_MAX_SLEEP_MS : MAIN_LOOP_MAX_SLEEP_OFF_MS;
+		if (time_till_next > max_sleep) {
+			time_till_next = max_sleep; // also catches LV_NO_TIMER_READY
 		}
 
 		struct pollfd wake = {.fd = gui_post_wake_fd(), .events = POLLIN};
