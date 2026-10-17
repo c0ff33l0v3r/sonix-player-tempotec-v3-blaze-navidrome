@@ -115,6 +115,11 @@ typedef struct {
 // Collects the next command, if any. UI thread only.
 bool dlna_take_command(dlna_command_t *out);
 
+// Called, on whichever thread queued it, every time a command is queued, so
+// the UI can collect it at once instead of polling for it. The hook must not
+// block and must not touch LVGL: it is for a gui_post().
+void dlna_set_command_hook(void (*hook)(void));
+
 // Which file DLNA is playing, and who owns playback.
 //
 // The UI calls dlna_report_playing() as soon as it has handed the file to

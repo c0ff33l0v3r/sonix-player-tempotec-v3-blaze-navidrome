@@ -217,7 +217,7 @@ static pthread_mutex_t queue_lock = PTHREAD_MUTEX_INITIALIZER;
 static dlna_command_t queue[CMD_QUEUE];
 static int queue_head, queue_count;
 
-static void queue_push(const dlna_command_t *cmd) {
+static void queue_store(const dlna_command_t *cmd) {
 	pthread_mutex_lock(&queue_lock);
 
 	// A command of the same kind not yet taken is replaced: the last one wins,
@@ -239,6 +239,18 @@ static void queue_push(const dlna_command_t *cmd) {
 	queue_count++;
 
 	pthread_mutex_unlock(&queue_lock);
+}
+
+static void (*command_hook)(void);
+
+void dlna_set_command_hook(void (*hook)(void)) { command_hook = hook; }
+
+// Stores the command and rings the UI, outside the lock.
+static void queue_push(const dlna_command_t *cmd) {
+	queue_store(cmd);
+	if (command_hook) {
+		command_hook();
+	}
 }
 
 static void queue_clear(void) {

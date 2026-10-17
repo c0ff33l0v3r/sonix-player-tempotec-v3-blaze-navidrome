@@ -26,7 +26,14 @@ lv_obj_t *dlna_screen;
 
 // The command pump does not tick at the page's rate: commands arrive while the
 // page is closed too, and that is exactly when they have to work.
-#define PUMP_MS 120
+//
+// It does not collect them by ticking either: the network thread rings it
+// (dlna_set_command_hook, below) and the pump runs on the next pass. What is
+// left for the tick is the position the phone reads back while DLNA owns the
+// track, which dmrd is told once a second -- so half a second keeps it fresh,
+// where the old 120 ms was eight wake-ups a second for as long as DLNA was on,
+// screen dark or not.
+#define PUMP_MS 500
 #define PAGE_POLL_MS 400
 
 #define DL_UNAVAILABLE "dlna_unavailable"
@@ -131,27 +138,50 @@ static void apply_command(const dlna_command_t *cmd) {
 	}
 }
 
-// How slowly the pump ticks while DLNA is off. It cannot stop entirely, since
-// it is also what notices DLNA being switched on, but with the service down no
-// command can arrive, and two seconds is the worst-case delay between the
-// switch being touched and the first useful tick. (Touching the switch also
-// restores the fast period directly, below.)
+// How slowly the pump ticks while DLNA is off, or on with no track of its own.
+// It cannot stop entirely, since it is also what notices DLNA being switched
+// on, but with the service down no command can arrive, and with it up every
+// command rings the pump itself. (Touching the switch also re-paces it
+// directly, below.)
 #define PUMP_IDLE_MS 2000
 
 static lv_timer_t *pump_timer;
 
+// The fast period only while DLNA has a track to report on; commands do not
+// need it, they ring.
+static uint32_t pump_period(void) {
+	return dlna_get_enabled() && dlna_owns_playback() ? PUMP_MS : PUMP_IDLE_MS;
+}
+
 // Puts the pump back at the rate the current state calls for.
 static void pump_pace(void) {
 	if (pump_timer) {
-		lv_timer_set_period(pump_timer, dlna_get_enabled() ? PUMP_MS : PUMP_IDLE_MS);
+		lv_timer_set_period(pump_timer, pump_period());
+	}
+}
+
+// The doorbell: one gui_post per burst, however many seeks a dragged slider
+// queues before the pump gets to them.
+static volatile int pump_rung;
+
+static void pump_now(void *user) {
+	(void)user;
+	__sync_lock_release(&pump_rung);
+	if (pump_timer) {
+		lv_timer_ready(pump_timer);
+	}
+}
+
+static void command_queued(void) {
+	if (!__sync_lock_test_and_set(&pump_rung, 1) && !gui_post(pump_now, NULL)) {
+		__sync_lock_release(&pump_rung); // dropped: the next command rings again, the tick still runs
 	}
 }
 
 static void pump_cb(lv_timer_t *timer) {
-	// Eight wakeups a second for a service that is off is a cost paid all night
-	// in standby. While it is on the rate is unchanged.
-	lv_timer_set_period(timer, dlna_get_enabled() ? PUMP_MS : PUMP_IDLE_MS);
+	(void)timer;
 	if (!dlna_get_enabled()) {
+		pump_pace();
 		return;
 	}
 
@@ -159,6 +189,8 @@ static void pump_cb(lv_timer_t *timer) {
 	while (dlna_take_command(&cmd)) {
 		apply_command(&cmd);
 	}
+	// After the commands: a play just taken is what makes the fast period due.
+	pump_pace();
 
 	if (!dlna_owns_playback()) {
 		return;
@@ -408,10 +440,11 @@ void dlna_page_init(gui_config_t *cfg) {
 
 	// This timer never stops, not even with the screen off: it is the bridge
 	// between the network thread and playback, and a phone pushing a track
-	// while another page is open still has to be served. It only slows down
-	// while DLNA is off, which is nearly always.
+	// while another page is open still has to be served. It only runs fast
+	// while DLNA owns the track; commands ring it (command_queued).
 	pump_timer = lv_timer_create(pump_cb, PUMP_IDLE_MS, NULL);
 	pump_pace();
+	dlna_set_command_hook(command_queued);
 
 	lv_obj_add_event_cb(dlna_screen, screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 	lv_obj_add_event_cb(dlna_screen, switched_elsewhere_cb, LV_EVENT_REFRESH, NULL);
