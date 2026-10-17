@@ -879,6 +879,27 @@ static int view_value(double position) {
 	return (int)(fraction * 1000);
 }
 
+// view_value() snapped to the bar's own pixels: the smallest value at which the
+// indicator ends on the same pixel as at `position`. The range is 1000 and the
+// bar is some 450 layout pixels long, so most steps of the raw value move
+// nothing on screen -- and every step the slider is told about invalidates the
+// whole strip it sits in, knob and both clocks' row, 480x54. On a three-minute
+// track that was five redraws a second for two pixels of travel. Snapped, a
+// tick that would draw the same picture leaves the value as it is, and the
+// callers' "has it changed" test skips it. The length is worked out the way
+// lv_bar does it (its width less the background's padding); a stray pixel of
+// difference only moves where the snap falls, not how often.
+static int bar_value(double position) {
+	int value = view_value(position);
+	int32_t len = lv_obj_get_width(progress_slider) - lv_obj_get_style_pad_left(progress_slider, LV_PART_MAIN) -
+				  lv_obj_get_style_pad_right(progress_slider, LV_PART_MAIN);
+	if (len <= 0 || len >= 1000) {
+		return value;
+	}
+	int32_t px = value * len / 1000;
+	return (int)((px * 1000 + len - 1) / len);
+}
+
 // The other way round: the second of the file that slider value `value` is.
 static double view_seconds(int value) { return view_start + view_length * value / 1000.0; }
 
@@ -889,7 +910,7 @@ static void set_progress_label(double current_secs, double total_secs) {
 	view_update(current_secs, total_secs);
 	double shown = 0;
 	if (view_length > 0) {
-		lv_slider_set_value(progress_slider, view_value(current_secs), LV_ANIM_OFF);
+		lv_slider_set_value(progress_slider, bar_value(current_secs), LV_ANIM_OFF);
 		shown = current_secs - view_start;
 		if (shown < 0) {
 			shown = 0;
@@ -5023,7 +5044,7 @@ static void smooth_timer_cb(lv_timer_t *timer) {
 		seconds = view_start + view_length; // the poll will say what happens next
 	}
 
-	int value = view_value(seconds);
+	int value = bar_value(seconds);
 	if (value != lv_slider_get_value(progress_slider)) {
 		lv_slider_set_value(progress_slider, value, LV_ANIM_OFF);
 	}
