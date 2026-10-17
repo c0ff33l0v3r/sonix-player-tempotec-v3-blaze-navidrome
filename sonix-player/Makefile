@@ -109,21 +109,44 @@ TARGET_CFLAGS = $(CFLAGS) -march=mips32r2 -mno-madd4 -mplt -ffunction-sections -
 # cache, smaller code is seldom slower code.
 #
 # The hot paths: the audio chain and its effects, the decoders, the Game Boy
-# core, and LVGL's software renderer and colour mixing. SQLite is at -O2, the
-# level it is normally built at. On the Blaze also main.c, which shrinks every
+# core, and LVGL's software renderer and colour mixing. On the Blaze also main.c, which shrinks every
 # frame 2/3 onto the panel (blit_scaled_2_3: measured on the device, it is the
 # biggest single cost of the interface thread), and the cover decoding and
 # resampling (system/image, gui/nowplaying/cover.c).
 #
+# The cold paths go the other way, to -Os: code that runs when a page is
+# built, a list is filled or a catalogue answers, and never per frame or per
+# audio block -- the library and streaming pages, the settings pages, the
+# library database, tag reading, the podcast, Qobuz and Tidal clients, the
+# e-book reader, Last.fm. Its speed is lost in the card or the network it
+# waits on, but every byte of it is pinned in RAM all the same. SQLite counts
+# most: of the 368 kB of .text that -Os takes off the whole player, 180 kB is
+# SQLite alone (whose own documentation builds it -Os for small devices), and
+# its queries here read a few hundred rows off an SD card. This list takes
+# 245 kB off the pinned code (etext, see lock_code_pages). Left at -O2 on
+# purpose, although they shrink too: LVGL's core (style lookup and layout run
+# every frame, for a few kB), the radio stream and the network code under it,
+# AirPlay and DLNA (they carry audio), Bluetooth, the player page and the
+# shell.
+#
 # TARGET_OPT is per object: the default level everywhere, the hot one on the
-# objects matching TARGET_HOT_PATTERNS.
+# objects matching TARGET_HOT_PATTERNS, the cold one on TARGET_COLD_PATTERNS.
+# The two lists must not overlap.
 TARGET_DEFAULT_OPT = -O2
 TARGET_HOT_OPT = -O3
+TARGET_COLD_OPT = -Os
 TARGET_HOT_PATTERNS = build_target/system/audio/% build_target/system/decode/% build_target/gb/% \
 					  build_target/lvgl/src/draw/sw/% build_target/lvgl/src/misc/lv_color% \
 					  build_target/main.o build_target/system/image/% build_target/gui/nowplaying/cover.o
+TARGET_COLD_PATTERNS = build_target/system/db/% build_target/system/library/% build_target/gui/library/% \
+					   build_target/gui/streaming/% build_target/gui/settings/% build_target/gui/ebook/% \
+					   build_target/system/ebook/% build_target/system/lastfm/% \
+					   build_target/system/streaming/podcast% build_target/system/streaming/qobuz% \
+					   build_target/system/streaming/tidal% build_target/system/streaming/opml.o \
+					   build_target/system/streaming/onair.o
 TARGET_OPT = $(TARGET_DEFAULT_OPT)
 $(TARGET_HOT_PATTERNS): TARGET_OPT = $(TARGET_HOT_OPT)
+$(TARGET_COLD_PATTERNS): TARGET_OPT = $(TARGET_COLD_OPT)
 
 # The C++ in this project is the Game Boy core (src/gb, Gearboy) plus the facade
 # that makes it callable from the player, which is C.
@@ -382,7 +405,7 @@ check-abi:
 # included. Rewritten only when they differ, so a change of flags rebuilds
 # everything and nothing else does.
 TARGET_FLAGS_STAMP = build_target/.flags
-TARGET_FLAGS_LINE = $(TARGET_CFLAGS) | $(TARGET_CXXFLAGS) | $(TARGET_DEFAULT_OPT) $(TARGET_HOT_OPT) $(TARGET_HOT_PATTERNS)
+TARGET_FLAGS_LINE = $(TARGET_CFLAGS) | $(TARGET_CXXFLAGS) | $(TARGET_DEFAULT_OPT) $(TARGET_HOT_OPT) $(TARGET_HOT_PATTERNS) | $(TARGET_COLD_OPT) $(TARGET_COLD_PATTERNS)
 $(TARGET_FLAGS_STAMP): FORCE
 	@mkdir -p $(dir $@)
 	@echo '$(TARGET_FLAGS_LINE)' | cmp -s - $@ || \
