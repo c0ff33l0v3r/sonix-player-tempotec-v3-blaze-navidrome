@@ -97,7 +97,16 @@ HOST_CFLAGS = $(CFLAGS) -DHOST_BUILD=1 $(shell sdl2-config --cflags) $(shell pkg
 TARGET_CFLAGS = $(CFLAGS) -march=mips32r2 -mno-madd4 -mplt -ffunction-sections -fdata-sections \
 				-I$(LVGL_DIR)/src -I$(FREETYPE_PREFIX)/include/freetype2 \
 				-I$(AUDIO_PREFIX)/include -I$(AUDIO_PREFIX)/include/opus \
-				-include src/system/core/glibc_compat.h
+				-include src/system/core/glibc_compat.h \
+				-fno-builtin-printf
+#
+# -fno-builtin-printf: gcc otherwise turns printf("text\n") and printf("%s\n",
+# s) into puts(), and glibc 2.22's puts() writes through libc's own stdout. This
+# executable is not position-independent and has a copy of the stdout variable
+# (R_MIPS_COPY), the copy logging.c points at its stamping stream -- so those
+# lines missed the stamp and the queue, and sat unflushed in the raw
+# descriptor's buffer. The simulator links as a PIE against a newer glibc and
+# never showed it.
 
 # How hard each target object is optimised, on top of TARGET_CFLAGS (the last
 # -O on the command line is the one that counts).
