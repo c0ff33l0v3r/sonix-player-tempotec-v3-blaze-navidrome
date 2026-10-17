@@ -9,6 +9,25 @@
 /* RGB565, which is what the panel scans out. */
 #define LV_COLOR_FORMAT_DEFAULT LV_COLOR_FORMAT_RGB565
 
+/* The colour formats the software renderer can draw from and into. Each one
+ * is a set of blend and transform routines for every other one, compiled -O3
+ * (see the Makefile) and kept by --gc-sections because a switch on the format
+ * reaches them all: 120 kB of code pinned in RAM (lock_code_pages in
+ * main.c) for formats nothing here produces. What is used:
+ *   RGB565    the panel, the switcher's snapshot, the decoded covers
+ *   RGB565A8  the waveform canvas, one icon
+ *   ARGB8888  nearly every icon, and LVGL's layers for opacity and transforms
+ *   A8        glyphs, masks, shadows, a few icons
+ *   I1        the Tidal login QR code (lv_qrcode draws into an I1 buffer)
+ * An image in a format left out here is not drawn, and LVGL logs a warning
+ * naming the format: the grep that tells. */
+#define LV_DRAW_SW_SUPPORT_RGB565_SWAPPED 0
+#define LV_DRAW_SW_SUPPORT_RGB888 0
+#define LV_DRAW_SW_SUPPORT_XRGB8888 0
+#define LV_DRAW_SW_SUPPORT_ARGB8888_PREMULTIPLIED 0
+#define LV_DRAW_SW_SUPPORT_L8 0
+#define LV_DRAW_SW_SUPPORT_AL88 0
+
 /* malloc, string and sprintf from the C library rather than LVGL's own. */
 #define LV_USE_STDLIB_MALLOC  LV_STDLIB_CLIB
 
