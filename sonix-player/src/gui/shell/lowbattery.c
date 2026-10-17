@@ -93,8 +93,15 @@ static void countdown_start(int mv) {
 }
 
 static void check_cb(lv_timer_t *timer) {
-	(void)timer;
 	if (countdown_timer) {
+		return;
+	}
+	// On the cable there is nothing to warn about or count down to, and the
+	// gauge read every five seconds was the only reason this timer woke the
+	// player. It sleeps until power.c sees VBUS change (lowbattery_cable_changed).
+	if (usb_vbus_present()) {
+		low_readings = 0;
+		lv_timer_pause(timer);
 		return;
 	}
 	int percent = level();
@@ -140,4 +147,11 @@ void lowbattery_init(gui_config_t *cfg) {
 	// Not registered with power.c's standby list: it keeps its period with the
 	// screen dark, which is when a battery left playing runs out.
 	check_timer = lv_timer_create(check_cb, CHECK_MS, NULL);
+}
+
+void lowbattery_cable_changed(void) {
+	if (check_timer) {
+		lv_timer_resume(check_timer);
+		lv_timer_ready(check_timer);
+	}
 }

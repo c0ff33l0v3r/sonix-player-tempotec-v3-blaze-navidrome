@@ -12,9 +12,13 @@
 // shutdown through power_shutdown() leaves it off until the power key or a
 // cable.
 //
-// The level is read every five seconds, also with the screen dark, and the
-// countdown turns the screen on.
+// The level is read every five seconds on battery, also with the screen dark,
+// and the countdown turns the screen on. On the cable the check sleeps.
 
 void lowbattery_init(gui_config_t *cfg);
+
+// VBUS came or went: a sleeping check starts again, and looks at once. Called
+// from power.c's tick, which already watches the cable.
+void lowbattery_cable_changed(void);
 
 #endif /* LOWBATTERY_H */

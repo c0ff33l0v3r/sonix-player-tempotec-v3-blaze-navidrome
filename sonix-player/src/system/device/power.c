@@ -50,6 +50,7 @@
 #include "src/system/device/axpcharge.h"
 #include "src/system/device/chargescreen.h"
 #include "src/gui/shell/gui.h"
+#include "src/gui/shell/lowbattery.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -1894,6 +1895,9 @@ static void power_timer_cb(lv_timer_t *timer) {
 	}
 	g_usb_present_last = usb_now;
 	g_usb_present_known = true;
+	if (usb_changed) {
+		lowbattery_cable_changed(); // asleep while the cable was in
+	}
 
 	// The same for the 3.5 and 4.4 mm jacks: headphones in or out.
 	static int jack_last = -1;
