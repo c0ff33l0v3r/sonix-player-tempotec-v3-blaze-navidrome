@@ -8,6 +8,7 @@
 
 #include <new>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <string>
 
@@ -21,6 +22,20 @@
 // print to, and a printf per core event on the emulation thread would cost more
 // than the emulation.
 bool g_mcp_stdio_mode = true;
+
+#ifndef HOST_BUILD
+// Replaces libstdc++'s default terminate handler, which prints the demangled
+// name of the exception before it aborts. The demangler it pulls in is 52 kB of
+// code, linked statically (see GB_LDFLAGS) and so pinned in RAM with the rest
+// of the player (lock_code_pages in main.c), for a message nobody would read:
+// nothing here throws (-fno-exceptions), and the player's stderr goes nowhere.
+// Defining the symbol here keeps the archive member that holds the original
+// out of the link. abort() still ends in the SIGABRT guard in main.c, which
+// writes the crash log as before.
+namespace __gnu_cxx {
+void __verbose_terminate_handler() { abort(); }
+}
+#endif
 
 struct gb_core {
 	GearboyCore *core;
