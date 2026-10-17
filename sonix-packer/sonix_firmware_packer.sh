@@ -120,6 +120,28 @@ patch_blaze_ldac() {
 	say "    $LDAC_LIB: gate bypassed"
 }
 
+# The stock mdev.conf hands every uevent that carries a MODALIAS to
+# `modprobe`, through a shell. The Blaze rootfs has no modprobe and no
+# /lib/modules -- its drivers are insmod-ed by name from module_driver -- so
+# each of those events, dozens at boot as the drivers come up and more on every
+# USB or Bluetooth change, costs a fork and an exec that end in "not found".
+# The rule's 660 root:root is mdev's default, so the nodes come out the same.
+patch_blaze_mdev() {
+	local conf="$SQUASH_DIR/etc/mdev.conf"
+	step "[TempoTec V3 Blaze] dropping the modprobe rule from mdev.conf"
+	[ -f "$conf" ] || die "etc/mdev.conf is not in the stock rootfs."
+	local dir
+	for dir in sbin usr/sbin bin usr/bin; do
+		if [ -e "$SQUASH_DIR/$dir/modprobe" ]; then
+			warn "this rootfs has $dir/modprobe: mdev.conf left as it is."
+			return
+		fi
+	done
+	sed_file 's/^(\$MODALIAS=)/#\1/' "$conf"
+	grep -q '^\$MODALIAS=' "$conf" && die "the modprobe rule is still active in mdev.conf."
+	say "    \$MODALIAS rule commented out"
+}
+
 # The rootfs partition of the V3 Blaze is 45 MiB (mtd2).
 BLAZE_ROOTFS_MAX=47185920
 
@@ -497,6 +519,7 @@ build_one() {
 	say "    $MODEL_DIR/: $MODEL_N files"
 
 	[ "$MODEL_DIR" != "BLAZE" ] || patch_blaze_ldac
+	[ "$MODEL_DIR" != "BLAZE" ] || patch_blaze_mdev
 
 	# The streaming keys go in sealed, as streaming-keys.bin. One left in the
 	# clear in the assets is not shipped: an image is unpacked by anyone who
