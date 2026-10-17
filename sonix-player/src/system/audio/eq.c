@@ -2093,6 +2093,18 @@ static bool process_prepare(int frame_count, int channels, int sample_rate) {
 	if (built_version != settings_version || built_rate != sample_rate) {
 		filters_rebuild(sample_rate);
 	}
+	// Switched on but with nothing to do: every band at 0 dB (a flat preset,
+	// or the PEQ on with its filters zeroed) and both pre-gains settled at
+	// unity. The pass would still turn every sample into a float and back --
+	// two conversions, a clamp and a rounding per sample for an identical
+	// result, or worse than identical on the 32-bit path, where a float's 24
+	// bits of mantissa round off the bottom of a sample that uses more. Only
+	// once the gains have finished gliding, so a slider brought back to flat
+	// still lands smoothly.
+	if (!slots_any_active(0, CHAIN_SLOTS) && pregain == 1.0f && pregain_target == 1.0f && mseb_pregain == 1.0f &&
+		mseb_pregain_target == 1.0f) {
+		return false;
+	}
 	return true;
 }
 
