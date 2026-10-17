@@ -1,5 +1,6 @@
 #include "clocklabel.h"
 
+#include <string.h>
 #include <time.h>
 
 #include "src/system/device/clock.h"
@@ -48,7 +49,25 @@ void clocklabel_refresh(lv_obj_t *label) {
 		localtime_r(&now, &local);
 		clock_format_hm_parts(time_text, sizeof(time_text), suffix_text, sizeof(suffix_text), local.tm_hour, local.tm_min);
 	}
-	lv_label_set_text(label, time_text);
+
+	// The same minute as last time, laid out as before: nothing to draw. The
+	// callers poll -- the bar every ten seconds, the screensaver's big clock
+	// every second -- and the time changes once a minute, while every write
+	// below repaints the label even when it writes what is already there (the
+	// text is copied and the label invalidated, the suffix's position and the
+	// padding are style writes that refresh it). So the screensaver redrew its
+	// clock, over the artwork, sixty times a minute for one change. The
+	// suffix's place is measured again rather than trusted: a change of text
+	// size moves it without changing a letter.
+	const char *shown = lv_label_get_text(label);
+	bool same_time = shown && strcmp(shown, time_text) == 0;
+	if (same_time && (!suffix || (!suffix_text[0] && lv_obj_is_hidden(suffix)))) {
+		return;
+	}
+
+	if (!same_time) {
+		lv_label_set_text(label, time_text);
+	}
 	if (!suffix) {
 		return;
 	}
@@ -58,10 +77,15 @@ void clocklabel_refresh(lv_obj_t *label) {
 		lv_obj_set_style_pad_right(label, 0, 0);
 		return;
 	}
-	lv_label_set_text(suffix, suffix_text);
 	lv_point_t time_size, suffix_size;
 	lv_text_get_size(&time_size, time_text, lv_obj_get_style_text_font(label, 0), 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
 	lv_text_get_size(&suffix_size, suffix_text, lv_obj_get_style_text_font(suffix, 0), 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+	if (same_time && !lv_obj_is_hidden(suffix) && strcmp(lv_label_get_text(suffix), suffix_text) == 0 &&
+		lv_obj_get_style_x(suffix, 0) == time_size.x + SUFFIX_GAP_PX &&
+		lv_obj_get_style_pad_right(label, 0) == SUFFIX_GAP_PX + suffix_size.x) {
+		return;
+	}
+	lv_label_set_text(suffix, suffix_text);
 	lv_obj_set_x(suffix, time_size.x + SUFFIX_GAP_PX);
 	lv_obj_set_style_pad_right(label, SUFFIX_GAP_PX + suffix_size.x, 0);
 	lv_obj_set_hidden(suffix, false);
