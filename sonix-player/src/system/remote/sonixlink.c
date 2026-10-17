@@ -82,6 +82,8 @@
 // ---------------------------------------------------------------------------
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+// Rung when the service is switched on: the worker sleeps on it while off.
+static pthread_cond_t enabled_cond = PTHREAD_COND_INITIALIZER;
 static pthread_t worker;
 static bool worker_running;
 static bool enabled;
@@ -365,6 +367,7 @@ bool sonixlink_get_enabled(void) {
 void sonixlink_set_enabled(bool on) {
 	pthread_mutex_lock(&lock);
 	enabled = on;
+	pthread_cond_signal(&enabled_cond);
 	pthread_mutex_unlock(&lock);
 	config_set_int("wireless", "sonixlink", on ? 1 : 0);
 	config_save();
@@ -3002,7 +3005,14 @@ static void *sonixlink_worker(void *unused) {
 				pthread_mutex_unlock(&lock);
 				printf("sonixlink: off\n");
 			}
-			usleep(300 * 1000);
+			// Off, which is how most players run it: asleep until switched on,
+			// instead of looking three times a second all day and night. No
+			// link can arrive meanwhile: sonixlink_adopt_link turns them away.
+			pthread_mutex_lock(&lock);
+			while (!enabled) {
+				pthread_cond_wait(&enabled_cond, &lock);
+			}
+			pthread_mutex_unlock(&lock);
 			continue;
 		}
 
