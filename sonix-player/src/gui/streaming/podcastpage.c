@@ -4012,7 +4012,11 @@ void podcastpage_init(gui_config_t *cfg) {
 	device_state_add_prepare_cb(podcastpage_prepare_track);
 	fetch_start_thread();
 
-	power_slow_in_standby(lv_timer_create(queue_watch_cb, 1000, NULL), 5000); // see qobuzpage.c
+	// Not without the key pair, for the reason given in qobuzpage.c: the
+	// section disables itself and no episode can be fetched or queued.
+	if (podcast_configured()) {
+		power_slow_in_standby(lv_timer_create(queue_watch_cb, 1000, NULL), 5000); // see qobuzpage.c
+	}
 	pagetimer_bind(lv_timer_create(wifi_watch_cb, 1000, NULL), podcast_screen, NULL);
 	art_drop_timer = lv_timer_create(art_drop_cb, ART_DROP_DELAY_MS, NULL);
 	lv_timer_pause(art_drop_timer);

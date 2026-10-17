@@ -2888,7 +2888,10 @@ void tidalpage_init(gui_config_t *cfg) {
 
 	// The queue watchdog: tells the prefetch thread how far the ready tracks
 	// reach. One second is enough -- these are tracks, not frames.
-	power_slow_in_standby(lv_timer_create(queue_watch_cb, 1000, NULL), 5000); // see qobuzpage.c
+	// Not without the keys, for the reason given in qobuzpage.c.
+	if (tidal_configured()) {
+		power_slow_in_standby(lv_timer_create(queue_watch_cb, 1000, NULL), 5000); // see qobuzpage.c
+	}
 	// Created paused: the first cover request resumes it.
 	art_timer = lv_timer_create(art_poll_cb, 120, NULL);
 	lv_timer_pause(art_timer);

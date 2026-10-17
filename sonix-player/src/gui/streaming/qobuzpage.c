@@ -2391,7 +2391,14 @@ void qobuzpage_init(gui_config_t *cfg) {
 	// Slowed with the panel dark: what it recomputes (the Wi-Fi hold, which
 	// track the prefetch wants) is measured in tracks, and the actions that
 	// raise those are immediate.
-	power_slow_in_standby(lv_timer_create(queue_watch_cb, 1000, NULL), 5000);
+	//
+	// Not at all without the keys (the public build has none): they are read
+	// once, before the interface exists, and without them nothing can put a
+	// Qobuz file in the queue or raise the Wi-Fi hold, so the watch would wake
+	// the loop every few seconds all night to find nothing.
+	if (qobuz_configured()) {
+		power_slow_in_standby(lv_timer_create(queue_watch_cb, 1000, NULL), 5000);
+	}
 	// Created paused: the first cover request starts it.
 	art_timer = lv_timer_create(art_poll_cb, 120, NULL);
 	lv_timer_pause(art_timer);
