@@ -180,8 +180,9 @@ static void log_power_supplies(void) {
 }
 
 // Scans the power supplies. `percent` is left at -1 when no battery reported a
-// capacity; `charging` is true when the gauge says so or any charger is online.
-static void scan_power_supplies(int *percent, bool *charging) {
+// capacity, or when `want_level` is false and the capacity is not read at all;
+// `charging` is true when the gauge says so or any charger is online.
+static void scan_power_supplies(int *percent, bool *charging, bool want_level) {
 	*percent = -1;
 	*charging = false;
 
@@ -202,7 +203,7 @@ static void scan_power_supplies(int *percent, bool *charging) {
 		}
 
 		if (strcmp(type, "Battery") == 0) {
-			int value = read_capacity(de->d_name);
+			int value = want_level ? read_capacity(de->d_name) : -1;
 
 			// Some kernels expose a second, useless battery node that answers
 			// every read with zero. Take the first one that reports a real
@@ -238,7 +239,7 @@ static void scan_power_supplies(int *percent, bool *charging) {
 	closedir(dir);
 }
 
-static void battery_read_into(char *battery_cache, size_t battery_cache_size);
+static void battery_read_into(char *battery_cache, size_t battery_cache_size, bool want_level);
 
 static void battery_publish(const char *level) {
 	int next = !battery_current;
@@ -247,13 +248,13 @@ static void battery_publish(const char *level) {
 	battery_current = next;
 }
 
-static void battery_read_now(void) {
+static void battery_read_now(bool want_level) {
 	char battery_cache[16];
-	battery_read_into(battery_cache, sizeof(battery_cache));
+	battery_read_into(battery_cache, sizeof(battery_cache), want_level);
 	battery_publish(battery_cache);
 }
 
-static void battery_read_into(char *battery_cache, size_t battery_cache_size) {
+static void battery_read_into(char *battery_cache, size_t battery_cache_size, bool want_level) {
 	// The host build has no power supplies at all; the two override files let
 	// the status bar be worked on without a device (see main.c).
 	if (g_battery_cfg && g_battery_cfg->battery_capacity_file) {
@@ -291,9 +292,17 @@ static void battery_read_into(char *battery_cache, size_t battery_cache_size) {
 		log_power_supplies();
 	}
 
+	// The level last read, given again when this pass skips the capacity.
+	static int last_percent = -1;
+	want_level = want_level || last_percent < 0;
 	int percent = -1;
 	bool charging = false;
-	scan_power_supplies(&percent, &charging);
+	scan_power_supplies(&percent, &charging, want_level);
+	if (want_level) {
+		last_percent = percent;
+	} else {
+		percent = last_percent;
+	}
 
 	static bool source_logged;
 	if (!source_logged && percent >= 0) {
@@ -314,16 +323,21 @@ static void battery_read_into(char *battery_cache, size_t battery_cache_size) {
 // transfer to it: the walk over the supplies took up to 40 ms, four times a
 // second, on the interface thread (named in a slow-pass report). The thread
 // keeps that beat; the interface only ever reads what it last found.
+//
+// The level, though, only every twentieth pass with the screen on: it moves a
+// percent in minutes, while the charger state has to show at once (the icon,
+// the LED). Each capacity read is one more I2C transfer to the PMIC.
 #define BATTERY_POLL_MS 250
 #define BATTERY_POLL_OFF_MS 5000
+#define BATTERY_LEVEL_EVERY 20 // fast passes per level read: 5 s
 
 static volatile bool battery_poller_on;
 
 static void *battery_poller(void *arg) {
 	(void)arg;
 	thread_be_low_priority("battery");
-	for (;;) {
-		battery_read_now();
+	for (unsigned pass = 0;; pass++) {
+		battery_read_now(!power_screen_is_on() || pass % BATTERY_LEVEL_EVERY == 0);
 		// With the screen off nobody is looking at the icon, and the reads
 		// wake the PMIC's bus: a slow beat until it comes back on.
 		usleep((power_screen_is_on() ? BATTERY_POLL_MS : BATTERY_POLL_OFF_MS) * 1000);
@@ -335,7 +349,7 @@ void sync_battery_from_sysfs(void) {
 	if (battery_poller_on) {
 		return; // the poller keeps it current
 	}
-	battery_read_now(); // a first reading at once, for whoever asked
+	battery_read_now(true); // a first reading at once, for whoever asked
 	pthread_t thread;
 	if (pthread_create(&thread, NULL, battery_poller, NULL) == 0) {
 		pthread_detach(thread);
