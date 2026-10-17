@@ -2480,6 +2480,29 @@ static void playback_wake(void) {
 	}
 }
 
+// The wait between two looks at the commands while paused with the device
+// handed back. Not a fixed nap: every command that can end a pause (resume,
+// play, seek, stop, a request for the device) rings playback_wake() and ends it
+// at once. The second it lasts otherwise is only idle_amp_off()'s clock, which
+// parks the amp on the second rather than on the fifth of one. It was a 200 ms
+// usleep: five wake-ups a second, real-time thread and all, for as long as the
+// player sat paused.
+#define PAUSED_RELEASED_WAIT_MS 1000
+
+static void paused_wait_released(void) {
+	if (playback_wake_fd < 0) {
+		usleep(200 * 1000); // no doorbell: look as often as before
+		return;
+	}
+	struct pollfd p = {.fd = playback_wake_fd, .events = POLLIN};
+	if (poll(&p, 1, PAUSED_RELEASED_WAIT_MS) > 0) {
+		uint64_t count;
+		if (read(playback_wake_fd, &count, sizeof(count)) < 0) {
+			// Already drained: nothing was pending.
+		}
+	}
+}
+
 // snd_pcm_wait() that also returns, with 0, on playback_wake(). 1: room,
 // 0: timeout or wake-up, < 0: an error, for the writei to report.
 static int pcm_wait_or_wake(snd_pcm_t *pcm, int timeout_ms) {
@@ -2775,6 +2798,7 @@ static bool retry_track_once(const char *filepath, const char *reason) {
 	audio_command = AUDIO_CMD_PLAY;
 	playback_status = AUDIO_STATUS_PLAYING;
 	pthread_cond_signal(&audio_cond);
+	playback_wake(); // and out of a pause, if it sits in one
 	pthread_mutex_unlock(&audio_mutex);
 	fprintf(stderr, "audio[%ld]: retrying '%s' (%s)\n", log_ms(), filepath, reason);
 	return true;
@@ -3136,10 +3160,15 @@ static void play_wav_file(const char *filepath) {
 			}
 
 			// With the device handed back there is nothing to be quick about:
-			// a fifth of a second between checks instead of a twentieth means
-			// four fewer wake-ups a second for however many hours the player
-			// sits paused in a pocket. The unpause still feels instant.
-			usleep(pcm_handle ? 50000 : 200000);
+			// the wait ends on a command's doorbell or after a second
+			// (paused_wait_released), instead of twenty looks a second, for
+			// however many hours the player sits paused in a pocket. The
+			// unpause still feels instant.
+			if (pcm_handle) {
+				usleep(50000);
+			} else {
+				paused_wait_released();
+			}
 			continue;
 		} else {
 			// RESUME is a one-shot command: consumed here, back to
@@ -3906,10 +3935,15 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			}
 
 			// With the device handed back there is nothing to be quick about:
-			// a fifth of a second between checks instead of a twentieth means
-			// four fewer wake-ups a second for however many hours the player
-			// sits paused in a pocket. The unpause still feels instant.
-			usleep(pcm_handle ? 50000 : 200000);
+			// the wait ends on a command's doorbell or after a second
+			// (paused_wait_released), instead of twenty looks a second, for
+			// however many hours the player sits paused in a pocket. The
+			// unpause still feels instant.
+			if (pcm_handle) {
+				usleep(50000);
+			} else {
+				paused_wait_released();
+			}
 			continue;
 		} else {
 			// RESUME is one-shot: consumed here, back to PLAY -- see the twin
@@ -4615,6 +4649,7 @@ int audio_play(const char *filepath) {
 	stream_codec[0] = '\0';
 	track_completed = false; // fresh playback; any prior completion is consumed
 	pthread_cond_signal(&audio_cond);
+	playback_wake(); // and out of a pause, if it sits in one
 	pthread_mutex_unlock(&audio_mutex);
 	return 0;
 }
@@ -4649,6 +4684,7 @@ int audio_play_at(const char *filepath, double start_secs) {
 	pthread_mutex_unlock(&audio_mutex);
 
 	pthread_cond_signal(&audio_cond);
+	playback_wake(); // and out of a pause, if it sits in one
 	return 0;
 }
 
@@ -4674,6 +4710,7 @@ int audio_play_paused(const char *filepath, double start_secs) {
 	pthread_mutex_unlock(&audio_mutex);
 
 	pthread_cond_signal(&audio_cond);
+	playback_wake(); // and out of a pause, if it sits in one
 	return 0;
 }
 
@@ -4847,6 +4884,7 @@ void audio_resume(void) {
 		playback_status = AUDIO_STATUS_PLAYING;
 	}
 	pthread_mutex_unlock(&audio_mutex);
+	playback_wake(); // the paused loop waits on it (paused_wait_released)
 }
 
 void audio_stop(void) {
@@ -5222,6 +5260,7 @@ bool audio_external_begin_yielding(int sample_rate, int channels, int bits, int 
 	pthread_mutex_unlock(&audio_mutex);
 	if (paused_holding) {
 		paused_release_wanted = true;
+		playback_wake();
 		for (int waited = 0; pcm_device_open && waited < EXTERNAL_YIELD_WAIT_MS; waited += 10) {
 			usleep(10 * 1000);
 		}
