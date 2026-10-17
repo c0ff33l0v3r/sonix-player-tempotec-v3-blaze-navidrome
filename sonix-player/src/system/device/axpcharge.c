@@ -258,6 +258,23 @@ static void log_first_contact(void) {
 	if (axp_read(0x20, &on_src) && axp_read(0x21, &off_src)) {
 		printf("axpcharge: power-on source REG20h=0x%02x, last power-off REG21h=0x%02x\n", on_src, off_src);
 	}
+	// And what decides a power-off of that kind, for REG21h=0x20 (a DCDC under
+	// voltage) seen after hangs: REG22h-25h are the protection enables and
+	// thresholds (REG23h, which DCDCs may cut the power, is left at its OTP
+	// default by the stock driver), REG48h-4Ah the interrupt flags latched since
+	// the PMIC came up. Read only.
+	uint8_t prot[4], irq[3];
+	bool ok = true;
+	for (int i = 0; i < 4; i++) {
+		ok = axp_read((uint8_t)(0x22 + i), &prot[i]) && ok;
+	}
+	for (int i = 0; i < 3; i++) {
+		ok = axp_read((uint8_t)(0x48 + i), &irq[i]) && ok;
+	}
+	if (ok) {
+		printf("axpcharge: protection REG22h-25h=%02x %02x %02x %02x, latched IRQ REG48h-4Ah=%02x %02x %02x\n",
+			   prot[0], prot[1], prot[2], prot[3], irq[0], irq[1], irq[2]);
+	}
 }
 
 void axpcharge_set(bool limit_voltage, bool limit_current) {
