@@ -1078,6 +1078,15 @@ static void *heartbeat_worker(void *unused) {
 	due.tv_sec += POSITION_EVERY_MS / 1000;
 	while (!server_stopping) {
 		bool report = false;
+		// The deadline is on the wall clock (the cond's): a clock set back,
+		// by ntpdate on joining Wi-Fi, must not leave the reports asleep for
+		// however far it went back. Never more than one period away.
+		struct timespec now;
+		clock_gettime(CLOCK_REALTIME, &now);
+		if (due.tv_sec > now.tv_sec + POSITION_EVERY_MS / 1000 + 1) {
+			due = now;
+			due.tv_sec += POSITION_EVERY_MS / 1000;
+		}
 		pthread_mutex_lock(&outbox_lock);
 		while (!server_stopping && outbox_count == 0) {
 			if (pthread_cond_timedwait(&outbox_filled, &outbox_lock, &due) == ETIMEDOUT) {
