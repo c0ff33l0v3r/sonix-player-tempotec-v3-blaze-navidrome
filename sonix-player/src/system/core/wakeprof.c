@@ -119,7 +119,9 @@ static void report(void) {
 			break;
 		}
 	}
-	printf("%s\n", line);
+	// Not printf("%s\n"): gcc makes that puts(), and the device's glibc 2.22
+	// puts() writes to libc's own stdout, not the copy logging.c replaced.
+	fprintf(stdout, "%s\n", line);
 	causes_n = 0;
 	passes = by_timeout = by_doorbell = 0;
 }
