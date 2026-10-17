@@ -336,6 +336,9 @@ static void control_send(const char *message) {
 // heartbeat thread delivers it.
 #define OUTBOX 8
 static pthread_mutex_t outbox_lock = PTHREAD_MUTEX_INITIALIZER;
+// Rung by control_post() and by service_stop(): the heartbeat sleeps on it
+// rather than waking ten times a second to look at an empty outbox.
+static pthread_cond_t outbox_filled = PTHREAD_COND_INITIALIZER;
 static char outbox[OUTBOX][64];
 static int outbox_head, outbox_count;
 
@@ -347,6 +350,7 @@ static void control_post(const char *message) {
 	}
 	snprintf(outbox[(outbox_head + outbox_count) % OUTBOX], sizeof(outbox[0]), "%s", message);
 	outbox_count++;
+	pthread_cond_signal(&outbox_filled);
 	pthread_mutex_unlock(&outbox_lock);
 }
 
@@ -995,9 +999,13 @@ static void *server_worker(void *unused) {
 	(void)unused;
 	thread_be_background("dlna server");
 
+	// The timeout is only how soon a stop is noticed: dmrd's connection wakes
+	// the poll the moment it arrives. A second, not 300 ms, because this runs
+	// all the time DLNA is on, and service_stop() waits for it on its own
+	// thread after a sysserver round trip that takes longer than that anyway.
 	while (!server_stopping) {
 		struct pollfd p = {.fd = listen_fd, .events = POLLIN};
-		int ready = poll(&p, 1, 300);
+		int ready = poll(&p, 1, 1000);
 		if (ready <= 0) {
 			continue;
 		}
@@ -1042,26 +1050,41 @@ static bool heartbeat_live;
 
 // The only place that writes to dmrd. It does two things: drain the outbox the
 // UI filled, and once per second report the position within the track.
-#define HEARTBEAT_TICK_MS 100
-
+//
+// It sleeps until one of the two is due instead of ticking: a message wakes it
+// through outbox_filled the moment it is posted, and the position report is a
+// deadline. The old 100 ms tick was ten wake-ups a second, for as long as DLNA
+// was switched on, screen dark or not, to find an empty outbox nine times out
+// of ten -- and a message still waited up to a tick for its turn.
 static void *heartbeat_worker(void *unused) {
 	(void)unused;
 	thread_be_background("dlna position");
 
 	int last_sent = -1;
-	int ticks = 0;
+	struct timespec due;
+	clock_gettime(CLOCK_REALTIME, &due);
+	due.tv_sec += POSITION_EVERY_MS / 1000;
 	while (!server_stopping) {
-		usleep(HEARTBEAT_TICK_MS * 1000);
+		bool report = false;
+		pthread_mutex_lock(&outbox_lock);
+		while (!server_stopping && outbox_count == 0) {
+			if (pthread_cond_timedwait(&outbox_filled, &outbox_lock, &due) == ETIMEDOUT) {
+				report = true;
+				break;
+			}
+		}
+		pthread_mutex_unlock(&outbox_lock);
 		if (server_stopping) {
 			break;
 		}
 
 		control_flush();
 
-		if (++ticks < POSITION_EVERY_MS / HEARTBEAT_TICK_MS) {
-			continue;
+		if (!report) {
+			continue; // only a message: the position deadline stands
 		}
-		ticks = 0;
+		clock_gettime(CLOCK_REALTIME, &due);
+		due.tv_sec += POSITION_EVERY_MS / 1000;
 
 		if (!dlna_owns_playback()) {
 			last_sent = -1;
@@ -1165,6 +1188,10 @@ static void service_stop(void) {
 
 	fetch_abandon();
 	server_stopping = true;
+	// The heartbeat may be asleep until its next position report.
+	pthread_mutex_lock(&outbox_lock);
+	pthread_cond_broadcast(&outbox_filled);
+	pthread_mutex_unlock(&outbox_lock);
 
 	if (server_live) {
 		pthread_join(server_thread, NULL);
