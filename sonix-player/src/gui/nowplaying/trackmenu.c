@@ -1455,7 +1455,7 @@ static void details_add_gain(const char *name, float gain_db, float peak) {
 // only exists for the track being played.
 static void details_fill(const char *file, const song_metadata_t *tags, int bits, double sample_rate,
 						 int channels, double duration_secs, const char *codec, int kbps, bool lossy,
-						 bool playing) {
+						 int dsd_multiple, bool playing) {
 	char buffer[64];
 
 	const char *slash = strrchr(file, '/');
@@ -1481,7 +1481,12 @@ static void details_fill(const char *file, const song_metadata_t *tags, int bits
 	// A lossy file is described by its bitrate, not by bits and kHz: those two
 	// numbers belong to the PCM leaving the decoder and are identical for a
 	// 96 kbps AAC and a 320 kbps one. Lossless files keep the usual pair.
-	if (lossy) {
+	// A DSD file is its multiple and bit rate, not the carrier it travels in:
+	// "24 bit 176.4 kHz" is true of DSD64 over DoP and of DSD512 as PCM alike.
+	if (dsd_multiple > 0) {
+		snprintf(buffer, sizeof(buffer), "DSD%d (%.4f MHz)", dsd_multiple, dsd_multiple * 44100 / 1e6);
+		details_add_row("trackmenu_format", buffer);
+	} else if (lossy) {
 		if (kbps > 0 && codec && codec[0]) {
 			snprintf(buffer, sizeof(buffer), "%d kbps %s", kbps, codec);
 		} else if (kbps > 0) {
@@ -1565,6 +1570,7 @@ static void details_rebuild(void) {
 		char codec[16] = "";
 		int kbps = 0;
 		bool lossy = false;
+		int dsd_multiple = 0;
 		decoder_t *dec = format != DECODE_FORMAT_UNKNOWN ? decoder_open_info(details_path, format) : NULL;
 		if (dec) {
 			bits = decoder_source_bits(dec);
@@ -1573,6 +1579,7 @@ static void details_rebuild(void) {
 			snprintf(codec, sizeof(codec), "%s", decoder_codec_name(dec));
 			kbps = decoder_bitrate_kbps(dec);
 			lossy = decoder_is_lossy(dec);
+			dsd_multiple = decoder_dsd_multiple(dec);
 			uint64_t frames = decoder_total_pcm_frames(dec);
 			if (sample_rate > 0 && frames > 0) {
 				duration_secs = (double)frames / sample_rate;
@@ -1591,7 +1598,7 @@ static void details_rebuild(void) {
 		}
 
 		details_fill(details_path, &tags, bits, sample_rate, channels, duration_secs, codec, kbps, lossy,
-					 false);
+					 dsd_multiple, false);
 		return;
 	}
 
@@ -1621,7 +1628,7 @@ static void details_rebuild(void) {
 	}
 
 	details_fill(state.current_file, &state.metadata, audio_get_stream_bits(), state.stream_sample_rate,
-				 state.stream_channels, state.progress_total_secs, codec, kbps, lossy, true);
+				 state.stream_channels, state.progress_total_secs, codec, kbps, lossy, audio_get_dsd_multiple(), true);
 }
 
 static void details_loaded_cb(lv_event_t *e) {
