@@ -27,7 +27,7 @@ struct dsd_file {
 
 	int channels;
 	uint32_t rate;	 // the DSD rate
-	int multiple;	 // 64 / 128 / 256
+	int multiple;	 // 64 / 128 / 256 / 512
 	bool lsb_first;	 // .dsf writes the earliest bit in bit 0
 	bool planar;	 // .dsf: blocks per channel; .dff: byte-interleaved
 	uint32_t block;	 // .dsf block size per channel
@@ -332,17 +332,17 @@ static bool produce(dsd_file_t *d) {
 // is read where it lies, byte for byte.
 //
 // The filter is a fourth-order CIC: four moving averages of one output period
-// (16, 32 or 64 bits) in a row. Its zeros sit exactly on the multiples of
+// (16, 32, 64 or 128 bits) in a row. Its zeros sit exactly on the multiples of
 // 176.4 kHz, which are the only bands that fold back under 20 kHz here, so it
-// rejects them by 77 dB or more while spanning 8, 16 or 32 bytes, half of
+// rejects them by 77 dB or more while spanning 8, 16, 32 or 64 bytes, half of
 // what a windowed sinc needs for the same rejection. What it lets through
 // between those bands, and its droop of 1.6 dB at 20 kHz, are the half-band
 // decimator's to deal with (decimate.h), which takes the result down to the
 // headphones' rate anyway. The coefficients are integers summing to a power
 // of two, so the tables are exact.
 //
-// Per second of stereo that is 2.8, 5.6 or 11.3 million lookups, into a table
-// of 8, 16 or 32 KB.
+// Per second of stereo that is 2.8, 5.6, 11.3 or 22.6 million lookups, into a
+// table of 8, 16, 32 or 64 KB.
 //
 // Gain +6 dB: a full-scale DSD signal is 50 % modulation, half of what the
 // stream can carry, so without it DSD plays 6 dB quieter than PCM. What goes
@@ -352,14 +352,14 @@ static bool produce(dsd_file_t *d) {
 #define PCM_RATE 176400
 #define CIC_ORDER 4
 
-// DSD64, 128, 256, each in the two bit orders.
-static const int32_t (*tables[3][2])[256];
+// DSD64, 128, 256, 512, each in the two bit orders.
+static const int32_t (*tables[4][2])[256];
 static pthread_mutex_t table_lock = PTHREAD_MUTEX_INITIALIZER;
 
 // `period` is the bits per output sample; `taps` the span in bytes, enough for
 // CIC_ORDER * (period - 1) + 1 coefficients.
 static const int32_t (*table_for(int multiple, int period, int taps, bool lsb_first))[256] {
-	int which = multiple == 64 ? 0 : multiple == 128 ? 1 : 2;
+	int which = multiple == 64 ? 0 : multiple == 128 ? 1 : multiple == 256 ? 2 : 3;
 	pthread_mutex_lock(&table_lock);
 	if (!tables[which][lsb_first]) {
 		int n = taps * 8;
@@ -472,9 +472,9 @@ bool dsd_to_pcm(dsd_file_t *d) {
 	if (d->pcm_mode) {
 		return true;
 	}
-	int step = d->multiple / 32;					   // 2, 4 or 8 bytes: 176.4 kHz out
-	int period = step * 8;							   // 16, 32 or 64 bits
-	int taps = (CIC_ORDER * (period - 1) + 1 + 7) / 8; // 8, 16 or 32 bytes
+	int step = d->multiple / 32;					   // 2, 4, 8 or 16 bytes: 176.4 kHz out
+	int period = step * 8;							   // 16, 32, 64 or 128 bits
+	int taps = (CIC_ORDER * (period - 1) + 1 + 7) / 8; // 8, 16, 32 or 64 bytes
 	const int32_t (*table)[256] = table_for(d->multiple, period, taps, d->lsb_first);
 	if (!table) {
 		return false;
@@ -496,7 +496,7 @@ bool dsd_to_pcm(dsd_file_t *d) {
 	}
 	d->step = step;
 	d->taps = taps;
-	d->sum_bits = CIC_ORDER * (period == 16 ? 4 : period == 32 ? 5 : 6);
+	d->sum_bits = CIC_ORDER * (period == 16 ? 4 : period == 32 ? 5 : period == 64 ? 6 : 7); // period^order
 	d->table = table;
 	d->pcm_mode = true;
 	d->out_rate = PCM_RATE;
@@ -536,11 +536,12 @@ dsd_file_t *dsd_open(const char *path) {
 		return NULL;
 	}
 
-	// 64, 128 or 256, and nothing else: a rate that is not 44.1 kHz times one
-	// of those is not a file this decoder can time.
+	// 64, 128, 256 or 512, and nothing else: a rate that is not 44.1 kHz
+	// times one of those is not a file this decoder can time. DSD512 has no
+	// DoP here (1411.2 kHz is past every output) and is played as PCM.
 	d->multiple = (int)(d->rate / (DSD64_RATE / 64));
-	if (d->multiple != 64 && d->multiple != 128 && d->multiple != 256) {
-		fprintf(stderr, "dsd: %u Hz is not DSD64/128/256\n", d->rate);
+	if (d->multiple != 64 && d->multiple != 128 && d->multiple != 256 && d->multiple != 512) {
+		fprintf(stderr, "dsd: %u Hz is not DSD64/128/256/512\n", d->rate);
 		dsd_close(d);
 		return NULL;
 	}

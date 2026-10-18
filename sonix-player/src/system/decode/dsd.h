@@ -4,11 +4,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-// DSD: .dsf and .dff, up to DSD256.
+// DSD: .dsf and .dff, up to DSD512.
 //
 // DSD is not samples, it is a one-bit stream at a few megahertz -- 2.8224 MHz
-// for DSD64, twice that for DSD128, four times for DSD256. It leaves here one
-// of two ways.
+// for DSD64, twice that for DSD128, four times for DSD256, eight for DSD512.
+// It leaves here one of two ways.
 //
 // DoP (DSD over PCM) packs the bits sixteen at a time into ordinary 24-bit PCM
 // frames with a marker byte on top, sent at a sixteenth of the DSD rate, and
@@ -21,20 +21,22 @@
 // would destroy the markers and the DAC would fall back to hearing white
 // noise.
 //
-// PCM, for an output with no DSD mode of its own (Bluetooth): dsd_to_pcm()
+// PCM, for an output with no DSD mode of its own (Bluetooth), and for DSD512
+// everywhere -- its DoP rate, 1411.2 kHz, is past what any output here takes,
+// and the stock player falls back to PCM for it too: dsd_to_pcm()
 // filters the stream to 176.4 kHz, 24-bit, with a table-driven FIR that costs
 // table lookups and adds and no multiplications (see dsd.c).
 
 typedef struct dsd_file dsd_file_t;
 
 // Opens a .dsf or .dff. NULL when it is neither, when the rate is not one of
-// the three, or when the file has more channels than can be played.
+// the four, or when the file has more channels than can be played.
 dsd_file_t *dsd_open(const char *path);
 void dsd_close(dsd_file_t *d);
 
 int dsd_channels(const dsd_file_t *d);
 uint32_t dsd_rate(const dsd_file_t *d);	   // the DSD rate itself (2822400, ...)
-int dsd_multiple(const dsd_file_t *d);	   // 64, 128 or 256
+int dsd_multiple(const dsd_file_t *d);	   // 64, 128, 256 or 512
 int dsd_output_rate(const dsd_file_t *d);  // what comes out of dsd_read(): the DSD rate over 16
 uint64_t dsd_total_frames(const dsd_file_t *d); // in output frames
 

@@ -17,7 +17,7 @@ typedef enum {
 	// itself is the firmware's own libfdk-aac, opened at run time -- see
 	// aacdec.h -- so this format is unavailable on a device without it.
 	DECODE_FORMAT_AAC_MP4,
-	// DSD: .dsf and .dff, up to DSD256. Either handed to the DAC untouched as
+	// DSD: .dsf and .dff, up to DSD512. Either handed to the DAC untouched as
 	// DoP or filtered down to 176.4 kHz PCM here -- see dsd.h, and
 	// decoder_passthrough() below for what the difference costs the caller.
 	DECODE_FORMAT_DSD,
@@ -126,7 +126,7 @@ uint64_t decoder_read_pcm_frames_s32(decoder_t *dec, uint64_t frame_count, int32
 // to be skipped for a stream that says yes.
 bool decoder_passthrough(const decoder_t *dec);
 
-// 64, 128 or 256 for a DSD file, 0 for anything else.
+// 64, 128, 256 or 512 for a DSD file, 0 for anything else.
 int decoder_dsd_multiple(const decoder_t *dec);
 
 // A DSD file played as PCM rather than DoP, for an output with no DSD mode
