@@ -777,6 +777,9 @@ void topbar_set_clock_position(int pos) {
 		return;
 	}
 	lv_obj_set_hidden(clock_label, false);
+	// lv_obj_set_parent only invalidates clipped to the new parent: a clock leaving
+	// the centre for a half-width side group left its AM/PM painted in the middle.
+	lv_obj_invalidate(clock_label);
 
 	if (pos == TOPBAR_CLOCK_LEFT) {
 		lv_obj_set_parent(clock_label, container_left);
