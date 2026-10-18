@@ -46,6 +46,12 @@ uint64_t dsd_total_frames(const dsd_file_t *d); // in output frames
 bool dsd_to_pcm(dsd_file_t *d);
 bool dsd_is_pcm(const dsd_file_t *d);
 
+// From the next read on, raw DSD instead of DoP: each 32-bit slot holds four
+// bytes of one channel in DSD_U32_BE order (earliest byte first in memory,
+// earliest bit at the top), at a 32nd of the DSD rate. For a USB DAC opened
+// with DSD_U32_BE or SPECIAL. Call before the first read.
+bool dsd_to_native(dsd_file_t *d);
+
 // Reads interleaved 32-bit frames: DoP words, or PCM samples, left-justified
 // in 32 bits. Returns frames read, 0 at the end.
 uint64_t dsd_read(dsd_file_t *d, uint64_t frames, int32_t *out);

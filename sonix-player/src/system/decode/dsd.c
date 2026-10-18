@@ -54,6 +54,10 @@ struct dsd_file {
 	// DoP alternates its marker every frame.
 	int dop_phase;
 
+	// Raw DSD instead of DoP (dsd_to_native): four bytes a channel a frame,
+	// for a USB DAC opened with a DSD format of its own.
+	bool native_mode;
+
 	// PCM instead of DoP (dsd_to_pcm). Each channel's buffer then has the
 	// last `taps` bytes of the slab before it in front of `chan[c]`.
 	bool pcm_mode;
@@ -297,6 +301,32 @@ static bool produce(dsd_file_t *d) {
 
 		int available = d->chan_len - d->chan_read;
 
+		if (d->native_mode) {
+			// DSD_U32_BE: four bytes of each channel a frame, the earliest byte
+			// first in memory and the earliest bit at the top of each byte. A
+			// tail shorter than four bytes is dropped.
+			int quads = available / 4;
+			if (quads > d->pcm_capacity) {
+				quads = d->pcm_capacity;
+			}
+			if (quads == 0) {
+				d->chan_read = d->chan_len;
+				continue;
+			}
+			for (int i = 0; i < quads; i++) {
+				for (int c = 0; c < d->channels; c++) {
+					unsigned char b[4];
+					for (int k = 0; k < 4; k++) {
+						b[k] = to_msb_first(d->chan[c][d->chan_read + i * 4 + k], d->lsb_first);
+					}
+					memcpy(&d->pcm[i * d->channels + c], b, 4);
+				}
+			}
+			d->chan_read += quads * 4;
+			d->pcm_frames = quads;
+			continue;
+		}
+
 		// Two bytes of stream per frame, sixteen bits, with the marker on top
 		// and the two bytes below it -- the earliest bit first.
 		int pairs = available / 2;
@@ -512,6 +542,17 @@ bool dsd_to_pcm(dsd_file_t *d) {
 
 bool dsd_is_pcm(const dsd_file_t *d) { return d && d->pcm_mode; }
 
+bool dsd_to_native(dsd_file_t *d) {
+	if (!d || d->pcm_mode) {
+		return false;
+	}
+	d->native_mode = true;
+	d->out_rate = (int)(d->rate / 32);
+	d->total_out = d->bytes_per_ch / 4;
+	printf("dsd: DSD%d raw, %d frames a second of four bytes a channel\n", d->multiple, d->out_rate);
+	return true;
+}
+
 // ---------------------------------------------------------------------------
 // public
 // ---------------------------------------------------------------------------
@@ -629,8 +670,9 @@ bool dsd_seek(dsd_file_t *d, uint64_t frame) {
 	}
 
 	// A DoP frame is exactly two bytes, so landing on an odd one would swap
-	// the halves of every word from here on. A PCM frame is `step` bytes.
-	uint64_t step = d->pcm_mode ? (uint64_t)d->step : 2;
+	// the halves of every word from here on. A raw frame is four bytes, a PCM
+	// frame `step`.
+	uint64_t step = d->pcm_mode ? (uint64_t)d->step : (d->native_mode ? 4 : 2);
 	uint64_t target = frame * step;
 	if (target > d->bytes_per_ch) {
 		target = d->bytes_per_ch;

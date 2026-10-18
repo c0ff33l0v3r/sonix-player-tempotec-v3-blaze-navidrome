@@ -134,6 +134,9 @@ int decoder_dsd_multiple(const decoder_t *dec);
 // then on, so the effects apply. Call before the first read. False when this
 // is not a DSD file or the filter could not be set up.
 bool decoder_dsd_to_pcm(decoder_t *dec);
+// Raw DSD for a USB DAC that takes it (see dsd_to_native). Still passthrough.
+bool decoder_dsd_to_native(decoder_t *dec);
+uint32_t decoder_dsd_rate(const decoder_t *dec);
 
 // Seek decoder to the specified frame index. Returns nonzero on success, 0 on failure.
 int decoder_seek_to_frame(decoder_t *dec, uint64_t frame_index);

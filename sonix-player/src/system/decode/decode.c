@@ -2457,6 +2457,19 @@ bool decoder_dsd_to_pcm(decoder_t *dec) {
 	return true;
 }
 
+bool decoder_dsd_to_native(decoder_t *dec) {
+	if (!dec || dec->format != DECODE_FORMAT_DSD || !dsd_to_native(dec->impl.dsd)) {
+		return false;
+	}
+	dec->sample_rate = dsd_output_rate(dec->impl.dsd);
+	dec->total_pcm_frames = dsd_total_frames(dec->impl.dsd);
+	return true;
+}
+
+uint32_t decoder_dsd_rate(const decoder_t *dec) {
+	return (dec && dec->format == DECODE_FORMAT_DSD) ? dsd_rate(dec->impl.dsd) : 0;
+}
+
 int decoder_dsd_multiple(const decoder_t *dec) {
 	return (dec && dec->format == DECODE_FORMAT_DSD) ? dsd_multiple(dec->impl.dsd) : 0;
 }
