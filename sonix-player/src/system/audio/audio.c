@@ -469,7 +469,7 @@ static volatile bool pcm_device_open = false;
 // The Blaze's amplifier off once a pause has lasted this long (see
 // idle_amp_off()); the stock player's CloseDelay for its analogue output.
 #define IDLE_AMP_OFF_MS 30000
-static void idle_amp_off(long paused_ms);
+static bool idle_amp_off(long paused_ms);
 
 // True when the stream is going out over Bluetooth rather than to the DAC.
 static bool output_is_bluetooth(void) {
@@ -4404,17 +4404,31 @@ static void *playback_thread_func(void *arg) {
 				if (!idle_park_done && left <= 0) {
 					idle_park_done = true; // once: a refused park must not spin
 					pthread_mutex_unlock(&audio_mutex);
-					idle_amp_off(log_ms() - idle_since);
+					bool external_held = !idle_amp_off(log_ms() - idle_since);
 					pthread_mutex_lock(&audio_mutex);
+					// A receiver has the card: park IDLE_AMP_OFF_MS after it
+					// lets go instead (audio_external_end rings the doorbell).
+					while (external_held && external_pcm && !play_request && !stop_thread) {
+						pthread_cond_wait(&audio_cond, &audio_mutex);
+					}
+					if (external_held) {
+						idle_park_done = false;
+						idle_since = log_ms();
+					}
 					continue;
 				}
 				if (idle_park_done) {
 					pthread_cond_wait(&audio_cond, &audio_mutex);
 					continue;
 				}
+				// In whole seconds plus the rest: `long` is 32 bits on the
+				// device, and 30 000 ms in nanoseconds is not, which made this
+				// wait return at once and spin at RT priority for two seconds
+				// in every four, starving a receiver stream into underruns.
 				struct timespec until;
 				clock_gettime(CLOCK_REALTIME, &until);
-				until.tv_nsec += left * 1000000L;
+				until.tv_sec += left / 1000;
+				until.tv_nsec += (left % 1000) * 1000000L;
 				until.tv_sec += until.tv_nsec / 1000000000L;
 				until.tv_nsec %= 1000000000L;
 				pthread_cond_timedwait(&audio_cond, &audio_mutex, &until);
@@ -4983,14 +4997,16 @@ static pthread_mutex_t external_lock = PTHREAD_MUTEX_INITIALIZER;
 // next play's auto_set_output() writes the real route from 5. Not while a
 // receiver or DAC-mode stream holds the card: a route write under a live
 // stream stalls its DMA.
-static void idle_amp_off(long paused_ms) {
+// False only when an external stream held the card and the park was skipped.
+static bool idle_amp_off(long paused_ms) {
 	if (!alsa_board_is_ak4493() || paused_ms < IDLE_AMP_OFF_MS || alsa_controls_output() == 5) {
-		return;
+		return true;
 	}
 	// Held through the write: an external stream opening in between would
 	// have the route pulled from under it.
 	pthread_mutex_lock(&external_lock);
-	if (!external_pcm) {
+	bool card_free = !external_pcm;
+	if (card_free) {
 		fprintf(stderr, "audio[%ld]: idle %ld s: amplifier off (route 5)\n", log_ms(), paused_ms / 1000);
 #ifndef HOST_BUILD
 		bool ok = alsa_set_control("Output Port Switch", 5) >= 0;
@@ -5004,6 +5020,7 @@ static void idle_amp_off(long paused_ms) {
 		}
 	}
 	pthread_mutex_unlock(&external_lock);
+	return card_free;
 }
 
 // What the open was made on, so a change can be noticed.
@@ -5363,4 +5380,8 @@ void audio_external_end(void) {
 	}
 
 	pthread_mutex_unlock(&external_lock);
+	// An idle park waiting on the receiver starts its countdown now.
+	pthread_mutex_lock(&audio_mutex);
+	pthread_cond_broadcast(&audio_cond);
+	pthread_mutex_unlock(&audio_mutex);
 }
