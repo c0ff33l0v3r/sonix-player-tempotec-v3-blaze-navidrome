@@ -262,11 +262,12 @@ static bool first_udc(char *out, size_t out_size) {
 // always goes out without it: the flag is written once the attribute exists,
 // and the function bound again to pick it up. The flag is a kernel global that
 // outlives the unbind, so later entries into DAC mode find it already set and
-// skip the second bind. The stock player always sets it ("DSDMode": 1).
+// skip the second bind. The stock player always sets it ("DSDMode": 1), and so
+// does this one: a [usb] dac_dsd_native left by an older test build is ignored.
 #define DSD_NATIVE_ATTR "/sys/class/android_usb/f_uac_sa/dsd_native_enable"
 
 static bool apply_dsd_native(const char *udc) {
-	bool want = config_get_int("usb", "dac_dsd_native", 1) != 0;
+	const bool want = true;
 	char value[16];
 	if (!read_first_line(DSD_NATIVE_ATTR, value, sizeof(value))) {
 		fprintf(stderr, "usbdac: %s missing; no native DSD\n", DSD_NATIVE_ATTR);
