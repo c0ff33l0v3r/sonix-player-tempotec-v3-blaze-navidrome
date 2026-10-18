@@ -166,8 +166,8 @@ bool audio_stream_is_lossy(void);
 // container's, that is, the extension.
 void audio_get_stream_codec(char *out, size_t size);
 
-// 64/128/256 while a DSD track is playing, 0 otherwise. It is always going to
-// the DAC untouched over DoP; see dsd.h.
+// 64/128/256/512 while a DSD track is playing, 0 otherwise, whether it goes to
+// the DAC untouched over DoP or filtered to PCM (DSD512, Bluetooth); see dsd.h.
 int audio_get_dsd_multiple(void);
 
 void audio_seek(double seconds);

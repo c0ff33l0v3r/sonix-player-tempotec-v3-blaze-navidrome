@@ -652,7 +652,7 @@ static double progress_total_secs = 0.0;
 static int stream_sample_rate = 0;
 static int stream_channels = 0;
 static int stream_bits = 0; // source bit depth (16/24/32), for the format line
-// DSD, for the format line: 64/128/256, or 0 when the track is not DSD. A DSD
+// DSD, for the format line: 64/128/256/512, or 0 when the track is not DSD. A DSD
 // track's real identity is its multiple, not "24 bit at 176.4 kHz" -- that is
 // only what the carrier looks like.
 static int stream_dsd_multiple = 0;
@@ -3489,7 +3489,11 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// Headphones have no DSD mode to switch into: DSD goes to them as PCM.
 	// So does a USB DAC that cannot take the level itself: DoP cannot be scaled,
 	// so it would play at full volume whatever the slider says (usbaudio_dsd_as_pcm).
-	bool dsd_as_pcm = decoder_passthrough(dec) && (output_is_bluetooth() || (usbaudio_active() && usbaudio_dsd_as_pcm())) &&
+	// And DSD512 on every output: its DoP rate, 1411.2 kHz, is past what the
+	// card takes (768 kHz), so like the stock player it goes as PCM.
+	bool dsd_as_pcm = decoder_passthrough(dec) &&
+					  (decoder_dsd_multiple(dec) == 512 || output_is_bluetooth() ||
+					   (usbaudio_active() && usbaudio_dsd_as_pcm())) &&
 					  decoder_dsd_to_pcm(dec);
 
 	int channels = decoder_channels(dec);
