@@ -1428,6 +1428,12 @@ static void release_page_cache(void) {
 #endif
 }
 
+// Set for the length of a DSD track sent raw to a USB DAC ([usb] dsd_mode
+// Native): every open of that track, the reopens after an error included, then
+// asks hw: rather than plughw: for this format, at exactly the rate given.
+// SND_PCM_FORMAT_UNKNOWN otherwise.
+static int usb_native_format = SND_PCM_FORMAT_UNKNOWN;
+
 static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_per_sample, snd_pcm_uframes_t *period_size_out) {
 	snd_pcm_t *pcm_handle = NULL;
 
@@ -1443,6 +1449,12 @@ static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_pe
 	// is retried briefly instead of being given up on the first attempt.
 	char device[sizeof(output_pcm)];
 	audio_get_output_device(device, sizeof(device));
+	// The plug layer cannot carry SPECIAL (alsa-lib knows no width for it),
+	// and raw DSD must reach the card untouched anyway.
+	bool native = usb_native_format != SND_PCM_FORMAT_UNKNOWN;
+	if (native && strncmp(device, "plughw:", 7) == 0) {
+		memmove(device, device + 4, strlen(device + 4) + 1);
+	}
 
 	// bluealsa reports the same race differently. Where a card driver says EBUSY
 	// while the old stream is torn down, the plugin has to re-acquire the A2DP
@@ -1550,7 +1562,9 @@ static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_pe
 	snd_pcm_hw_params_set_access(pcm_handle, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED);
 
 	snd_pcm_format_t format;
-	if (bits_per_sample == 8) {
+	if (native) {
+		format = (snd_pcm_format_t)usb_native_format;
+	} else if (bits_per_sample == 8) {
 		format = SND_PCM_FORMAT_U8;
 	} else if (bits_per_sample == 16) {
 		format = SND_PCM_FORMAT_S16_LE;
@@ -1591,6 +1605,12 @@ static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_pe
 	unsigned int val = sample_rate;
 	int dir = 0;
 	if (snd_pcm_hw_params_set_rate(pcm_handle, hw_params, val, 0) < 0) {
+		if (native) {
+			// Raw DSD at any other rate is the wrong speed, not a near miss.
+			fprintf(stderr, "usb: native DSD refused at %d Hz\n", sample_rate);
+			snd_pcm_close(pcm_handle);
+			return NULL;
+		}
 		snd_pcm_hw_params_set_rate_near(pcm_handle, hw_params, &val, &dir);
 		fprintf(stderr, "audio: %d Hz unavailable, device settled on %u Hz\n", sample_rate, val);
 	}
@@ -3411,6 +3431,7 @@ static int bluetooth_decimation(int sample_rate, int channels, int out_bits, boo
 
 // DoP silence after the last frame of a track: `ms` of it, the marker carrying
 // on from `last_marker`. Left-justified 32-bit words, as the decoder makes them.
+// Raw DSD (usb_native_format set) has no marker: its silence is 0x69 in every byte.
 static void dop_silence_tail(snd_pcm_t **pcm, int channels, int rate, snd_pcm_uframes_t *period_size,
 							 uint32_t last_marker, int ms) {
 	if (ms <= 0 || !*pcm) {
@@ -3427,7 +3448,9 @@ static void dop_silence_tail(snd_pcm_t **pcm, int channels, int rate, snd_pcm_uf
 		long n = frames_left < CHUNK ? frames_left : CHUNK;
 		for (long i = 0; i < n; i++) {
 			marker = marker == 0x05 ? 0xFA : 0x05;
-			int32_t word = (int32_t)(((marker << 16) | (0x69u << 8) | 0x69u) << 8);
+			int32_t word = usb_native_format != SND_PCM_FORMAT_UNKNOWN
+							   ? (int32_t)0x69696969u
+							   : (int32_t)(((marker << 16) | (0x69u << 8) | 0x69u) << 8);
 			for (int c = 0; c < channels; c++) {
 				chunk[i * channels + c] = word;
 			}
@@ -3486,14 +3509,40 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		return;
 	}
 
+	// Raw DSD to a USB DAC, when [usb] dsd_mode asks for it and the DAC has a
+	// DSD format of its own: DSD_U32_BE if the kernel knows the DAC, SPECIAL
+	// (a UAC2 raw-data setting) otherwise. Refused, the track goes as DoP if
+	// the DAC takes the DoP rate, as PCM if not. Like DoP, the samples cannot
+	// be scaled: without a volume control on the DAC it plays at full scale.
+	usb_native_format = SND_PCM_FORMAT_UNKNOWN;
+	bool usb_dsd_fallback_pcm = false;
+	if (decoder_passthrough(dec) && !output_is_bluetooth() && usbaudio_active() && usbaudio_dsd_native()) {
+		// The probe opens the card, which a held gapless PCM would keep busy.
+		gapless_release();
+		unsigned dsd = decoder_dsd_rate(dec);
+		int native = usbaudio_native_dsd_format(dsd / 32);
+		if (native != SND_PCM_FORMAT_UNKNOWN && decoder_dsd_to_native(dec)) {
+			usb_native_format = native;
+			fprintf(stderr, "usb: native DSD via %s at %u Hz\n", snd_pcm_format_name((snd_pcm_format_t)native),
+					dsd / 32);
+		} else if (usbaudio_takes_rate(dsd / 16)) {
+			fprintf(stderr, "usb: native DSD not taken; DoP at %u Hz instead\n", dsd / 16);
+		} else {
+			fprintf(stderr, "usb: native DSD and DoP at %u Hz both refused; PCM instead\n", dsd / 16);
+			usb_dsd_fallback_pcm = true;
+		}
+	}
+
 	// Headphones have no DSD mode to switch into: DSD goes to them as PCM.
 	// So does a USB DAC that cannot take the level itself: DoP cannot be scaled,
 	// so it would play at full volume whatever the slider says (usbaudio_dsd_as_pcm).
 	// And DSD512 on every output: its DoP rate, 1411.2 kHz, is past what the
-	// card takes (768 kHz), so like the stock player it goes as PCM.
+	// card takes (768 kHz), so like the stock player it goes as PCM -- unless a
+	// USB DAC took it natively (usb_native_format), at 705.6 kHz raw.
 	bool dsd_as_pcm = decoder_passthrough(dec) &&
-					  (decoder_dsd_multiple(dec) == 512 || output_is_bluetooth() ||
-					   (usbaudio_active() && usbaudio_dsd_as_pcm())) &&
+					  ((decoder_dsd_multiple(dec) == 512 && usb_native_format == SND_PCM_FORMAT_UNKNOWN) ||
+					   output_is_bluetooth() || usb_dsd_fallback_pcm ||
+					   (usbaudio_active() && usb_native_format == SND_PCM_FORMAT_UNKNOWN && usbaudio_dsd_as_pcm())) &&
 					  decoder_dsd_to_pcm(dec);
 
 	int channels = decoder_channels(dec);
@@ -3520,6 +3569,9 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// shortcut: not while stretched (the stretcher is 16-bit only); a speed
 	// change in mid-track on the port applies from the next track.
 	int out_bits = (source_bits > 16 || (usbaudio_active() && playback_speed == 1.0)) ? 32 : 16;
+	if (usb_native_format != SND_PCM_FORMAT_UNKNOWN) {
+		out_bits = 32; // four bytes of DSD a channel a frame, whatever the speed
+	}
 
 	// The rate the device is opened at. The position, the fade and every
 	// byte count below stay in the track's own frames.
@@ -3624,6 +3676,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	}
 	if (!pcm_handle) {
 		set_dac_dop(0);
+		usb_native_format = SND_PCM_FORMAT_UNKNOWN;
 		decoder_close(dec);
 		pthread_mutex_lock(&audio_mutex);
 		audio_command = AUDIO_CMD_STOP;
@@ -3647,6 +3700,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		fprintf(stderr, "Audio: Out of memory for period buffer\n");
 		snd_pcm_close(pcm_handle);
 		set_dac_dop(0);
+		usb_native_format = SND_PCM_FORMAT_UNKNOWN;
 		decoder_close(dec);
 		pthread_mutex_lock(&audio_mutex);
 		audio_command = AUDIO_CMD_STOP;
@@ -4308,6 +4362,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	if (!keep_open) {
 		set_dac_dop(0);
 	}
+	usb_native_format = SND_PCM_FORMAT_UNKNOWN;
 	requeue_free(&requeue);
 	free(buffer);
 	speed_close(stretch);

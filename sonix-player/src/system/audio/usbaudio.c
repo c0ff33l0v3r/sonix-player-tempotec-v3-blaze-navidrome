@@ -747,10 +747,71 @@ bool usbaudio_has_volume_control(void) { return active_card >= 0 && volume_contr
 // scale, PCM otherwise), 1 DoP always, 2 PCM always.
 bool usbaudio_dsd_as_pcm(void) {
 	long mode = config_get_int("usb", "dsd_mode", USB_DSD_AUTO);
-	if (mode == USB_DSD_DOP) {
+	if (mode == USB_DSD_DOP || mode == USB_DSD_NATIVE) {
 		return false;
 	}
 	return mode == USB_DSD_PCM || !(usbaudio_has_volume_control() && volume_has_db);
+}
+
+bool usbaudio_dsd_native(void) { return config_get_int("usb", "dsd_mode", USB_DSD_AUTO) == USB_DSD_NATIVE; }
+
+// Raw hw:, never plughw: the plug layer cannot carry SPECIAL, whose width
+// alsa-lib does not know (the kernel here is patched to call it 32 bits).
+static snd_pcm_t *open_hw_probe(void) {
+	char name[32];
+	snprintf(name, sizeof(name), "hw:%d,0", active_card);
+	snd_pcm_t *pcm = NULL;
+	int err = snd_pcm_open(&pcm, name, SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK);
+	if (err < 0) {
+		fprintf(stderr, "usbaudio: %s will not open for the DSD probe (%s)\n", name, snd_strerror(err));
+		return NULL;
+	}
+	return pcm;
+}
+
+int usbaudio_native_dsd_format(unsigned rate) {
+	if (active_card < 0) {
+		return SND_PCM_FORMAT_UNKNOWN;
+	}
+	snd_pcm_t *pcm = open_hw_probe();
+	if (!pcm) {
+		return SND_PCM_FORMAT_UNKNOWN;
+	}
+	// By number: the toolchain's alsa headers (1.0.26) predate the DSD
+	// formats, which the device's own libasound and kernel both know (52).
+	static const snd_pcm_format_t TRY[] = {(snd_pcm_format_t)52 /* DSD_U32_BE */, SND_PCM_FORMAT_SPECIAL};
+	snd_pcm_hw_params_t *hw;
+	snd_pcm_hw_params_alloca(&hw);
+	int found = SND_PCM_FORMAT_UNKNOWN;
+	for (size_t i = 0; i < sizeof(TRY) / sizeof(TRY[0]) && found == SND_PCM_FORMAT_UNKNOWN; i++) {
+		snd_pcm_hw_params_any(pcm, hw);
+		if (snd_pcm_hw_params_set_access(pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED) >= 0 &&
+			snd_pcm_hw_params_set_format(pcm, hw, TRY[i]) >= 0 && snd_pcm_hw_params_set_channels(pcm, hw, 2) >= 0 &&
+			snd_pcm_hw_params_set_rate(pcm, hw, rate, 0) >= 0) {
+			found = TRY[i];
+		}
+	}
+	snd_pcm_close(pcm);
+	if (found == SND_PCM_FORMAT_UNKNOWN) {
+		fprintf(stderr, "usbaudio: no raw DSD at %u Hz (neither DSD_U32_BE nor SPECIAL)\n", rate);
+	}
+	return found;
+}
+
+bool usbaudio_takes_rate(unsigned rate) {
+	if (active_card < 0) {
+		return false;
+	}
+	snd_pcm_t *pcm = open_hw_probe();
+	if (!pcm) {
+		return false;
+	}
+	snd_pcm_hw_params_t *hw;
+	snd_pcm_hw_params_alloca(&hw);
+	snd_pcm_hw_params_any(pcm, hw);
+	bool ok = snd_pcm_hw_params_test_rate(pcm, hw, rate, 0) == 0;
+	snd_pcm_close(pcm);
+	return ok;
 }
 
 void usbaudio_set_dop(bool on) {

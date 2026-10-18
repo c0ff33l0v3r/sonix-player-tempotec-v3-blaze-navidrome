@@ -65,9 +65,25 @@ bool usbaudio_has_volume_control(void);
 #define USB_DSD_AUTO 0
 #define USB_DSD_DOP 1
 #define USB_DSD_PCM 2
+#define USB_DSD_NATIVE 3 // experimental: raw DSD, DoP then PCM when refused
 
 // Whether a DSD track should be converted to PCM for the device on the port.
 bool usbaudio_dsd_as_pcm(void);
+
+// Whether [usb] dsd_mode asks for raw DSD.
+bool usbaudio_dsd_native(void);
+
+// The format the device on the port takes raw DSD in at `rate` frames a
+// second (the DSD rate over 32), stereo: SND_PCM_FORMAT_DSD_U32_BE for the
+// DACs the kernel knows, SND_PCM_FORMAT_SPECIAL for any other with a UAC2
+// raw-data setting, SND_PCM_FORMAT_UNKNOWN when neither. Opens the card for
+// a moment, so only while nothing plays on it. The reason for a refusal is
+// logged.
+int usbaudio_native_dsd_format(unsigned rate);
+
+// Whether the device on the port takes `rate` at all, in any format: the
+// test for DoP, which plughw carries losslessly in S32 or S24_3LE.
+bool usbaudio_takes_rate(unsigned rate);
 
 // Told on both edges of a DoP stream: while it lasts the level goes to the
 // device's own volume control, since DoP samples cannot be scaled.
