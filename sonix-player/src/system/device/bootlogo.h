@@ -29,8 +29,12 @@
 // Not on every player. The V3 Blaze's own logo is logo.jpeg, TempoTec's, and
 // its script is TempoTec's too: it knows "theme:1" and "theme:2" (HiBy's logo1
 // and logo2, left behind and sized for other panels) and nothing of accents or
-// a custom file. A model with one_boot_logo set writes "theme:0,a0,c0", which
-// that script matches neither way, whatever the theme, accent or custom logo.
+// a custom file. There /dev/mtd5 is the "ota" partition, and its first block
+// the bootloader's boot selector ("ota:kernel"). A model with one_boot_logo set
+// writes only to clear a stock "theme:1"/"theme:2" -- with "theme:0,a0,c0",
+// which that script matches neither way -- and never otherwise, a marker that
+// cannot be read included. Its custom logo is drawn by the player instead
+// (bootlogo_draw_custom).
 
 // The user's own logo, on the userdata partition.
 #define BOOTLOGO_CUSTOM_FILE "/usr/data/bootlogo.jpeg"

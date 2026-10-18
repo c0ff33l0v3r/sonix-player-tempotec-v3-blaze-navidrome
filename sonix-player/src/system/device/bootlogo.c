@@ -125,14 +125,22 @@ static void *worker_main(void *arg) {
 
 		char wanted[MARKER_LENGTH + 1];
 		snprintf(wanted, sizeof(wanted), "theme:%d,a%d,c%d", dark ? 2 : 1, accent, bootlogo_has_custom() ? 1 : 0);
-		// The script of a logo.jpeg-only player knows neither accents nor a
-		// custom file: one fixed marker, so a theme or accent switch erases nothing.
-		if (one_boot_logo()) {
-			snprintf(wanted, sizeof(wanted), "theme:0,a0,c0");
-		}
 
 		char current[MARKER_LENGTH + 1];
-		if (!read_marker(current) || strcmp(current, wanted) != 0) {
+		bool read_ok = read_marker(current);
+		bool rewrite = !read_ok || strcmp(current, wanted) != 0;
+		// A logo.jpeg-only player (the Blaze): mtd5 is its "ota" partition,
+		// whose first block is the bootloader's boot selector. Its script shows
+		// logo.jpeg for anything but "theme:1" and "theme:2", which only the
+		// stock player leaves behind and which would show HiBy's logos. So the
+		// one write ever made there clears one of those, and nothing else
+		// writes: not an unreadable marker, not a format change.
+		if (one_boot_logo()) {
+			snprintf(wanted, sizeof(wanted), "theme:0,a0,c0");
+			rewrite = read_ok && (strncmp(current, "theme:1", 7) == 0 || strncmp(current, "theme:2", 7) == 0);
+		}
+
+		if (rewrite) {
 			if (write_marker(wanted)) {
 				printf("bootlogo: %s written to %s\n", wanted, MTD_DEVICE);
 			}
