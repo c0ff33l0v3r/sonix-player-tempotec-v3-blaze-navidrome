@@ -881,11 +881,11 @@ static void dsd_gain_pick_cb(lv_event_t *e) {
 }
 
 // DSD over a USB DAC ([usb] dsd_mode, read by usbaudio_dsd_as_pcm when a track starts).
-static lv_obj_t *usb_dsd_pill[3];
+static lv_obj_t *usb_dsd_pill[4];
 
 static void usb_dsd_refresh(void) {
 	long mode = config_get_int("usb", "dsd_mode", USB_DSD_AUTO);
-	for (int i = 0; i < 3; i++) {
+	for (int i = 0; i < 4; i++) {
 		settingsrow_pill_active(usb_dsd_pill[i], i == mode);
 	}
 }
@@ -2151,7 +2151,10 @@ void musicsettings_init(gui_config_t *cfg) {
 	usb_dsd_pill[USB_DSD_AUTO] = settingsrow_pill_text(usb_dsd_pills, "Auto", USB_DSD_AUTO, usb_dsd_pick_cb);
 	usb_dsd_pill[USB_DSD_DOP] = settingsrow_pill_text(usb_dsd_pills, "DoP", USB_DSD_DOP, usb_dsd_pick_cb);
 	usb_dsd_pill[USB_DSD_PCM] = settingsrow_pill_text(usb_dsd_pills, "PCM", USB_DSD_PCM, usb_dsd_pick_cb);
+	usb_dsd_pill[USB_DSD_NATIVE] =
+		settingsrow_pill_text(usb_dsd_pills, tr("musicsettings_usb_dsd_native"), USB_DSD_NATIVE, usb_dsd_pick_cb);
 	option_note(container, "musicsettings_usb_dsd_note");
+	option_note(container, "musicsettings_usb_dsd_native_note");
 	usb_dsd_refresh();
 	theme_register_refresh(usb_dsd_refresh);
 
