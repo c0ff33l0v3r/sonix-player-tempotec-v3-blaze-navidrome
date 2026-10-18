@@ -40,10 +40,13 @@
 #define UAC_IOCTL_FORMAT 1	// struct uac_format
 #define UAC_IOCTL_CAPTURE 2 // int: 1 if this build can also record
 
+// Filled by the kernel's uac_ioctl: `format` is 2 while the host has the
+// native DSD alternate setting (alt 4) selected and 1 otherwise; `flags` is
+// always 32, the subslot width, whatever the host sends.
 struct uac_format {
-	int format; // 2 = DSD in the stock player's own comparison
+	int format; // 2 = native DSD, 1 = PCM
 	int rate;	// what the host asked for
-	int flags;	// 1 = one bit per sample (DSD), otherwise 32-bit PCM
+	int flags;	// always 32
 };
 
 // The node appears only once the function is bound and the host has looked at
@@ -536,9 +539,9 @@ static void *audio_main(void *arg) {
 			continue;
 		}
 
-		// The host decides. flags == 1 means one bit per sample, which is DSD;
-		// everything else arrives as 32-bit stereo.
-		int bits = (fmt.flags == 1) ? 1 : 32;
+		// The host decides. format == 2 means native DSD; everything else
+		// arrives as 32-bit stereo.
+		int bits = (fmt.format == 2) ? 1 : 32;
 		bool dsd = (bits == 1);
 
 		if (fmt.rate <= 0) {
