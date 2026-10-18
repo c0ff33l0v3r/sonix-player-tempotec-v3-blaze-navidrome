@@ -126,7 +126,8 @@ void volume_overlay_show(int percent) {
 	// the level is most likely to be moved: the screen has just lit up, the
 	// music is playing, and the keys are the only thing being touched.
 	bool over_saver = screensaver_is_visible();
-	if (!overlay || !(player_sheet_is_open() || allowed_outside_player || over_saver)) {
+	// Nor in line out, where the level is fixed (the status bar hides it too).
+	if (!overlay || lineout_is_active() || !(player_sheet_is_open() || allowed_outside_player || over_saver)) {
 		return;
 	}
 

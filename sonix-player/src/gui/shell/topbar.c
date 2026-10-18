@@ -251,6 +251,15 @@ void topbar_refresh_volume(int percent) {
 		return;
 	}
 
+	// Line out holds the output at a fixed level: a number there would say the
+	// keys do something. The line-out glyph beside it already says why.
+	bool lineout = lineout_is_active();
+	lv_obj_set_hidden(vol_icon, lineout);
+	lv_obj_set_hidden(vol_label, lineout);
+	if (lineout) {
+		return;
+	}
+
 	if (percent < 0) {
 		percent = 0;
 	}
@@ -321,6 +330,11 @@ static void refresh_headphone_icon(void) {
 		if (!device[0] || strcmp(device, "default") == 0) {
 			player_output_unplugged(last_state == JACK_BALANCED ? "the 4.4 mm jack" : "the 3.5 mm jack");
 		}
+	}
+
+	// The volume comes back, or goes, with the mode -- the jack pulled included.
+	if (lineout != last_lineout) {
+		topbar_refresh_volume(get_volume_percent());
 	}
 
 	// Line out ended or began on its own (the jack pulled): the page showing its
