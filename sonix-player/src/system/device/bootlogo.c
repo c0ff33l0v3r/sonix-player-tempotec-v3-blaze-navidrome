@@ -389,3 +389,38 @@ bool bootlogo_make_custom(const char *image_path, int width, int height) {
 	kick();
 	return true;
 }
+
+bool bootlogo_draw_custom(uint16_t *fb, int panel_w, int panel_h) {
+	if (!fb || panel_w <= 0 || panel_h <= 0 || !one_boot_logo()) {
+		return false;
+	}
+	size_t size = 0;
+	uint8_t *data = read_source(BOOTLOGO_CUSTOM_FILE, &size);
+	if (!data) {
+		return false;
+	}
+	int w = 0, h = 0;
+	uint8_t *rgb = decode_source(data, size, panel_w > panel_h ? panel_w : panel_h, &w, &h);
+	free(data);
+	if (!rgb || w <= 0 || h <= 0) {
+		free(rgb);
+		fprintf(stderr, "bootlogo: %s cannot be decoded; the animation plays instead\n", BOOTLOGO_CUSTOM_FILE);
+		return false;
+	}
+	// Saved at the panel's size, so normally this is a no-op copy.
+	if (w != panel_w || h != panel_h) {
+		uint8_t *fit = cover_resample(rgb, w, h, panel_w, panel_h);
+		free(rgb);
+		if (!fit) {
+			return false;
+		}
+		rgb = fit;
+	}
+	const uint8_t *p = rgb;
+	for (size_t i = 0; i < (size_t)panel_w * (size_t)panel_h; i++, p += 3) {
+		fb[i] = (uint16_t)(((p[0] & 0xF8) << 8) | ((p[1] & 0xFC) << 3) | (p[2] >> 3));
+	}
+	free(rgb);
+	printf("bootlogo: the custom logo is on screen in place of the animation\n");
+	return true;
+}

@@ -68,6 +68,7 @@
 #include "src/system/streaming/radio.h"
 #include "src/system/device/screenshot.h"
 #include "src/system/device/bootanim.h"
+#include "src/system/device/bootlogo.h"
 #include "src/system/device/sysinfo.h"
 #include "src/system/net/tls.h"
 #include "src/system/device/system.h"
@@ -1946,7 +1947,10 @@ static lv_display_t *try_panned_display(void) {
 	log_w = (int32_t)fb_var.xres;
 	log_h = (int32_t)fb_var.yres;
 	const sysinfo_model_t *model = sysinfo_model();
-	if (model && model->boot_animation) {
+	// The user's own logo replaces the animation, which is drawn to land on
+	// TempoTec's mark and would sit on top of someone else's picture.
+	bool custom_logo = bootlogo_draw_custom((uint16_t *)fb_mem, (int)fb_var.xres, (int)fb_var.yres);
+	if (model && model->boot_animation && !custom_logo) {
 		bootanim_play((uint16_t *)fb_mem, (int)fb_var.xres, (int)fb_var.yres);
 	}
 	if (model && model->panel_width * 2 == log_w * 3 && model->panel_height * 2 == log_h * 3) {

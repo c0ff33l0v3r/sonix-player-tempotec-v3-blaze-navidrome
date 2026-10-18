@@ -2,6 +2,7 @@
 #define BOOTLOGO_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 // The picture shown while the player boots: which one, and the user's own.
 //
@@ -48,6 +49,14 @@ bool bootlogo_has_custom(void);
 // called off the UI thread. False when the picture cannot be read or the file
 // cannot be written; the previous logo is then left as it was.
 bool bootlogo_make_custom(const char *image_path, int width, int height);
+
+// On a one-logo player (the Blaze), with a custom logo set: draws it into the
+// RGB565 framebuffer page `fb` (panel_w x panel_h, no padding), in place of the
+// boot animation, whose mark is aligned on /etc/logo.jpeg. The stock script
+// cannot show it -- it runs before userdata is mounted -- so this is where it
+// first appears. False when there is none or it cannot be decoded; the caller
+// then plays the animation as usual.
+bool bootlogo_draw_custom(uint16_t *fb, int panel_w, int panel_h);
 
 // Back to the theme's logo: deletes the custom file.
 void bootlogo_clear_custom(void);
