@@ -88,6 +88,7 @@ static bool s_podcast;		 // what is playing is a podcast episode
 static bool s_dsd;			 // ...or a DSD file, whatever its carrier rate
 static bool s_wifi_transfer; // a Wi-Fi transfer is active
 static bool s_bt_receiver;	 // Bluetooth receiver mode is on
+static bool s_bt_pairing;	 // looking for headphones, or pairing with one
 static int s_bt_codec_pattern; // ...the codec's fixed colour, 0 for none (set from the receiver thread)
 static int s_bt_codec_shown;	 // ...and the one apply() last saw
 static int s_bt_tx_pattern;	 // the codec's colour while sending to headphones, 0 for none
@@ -227,6 +228,10 @@ static void apply(void) {
 		// the jack.
 		s_bt_codec_shown = __atomic_load_n(&s_bt_codec_pattern, __ATOMIC_RELAXED);
 		pattern = s_bt_codec_shown ? s_bt_codec_shown : STATE_PATTERN(BT_RX);
+	} else if (s_bt_pairing) {
+		// Looking for headphones: the receiver's waiting colour, which the LED
+		// page calls "Bluetooth pairing" -- one state for both directions.
+		pattern = STATE_PATTERN(BT_RX);
 	} else if (s_dac_active) {
 		// The mode is up but the computer is not sending anything yet. Same
 		// argument as the transfer above: with the screen dark the LED is the
@@ -355,6 +360,14 @@ static int codec_pattern(const char *codec) {
 		   : strncasecmp(codec, "aptX", 4) == 0 ? 13
 		   : strcasecmp(codec, "LDAC") == 0		? 3
 												: 0;
+}
+
+void led_set_bt_pairing(bool active) {
+	if (active == s_bt_pairing) {
+		return;
+	}
+	s_bt_pairing = active;
+	apply();
 }
 
 void led_set_bt_codec(const char *codec) { __atomic_store_n(&s_bt_codec_pattern, codec_pattern(codec), __ATOMIC_RELAXED); }

@@ -102,6 +102,8 @@ bool bluetooth_connected_device(bt_device_t *out);
 void bluetooth_scan_start(void);
 void bluetooth_scan_stop(void);
 bool bluetooth_scan_running(void);
+// Looking for headphones or pairing with one: a scan, or a pair job running.
+bool bluetooth_pairing(void);
 
 // Re-reads what bluez knows now. bluez announces its own changes, so this is
 // only for the moments the interface wants a fresh answer immediately.

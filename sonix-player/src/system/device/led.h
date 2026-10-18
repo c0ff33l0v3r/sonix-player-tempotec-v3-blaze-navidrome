@@ -85,6 +85,11 @@ void led_set_wifi_transfer(bool active);
 // computer still sending music into the jack.
 void led_set_bt_receiver(bool active);
 
+// Looking for headphones, or pairing with one: the receiver's waiting colour
+// (LED_STATE_BT_RX, "Bluetooth pairing" on the LED page), at the receiver's
+// priority. A track playing meanwhile keeps its own colour.
+void led_set_bt_pairing(bool active);
+
 // The codec the receiver is taking in, as bluealsa names it ("" when none). In
 // receiver mode it picks a fixed colour, the one the on-screen indicator uses:
 // SBC yellow, AAC green, aptX and aptX HD magenta, LDAC cyan; any other keeps
@@ -140,7 +145,7 @@ typedef enum {
 	LED_STATE_PODCAST,
 	LED_STATE_CHARGING,
 	LED_STATE_WIFI,
-	LED_STATE_BT_RX,
+	LED_STATE_BT_RX,	// "Bluetooth pairing": the receiver waiting, or a search for headphones
 	LED_STATE_PCM_96K,	// 88.2-96 kHz
 	LED_STATE_PCM_768K, // above 384 kHz
 	LED_STATE_COUNT,

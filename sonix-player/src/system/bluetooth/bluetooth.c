@@ -152,6 +152,7 @@ static int queue_head, queue_count;
 static bool g_enabled;
 static bool g_busy;
 static bool g_scanning;
+static bool g_pairing; // a pair-and-connect job is running
 static bool g_discoverable; // what the Bluetooth list page asked for, last
 static int g_seen_count;   // device objects bluez held at the last refresh
 static int g_hidden_count; // ...of which nameless and not audio gear
@@ -3226,14 +3227,22 @@ static void *bluetooth_worker(void *arg) {
 				refresh_devices();
 				break;
 
-			case JOB_PAIR:
+			case JOB_PAIR: {
 				name_for(job.mac, name, sizeof(name));
+				pthread_mutex_lock(&lock);
+				g_pairing = true;
+				pthread_mutex_unlock(&lock);
 				// Pairing and connecting are one step from the user's side: a
 				// device that has just been paired and does nothing is not what
 				// anyone meant by tapping their headphones.
-				set_op(pair_and_connect(job.mac) ? BT_OP_OK : BT_OP_FAILED, name);
+				bool paired = pair_and_connect(job.mac);
+				pthread_mutex_lock(&lock);
+				g_pairing = false;
+				pthread_mutex_unlock(&lock);
+				set_op(paired ? BT_OP_OK : BT_OP_FAILED, name);
 				refresh_devices();
 				break;
+			}
 
 			case JOB_CONNECT:
 				name_for(job.mac, name, sizeof(name));
@@ -3582,6 +3591,13 @@ bool bluetooth_scan_running(void) {
 	bool running = g_scanning;
 	pthread_mutex_unlock(&lock);
 	return running;
+}
+
+bool bluetooth_pairing(void) {
+	pthread_mutex_lock(&lock);
+	bool pairing = g_enabled && (g_scanning || g_pairing);
+	pthread_mutex_unlock(&lock);
+	return pairing;
 }
 
 void bluetooth_refresh(void) {

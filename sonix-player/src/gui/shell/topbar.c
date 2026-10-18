@@ -639,6 +639,8 @@ static void led_poll(const device_state_t *state) {
 	// for as long as the mode is, screen off included.
 	led_set_bt_receiver(btreceiver_is_active());
 
+	led_set_bt_pairing(bluetooth_pairing());
+
 	// Headphones fed from here: the codec's colour while a track plays.
 	char tx_codec[BT_CODEC_MAX] = "";
 	if (bluetooth_audio_active()) {
