@@ -37,7 +37,9 @@
 // (bootlogo_draw_custom).
 
 // The user's own logo, on the userdata partition.
+#ifndef BOOTLOGO_CUSTOM_FILE // a host test puts it somewhere writable
 #define BOOTLOGO_CUSTOM_FILE "/usr/data/bootlogo.jpeg"
+#endif
 
 // Brings the marker in line with the theme, the accent and whether a custom
 // logo exists. Returns at once; the flash work happens on a worker. A no-op on
