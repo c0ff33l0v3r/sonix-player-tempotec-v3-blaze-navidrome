@@ -195,6 +195,7 @@ static void loaded_cb(lv_event_t *e) {
 void bootlogopage_init(gui_config_t *cfg) {
 	logo_w = cfg->screen_width;
 	logo_h = cfg->screen_height;
+	bootlogo_panel_size(&logo_w, &logo_h);
 	card_root = cfg->sd_root_path;
 
 	bootlogopage_screen = lv_obj_create(NULL);

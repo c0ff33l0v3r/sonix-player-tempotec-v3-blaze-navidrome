@@ -4,7 +4,6 @@
 
 #include "lvgl/lvgl.h"
 
-#include "src/system/device/sysinfo.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/settings/bootlogopage.h"
@@ -320,12 +319,10 @@ void appearance_init(gui_config_t *cfg) {
 	lv_label_set_text(tint_note, tr("appearance_dynamic_tint_note"));
 
 	// The picture shown while the player boots, which follows the theme and
-	// the accent unless one of the user's own is chosen. Not on a player with
-	// a single boot logo (the Blaze): its stock boot script shows only that one.
-	const sysinfo_model_t *model = sysinfo_model();
-	if (!model || !model->one_boot_logo) {
-		settingsrow_add(container, "bootlogo", NULL, switch_screen_cb, bootlogopage_screen);
-	}
+	// the accent unless one of the user's own is chosen. On a player with a
+	// single boot logo (the Blaze) the default is that logo, and the user's
+	// own is drawn by the player in place of the boot animation.
+	settingsrow_add(container, "bootlogo", NULL, switch_screen_cb, bootlogopage_screen);
 
 	// How big the small text on every page is: the secondary lines, notes,
 	// clocks and counters. See fonts.c for which sizes grow and by how much.

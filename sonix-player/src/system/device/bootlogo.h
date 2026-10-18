@@ -50,6 +50,12 @@ bool bootlogo_has_custom(void);
 // cannot be written; the previous logo is then left as it was.
 bool bootlogo_make_custom(const char *image_path, int width, int height);
 
+// The panel's own size, out of /dev/fb0, into `width` and `height`; left as
+// they are when there is no framebuffer (the host). The interface may be laid
+// out larger and shrunk on the way out (the Blaze: 480x720 on a 320x480
+// panel), and a logo is drawn before any of that, at the panel's size.
+void bootlogo_panel_size(int *width, int *height);
+
 // On a one-logo player (the Blaze), with a custom logo set: draws it into the
 // RGB565 framebuffer page `fb` (panel_w x panel_h, no padding), in place of the
 // boot animation, whose mark is aligned on /etc/logo.jpeg. The stock script

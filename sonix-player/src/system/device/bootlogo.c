@@ -12,6 +12,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <linux/fb.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -202,9 +205,10 @@ bool bootlogo_show_now(bool dark, int accent) {
 	if (accent < 0 || accent >= ACCENT_COUNT) {
 		accent = 0;
 	}
-	// What the boot shows there, whatever is chosen: see bootlogo.h.
+	// What the boot shows there: the stock logo, then Sonix's own drawing of
+	// the custom one (bootlogo_draw_custom).
 	if (one_boot_logo()) {
-		return show_file(STOCK_LOGO_FILE);
+		return (bootlogo_has_custom() && show_file(BOOTLOGO_CUSTOM_FILE)) || show_file(STOCK_LOGO_FILE);
 	}
 	if (bootlogo_has_custom() && show_file(BOOTLOGO_CUSTOM_FILE)) {
 		return true;
@@ -388,6 +392,19 @@ bool bootlogo_make_custom(const char *image_path, int width, int height) {
 	printf("bootlogo: %s (%dx%d) saved as the boot logo, %zu bytes\n", image_path, sw, sh, len);
 	kick();
 	return true;
+}
+
+void bootlogo_panel_size(int *width, int *height) {
+	int fd = open("/dev/fb0", O_RDONLY);
+	if (fd < 0) {
+		return;
+	}
+	struct fb_var_screeninfo var;
+	if (ioctl(fd, FBIOGET_VSCREENINFO, &var) == 0 && var.xres > 0 && var.yres > 0) {
+		*width = (int)var.xres;
+		*height = (int)var.yres;
+	}
+	close(fd);
 }
 
 bool bootlogo_draw_custom(uint16_t *fb, int panel_w, int panel_h) {
