@@ -15,6 +15,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -255,6 +256,39 @@ static bool first_udc(char *out, size_t out_size) {
 	return found;
 }
 
+// The native DSD alternate setting (alt 4: UAC2 raw data, 32-bit subslots).
+// The kernel's uac_sa reads its dsd_native_enable flag in afunc_bind and only
+// creates the attribute later in that same bind, so the first bind after boot
+// always goes out without it: the flag is written once the attribute exists,
+// and the function bound again to pick it up. The flag is a kernel global that
+// outlives the unbind, so later entries into DAC mode find it already set and
+// skip the second bind. The stock player always sets it ("DSDMode": 1).
+#define DSD_NATIVE_ATTR "/sys/class/android_usb/f_uac_sa/dsd_native_enable"
+
+static bool apply_dsd_native(const char *udc) {
+	bool want = config_get_int("usb", "dac_dsd_native", 1) != 0;
+	char value[16];
+	if (!read_first_line(DSD_NATIVE_ATTR, value, sizeof(value))) {
+		fprintf(stderr, "usbdac: %s missing; no native DSD\n", DSD_NATIVE_ATTR);
+		return true;
+	}
+	bool on = strncmp(value, "on", 2) == 0 || value[0] == '1';
+	if (on == want) {
+		return true;
+	}
+	if (!write_file(DSD_NATIVE_ATTR, want ? "on" : "off")) {
+		fprintf(stderr, "usbdac: could not write %s (%s)\n", DSD_NATIVE_ATTR, strerror(errno));
+		return true;
+	}
+	write_file(GADGET "/UDC", "\n");
+	if (!write_file(GADGET "/UDC", udc)) {
+		set_error(tr("usbdac_bind_failed"), udc, strerror(errno));
+		return false;
+	}
+	printf("usbdac: native DSD %s; gadget bound again\n", want ? "on" : "off");
+	return true;
+}
+
 // Each step separately, with each failure named: a build that fails has to say
 // which write failed and with what errno, because every one has a different
 // cause.
@@ -358,6 +392,9 @@ static bool gadget_build(void) {
 		return false;
 	}
 	printf("usbdac: gadget bound to %s\n", udc);
+	if (!apply_dsd_native(udc)) {
+		return false;
+	}
 
 	// Only after the bind. /sys/class/android_usb/f_uac_sa/ is created by the
 	// function when it is instantiated, so writing to it any earlier fails with
@@ -481,11 +518,33 @@ static bool looks_like_dop(const unsigned char *bytes, ssize_t count) {
 	return true;
 }
 
+// Native DSD from the host to DoP, the only way DSD reaches this DAC. A host
+// frame is four bytes of the left channel and then four of the right, the
+// earliest byte first and the earliest bit at the top of each byte: the
+// DSD_U32_BE layout of a UAC2 raw-data setting, and the order the stock
+// player's own repacking of this stream assumes (it interleaves the bytes as
+// they come, with no swap and no bit reversal). Each host frame is 32 DSD bits
+// a channel, so two DoP frames of 16, packed as decode/dsd.c packs a file.
+static void native_to_dop(const unsigned char *in, int frames, int32_t *out, int *phase) {
+	for (int f = 0; f < frames; f++, in += 8) {
+		for (int half = 0; half < 2; half++) {
+			uint32_t marker = *phase ? 0xFA : 0x05;
+			*phase ^= 1;
+			for (int c = 0; c < 2; c++) {
+				const unsigned char *b = in + c * 4 + half * 2;
+				*out++ = (int32_t)((marker << 24) | ((uint32_t)b[0] << 16) | ((uint32_t)b[1] << 8));
+			}
+		}
+	}
+}
+
 static void *audio_main(void *arg) {
 	(void)arg;
 
 	char *buffer = NULL;
 	int buffer_size = 0;
+	int32_t *dop_out = NULL; // twice the buffer: two DoP frames a host frame
+	int dop_phase = 0;
 	int open_rate = 0, open_bits = 0;
 	bool output_open = false;
 	bool dop = false, open_dop = false;
@@ -553,7 +612,9 @@ static void *audio_main(void *arg) {
 		if (want != buffer_size) {
 			free(buffer);
 			buffer = malloc((size_t)want);
-			if (!buffer) {
+			free(dop_out);
+			dop_out = malloc((size_t)want * 2);
+			if (!buffer || !dop_out) {
 				buffer_size = 0;
 				set_error(tr("usbdac_no_memory"));
 				break;
@@ -568,16 +629,19 @@ static void *audio_main(void *arg) {
 			}
 			// Before the stream opens, as for a DSD track: with DOP_EN off the
 			// DAC plays a DoP stream as white noise at full level.
-			set_dac_dop(dop);
+			set_dac_dop(dop || dsd);
 			open_dop = dop;
-			// DSD is handed to the DAC as it comes; the chip does the rest.
-			output_open = audio_external_begin_latency(fmt.rate, 2, dsd ? 32 : bits, output_ms());
+			// DoP from the host is handed to the DAC as it comes; native DSD
+			// goes out as DoP at twice the host's frame rate.
+			int out_rate = dsd ? fmt.rate * 2 : fmt.rate;
+			dop_phase = 0;
+			output_open = audio_external_begin_latency(out_rate, 2, 32, output_ms());
 			if (!output_open) {
 				// Say so, but keep reading: the gadget's OUT endpoint has to
 				// go on being drained or the host sees a device that stopped
 				// consuming and aborts the stream. Throwing the samples away
 				// keeps the link alive.
-				set_error(tr("usbdac_rate_refused"), fmt.rate);
+				set_error(tr("usbdac_rate_refused"), out_rate);
 			}
 			open_rate = fmt.rate;
 			open_bits = bits;
@@ -591,7 +655,8 @@ static void *audio_main(void *arg) {
 				   dsd ? "DSD" : (dop ? "DoP" : "32 bit PCM"), fmt.format, fmt.flags, output_ms());
 			pthread_mutex_lock(&lock);
 			state.streaming = true;
-			state.sample_rate = dop ? fmt.rate * 16 : fmt.rate; // DoP: 16 DSD bits a PCM frame
+			// Native: 32 DSD bits a host frame; DoP: 16.
+			state.sample_rate = dsd ? fmt.rate * 32 : (dop ? fmt.rate * 16 : fmt.rate);
 			state.bits = bits;
 			state.channels = 2;
 			state.dsd = dsd || dop;
@@ -619,7 +684,10 @@ static void *audio_main(void *arg) {
 		}
 
 		// Eight bytes to a frame, and audio_external_write() counts frames.
-		if (output_open) {
+		if (output_open && dsd) {
+			native_to_dop((const unsigned char *)buffer, (int)(got / 8), dop_out, &dop_phase);
+			audio_external_write(dop_out, (int)(got / 8) * 2);
+		} else if (output_open) {
 			audio_external_write(buffer, (int)(got / 8));
 		}
 	}
@@ -629,6 +697,7 @@ static void *audio_main(void *arg) {
 	}
 	set_dac_dop(0);
 	free(buffer);
+	free(dop_out);
 
 	pthread_mutex_lock(&lock);
 	state.streaming = false;
