@@ -639,6 +639,13 @@ static void led_poll(const device_state_t *state) {
 	// for as long as the mode is, screen off included.
 	led_set_bt_receiver(btreceiver_is_active());
 
+	// Headphones fed from here: the codec's colour while a track plays.
+	char tx_codec[BT_CODEC_MAX] = "";
+	if (bluetooth_audio_active()) {
+		bluetooth_get_codecs(NULL, 0, tx_codec, sizeof(tx_codec));
+	}
+	led_set_bt_tx_codec(tx_codec);
+
 	// And DAC mode, which plays nothing through audio.c and so reads as a
 	// stopped player above. Only while the cable is really there: the mode is
 	// turned off from its own page and nowhere else, so a player unplugged and

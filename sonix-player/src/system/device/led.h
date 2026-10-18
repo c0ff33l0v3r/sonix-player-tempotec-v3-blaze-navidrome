@@ -92,6 +92,12 @@ void led_set_bt_receiver(bool active);
 // only records the codec, and the next led_set_bt_receiver() poll lights it.
 void led_set_bt_codec(const char *codec);
 
+// The codec headphones are being fed with ("" or NULL when none). While a
+// track plays it takes the place of the sample-rate colour, with the same
+// fixed colours as above; charging, podcast and DSD still win over it. From
+// the interface thread only.
+void led_set_bt_tx_codec(const char *codec);
+
 // DAC mode. Nothing plays through audio.c there, so led_update_playback() sees
 // a stopped player and the LED went out twenty seconds after the screen did,
 // with the computer still sending music. While the host streams, the rate gets

@@ -90,6 +90,7 @@ static bool s_wifi_transfer; // a Wi-Fi transfer is active
 static bool s_bt_receiver;	 // Bluetooth receiver mode is on
 static int s_bt_codec_pattern; // ...the codec's fixed colour, 0 for none (set from the receiver thread)
 static int s_bt_codec_shown;	 // ...and the one apply() last saw
+static int s_bt_tx_pattern;	 // the codec's colour while sending to headphones, 0 for none
 static bool s_dac_active;	 // DAC mode is on: the gadget is up
 static bool s_dac_streaming; // ...and the computer is actually sending audio
 static int s_dac_rate;
@@ -193,10 +194,13 @@ static void apply(void) {
 		// Playback always shows its colour (red while actually charging, the
 		// stock priority). A podcast has its own colour, purple, whatever the
 		// sample rate: it says what is being listened to, not how it is sampled.
-		pattern = charging_now ? STATE_PATTERN(CHARGING)
-				  : s_podcast  ? STATE_PATTERN(PODCAST)
-				  : s_dsd	   ? STATE_PATTERN(DSD)
-							   : rate_pattern(s_rate);
+		// Sent to headphones, the codec's colour stands in for the rate's: the
+		// same one the receiver shows, so the LED says how the music travels.
+		pattern = charging_now	   ? STATE_PATTERN(CHARGING)
+				  : s_podcast	   ? STATE_PATTERN(PODCAST)
+				  : s_dsd		   ? STATE_PATTERN(DSD)
+				  : s_bt_tx_pattern ? s_bt_tx_pattern
+								   : rate_pattern(s_rate);
 	} else if (s_dac_streaming && s_dac_rate > 0) {
 		// In DAC mode nothing plays through audio.c, so s_playing is false and
 		// the LED went dark twenty seconds after the screen did -- with the
@@ -342,16 +346,26 @@ void led_set_bt_receiver(bool active) {
 	apply();
 }
 
-void led_set_bt_codec(const char *codec) {
-	// Fixed, like the indicator they match: orange, green, magenta (the page's
-	// 13, aptX HD included), cyan.
-	int pattern = !codec								? 0
-				  : strcasecmp(codec, "SBC") == 0		? 4
-				  : strcasecmp(codec, "AAC") == 0		? 8
-				  : strncasecmp(codec, "aptX", 4) == 0 ? 13
-				  : strcasecmp(codec, "LDAC") == 0		? 3
-														: 0;
-	__atomic_store_n(&s_bt_codec_pattern, pattern, __ATOMIC_RELAXED);
+// Fixed, like the indicator they match: orange, green, magenta (the page's
+// 13, aptX HD included), cyan.
+static int codec_pattern(const char *codec) {
+	return !codec								? 0
+		   : strcasecmp(codec, "SBC") == 0		? 4
+		   : strcasecmp(codec, "AAC") == 0		? 8
+		   : strncasecmp(codec, "aptX", 4) == 0 ? 13
+		   : strcasecmp(codec, "LDAC") == 0		? 3
+												: 0;
+}
+
+void led_set_bt_codec(const char *codec) { __atomic_store_n(&s_bt_codec_pattern, codec_pattern(codec), __ATOMIC_RELAXED); }
+
+void led_set_bt_tx_codec(const char *codec) {
+	int pattern = codec_pattern(codec);
+	if (pattern == s_bt_tx_pattern) {
+		return;
+	}
+	s_bt_tx_pattern = pattern;
+	apply();
 }
 
 void led_set_enabled(bool enabled) {
