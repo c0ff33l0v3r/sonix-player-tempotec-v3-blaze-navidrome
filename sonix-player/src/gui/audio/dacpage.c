@@ -3,21 +3,18 @@
 #include <stdio.h>
 
 #include "src/gui/shell/confirm.h"
-#include "src/gui/shell/gui.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/pagetimer.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
-#include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/audio/usbdac.h"
 
 lv_obj_t *dacpage_screen;
 
 static lv_obj_t *mode_switch;
-static lv_obj_t *dsd_native_switch;
 static lv_obj_t *big_icon;
 static lv_obj_t *format_label;
 static lv_obj_t *status_label;
@@ -148,16 +145,6 @@ static void mode_cb(lv_event_t *e) {
 	apply_mode_from_switch();
 }
 
-// Read by usbdac.c when it builds the gadget, so a change while DAC mode is on
-// waits for the next time it is turned on.
-static void dsd_native_cb(lv_event_t *e) {
-	(void)e;
-	config_set_int("usb", "dac_dsd_native", lv_obj_has_state(dsd_native_switch, LV_STATE_CHECKED) ? 1 : 0);
-	if (usbdac_is_active()) {
-		gui_notify_popup("dac_dsd_native_next_time");
-	}
-}
-
 static bool leaving;
 
 // Leaves for real; the guard below lets the chevron through once `leaving` is
@@ -251,11 +238,6 @@ void dacpage_init(gui_config_t *cfg) {
 	lv_obj_t *mode_row = settingsrow_toggle(container, "dac_mode", &mode_switch, mode_cb);
 	lv_obj_set_clickable(mode_row, true);
 	lv_obj_add_event_cb(mode_row, mode_row_cb, LV_EVENT_CLICKED, NULL);
-
-	settingsrow_toggle(container, "dac_dsd_native", &dsd_native_switch, dsd_native_cb);
-	if (config_get_int("usb", "dac_dsd_native", 1)) {
-		lv_obj_add_state(dsd_native_switch, LV_STATE_CHECKED);
-	}
 
 	// Straight into the flex flow, with no alignment of its own: the container
 	// settingsrow_page() builds already centres its children on the cross axis,
