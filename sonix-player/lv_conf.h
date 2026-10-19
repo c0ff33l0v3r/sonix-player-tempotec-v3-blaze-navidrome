@@ -85,7 +85,12 @@
  * amount of memory however much of it is on screen. */
 #define LV_USE_FREETYPE 1
 #define LV_FREETYPE_USE_LVGL_PORT 0
-#define LV_FREETYPE_CACHE_FT_GLYPH_CNT 512
+/* Per face file, shared by all its sizes: this many rendered bitmaps (and twice
+ * as many glyph metrics), LRU. The regular face carries glyphwarm's set -- 320
+ * letters at 24 and at 20 plus the Albums-list extras -- and ASCII at every
+ * size in use; at 512 the warm-up at 20 evicted its own glyphs at 24. A power of
+ * two for the L1 table, which costs 92 bytes a set up front per face (10 faces). */
+#define LV_FREETYPE_CACHE_FT_GLYPH_CNT 2048
 #define LV_FREETYPE_CACHE_FT_GLYPH_L1 1
 
 /* Song titles, tags and station names in Arabic. The text is kept in the
