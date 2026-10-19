@@ -221,6 +221,9 @@ static const char *const SCHEMA_INDEXES[] = {
 	// which the single-column index it replaces did.
 	"CREATE INDEX IF NOT EXISTS media_album_key_idx ON MEDIA_TABLE(album, album_key, year, ctime)",
 	"DROP INDEX IF EXISTS media_album_idx",
+	// An album's first track in disc and track order (ALBUM_GROUP_FIRST): read
+	// off this index instead of sorting every track of the album per row.
+	"CREATE INDEX IF NOT EXISTS media_album_first_idx ON MEDIA_TABLE(album, album_key, COALESCE(disc,1), dis_id)",
 	// The same for the artist and album artist lists by date.
 	"CREATE INDEX IF NOT EXISTS media_artist_ctime_idx ON MEDIA_TABLE(artist, ctime)",
 	"DROP INDEX IF EXISTS media_artist_idx",
