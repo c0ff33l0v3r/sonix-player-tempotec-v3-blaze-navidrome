@@ -53,6 +53,10 @@ bool glyphwarm_text(const lv_font_t *font, const char *text, uint32_t *pos, uint
 // ---------------------------------------------------------------------------
 
 #define WARM_MAX_LETTERS 320	 // per size: 640 glyphs and bitmaps at most, a few hundred KB
+// Every letter of an Albums-list title is warmed at the title's size whatever
+// its rank: the list draws all of them, and a rare one met for the first time
+// mid-scroll is a 40-65 ms stall per glyph. Bounded by what the titles hold.
+#define WARM_MAX_ALBUM_EXTRA 256
 #define CENSUS_SLOTS 16384		 // distinct non-ASCII letters it can tell apart (power of two)
 #define CENSUS_MAX_TITLES 20000	 // rows of track titles read; albums and artists are few
 #define WARM_TICK_MS 40
@@ -125,9 +129,26 @@ static int by_count(const void *a, const void *b) {
 }
 
 typedef struct {
-	uint32_t count;
-	uint32_t letters[WARM_MAX_LETTERS];
+	uint32_t count;	   // warmed at both sizes
+	uint32_t count_24; // and up to here at the title's size only (album titles' rarer letters)
+	uint32_t letters[WARM_MAX_LETTERS + WARM_MAX_ALBUM_EXTRA];
 } letter_list_t;
+
+// Appends the letters of `extra` that `letters[0..have)` lacks, up to `cap`
+// in all. Returns the new count.
+static uint32_t append_missing(uint32_t *letters, uint32_t have, uint32_t cap, const census_slot_t *extra, uint32_t n) {
+	uint32_t count = have;
+	for (uint32_t i = 0; i < n && count < cap; i++) {
+		bool known = false;
+		for (uint32_t j = 0; j < count && !known; j++) {
+			known = letters[j] == extra[i].letter;
+		}
+		if (!known) {
+			letters[count++] = extra[i].letter;
+		}
+	}
+	return count;
+}
 
 // --- interface thread: warming the list it was handed ----------------------
 
@@ -147,7 +168,7 @@ static void warm_tick(lv_timer_t *timer) {
 			lv_timer_pause(timer);
 			return;
 		}
-		if (warm_at >= warm_list->count) {
+		if (warm_at >= (warm_font == 0 ? warm_list->count_24 : warm_list->count)) {
 			warm_at = 0;
 			warm_font++;
 			continue;
@@ -162,7 +183,7 @@ static void warm_adopt_cb(void *user) {
 	warm_list = list;
 	warm_font = 0;
 	warm_at = 0;
-	if (list->count == 0) {
+	if (list->count_24 == 0) {
 		if (warm_timer) {
 			lv_timer_pause(warm_timer);
 		}
@@ -202,8 +223,26 @@ static void *census_thread(void *arg) {
 			for (uint32_t i = 0; i < list->count; i++) {
 				list->letters[i] = census.slots[i].letter;
 			}
-			fprintf(stderr, "glyphwarm: %u distinct non-ASCII letters in the library, warming the %u most used\n",
-					(unsigned)n, (unsigned)list->count);
+			list->count_24 = list->count;
+
+			// The Albums list's own letters, whatever their rank.
+			census_t albums = {.slots = calloc(CENSUS_SLOTS, sizeof(census_slot_t)), .used = 0};
+			if (albums.slots) {
+				library_album_names_walk(census_text, &albums);
+				uint32_t m = 0;
+				for (uint32_t i = 0; i < CENSUS_SLOTS; i++) {
+					if (albums.slots[i].count) {
+						albums.slots[m++] = albums.slots[i];
+					}
+				}
+				list->count_24 = append_missing(list->letters, list->count, WARM_MAX_LETTERS + WARM_MAX_ALBUM_EXTRA,
+												albums.slots, m);
+				free(albums.slots);
+			}
+			fprintf(stderr,
+					"glyphwarm: %u distinct non-ASCII letters in the library, warming the %u most used"
+					" and %u more from album titles\n",
+					(unsigned)n, (unsigned)list->count, (unsigned)(list->count_24 - list->count));
 			free(census.slots);
 			if (!gui_post(warm_adopt_cb, list)) {
 				free(list);

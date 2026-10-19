@@ -6927,6 +6927,16 @@ void library_names_walk(bool (*cb)(const char *text, void *user), void *user, in
 	}
 }
 
+void library_album_names_walk(bool (*cb)(const char *text, void *user), void *user) {
+	sqlite3_int64 after = 0;
+	bool stop = false;
+	while (names_chunk("SELECT rowid, album FROM ALBUM_GROUP_TABLE WHERE rowid > ?1 ORDER BY rowid LIMIT 400", &after,
+					   cb, user, &stop) > 0 &&
+		   !stop) {
+		usleep(2000); // the interface's queries get the lock between chunks
+	}
+}
+
 bool library_is_open(void) {
 	pthread_mutex_lock(&db_lock);
 	bool open = db != NULL;

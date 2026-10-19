@@ -202,6 +202,8 @@ bool library_is_open(void);
 // `cb` returns false to stop. At most `max_titles` titles are read (albums and
 // artists are few); the text is only valid during the call.
 void library_names_walk(bool (*cb)(const char *text, void *user), void *user, int max_titles);
+// The same walk over the names the Albums list shows (ALBUM_GROUP_TABLE).
+void library_album_names_walk(bool (*cb)(const char *text, void *user), void *user);
 
 // True from the moment a scan starts until its thread has finished.
 bool library_scan_running(void);
