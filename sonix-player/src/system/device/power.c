@@ -1492,8 +1492,9 @@ static bool (*g_wake_hook)(void);
 
 void power_set_wake_hook(bool (*cb)(void)) { g_wake_hook = cb; }
 
-// [power] wake_fast_seconds = N (default WAKE_FAST_DEFAULT_S, 0 = off): a screen-off that leaves the
-// panel powered, backlight at nought, for N seconds before really blanking it.
+// [power] wake_fast_seconds = N (default WAKE_FAST_DEFAULT_S, 0 = off, -1 = until standby): a
+// screen-off that leaves the panel powered, backlight at nought and a black page
+// on it, for N seconds before really blanking it.
 // A wake inside the window needs no unblank at all -- none of the panel's
 // ~215 ms power-on sequence, no touch resume -- only the repaint and the
 // backlight. The blank still happens at the end of the window, and always
@@ -1501,6 +1502,7 @@ void power_set_wake_hook(bool (*cb)(void)) { g_wake_hook = cb; }
 // to put the touch controller in doze.
 static bool g_panel_lit_dark;
 static uint32_t g_panel_lit_until;
+static bool g_panel_lit_no_limit; // -1: only the suspend path or double-tap wake blank it
 
 // A blank or unblank blocks this thread for up to half a second (the touch
 // controller resets inside the write), and presses made meanwhile pile up in
@@ -1517,6 +1519,7 @@ static void panel_blank_now(void) {
 		return;
 	}
 	g_panel_lit_dark = false;
+	display_show_black(false); // the unblank then brings up the interface's page
 	screen_power(false);
 	// The level the panel's driver brings the backlight back at on the next
 	// unblank: the dim one a blank always left before the fast window, not
@@ -1546,13 +1549,14 @@ void power_screen_off(void) {
 	set_indevs_enabled(false); // no touch events into LVGL while the panel is down
 	fade_to(BRIGHTNESS_MIN);   // smooth dim down
 	long fast_s = g_double_tap_wake ? 0 : config_get_int("power", "wake_fast_seconds", WAKE_FAST_DEFAULT_S);
-	if (fast_s > 0) {
+	if (fast_s != 0) {
 		if (g_cfg.brightness_path) {
 			write_long_to_file(g_cfg.brightness_path, 0); // below BRIGHTNESS_MIN: the backlight off
 		}
 		g_hw_brightness = 0;
 		g_panel_lit_dark = true;
-		g_panel_lit_until = lv_tick_get() + (uint32_t)fast_s * 1000u;
+		g_panel_lit_no_limit = fast_s < 0;
+		g_panel_lit_until = lv_tick_get() + (uint32_t)(fast_s > 0 ? fast_s : 0) * 1000u;
 	} else {
 		screen_power(false);
 	}
@@ -1571,6 +1575,9 @@ void power_screen_off(void) {
 		}
 		lv_refr_now(g_disp);
 		display_mirror_page();
+	}
+	if (g_panel_lit_dark) {
+		display_show_black(true); // the last frame shows under direct sun, backlight or not
 	}
 
 	// Stop rendering entirely while the panel is dark (physical buttons live
@@ -1725,6 +1732,10 @@ void power_screen_on(void) {
 	} while (0)
 	WAKE_STEP("before"); // radios, clock, the wake hook
 
+	if (g_panel_lit_dark) {
+		display_show_black(false); // before anything is drawn or lit
+	}
+
 	// Nothing is drawn while the panel is dark (refr_request_cb), and the
 	// unblank below presents whatever the framebuffer holds: the page as it was
 	// at the blank. What changed in the meantime is drawn now, while the panel
@@ -1873,7 +1884,7 @@ static void power_timer_cb(lv_timer_t *timer) {
 		now = lv_tick_get();
 	}
 
-	if (g_panel_lit_dark && !g_screen_on && (int32_t)(now - g_panel_lit_until) >= 0) {
+	if (g_panel_lit_dark && !g_screen_on && !g_panel_lit_no_limit && (int32_t)(now - g_panel_lit_until) >= 0) {
 		panel_blank_now();
 	}
 

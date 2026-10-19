@@ -1314,6 +1314,7 @@ static lv_display_t *init_host_display(void) {
 void display_wake_begin(lv_display_t *disp) { (void)disp; }
 void display_wake_end(lv_display_t *disp) { (void)disp; }
 void display_mirror_page(void) {}
+void display_show_black(bool on) { (void)on; }
 // The window is the layout's own size: nothing is shrunk.
 bool display_is_scaled(void) { return false; }
 
@@ -2090,6 +2091,36 @@ void display_mirror_page(void) {
 	int shown = fb_var.yoffset ? 1 : 0;
 	memcpy(fb_mem + (shown ? 0 : fb_page_size), fb_mem + (shown ? fb_page_size : 0), fb_page_size);
 	dirty_clear(&rot_page_pending[shown ? 0 : 1]); // nothing owed any more
+}
+
+// For the fast-wake window, where the panel keeps scanning with the backlight
+// at nought and the picture shows under direct sun: on, the page off screen is
+// cleared and shown; off, the interface page comes back and the black one gets
+// its copy again (display_mirror_page), so LVGL finds both pages as it left
+// them. A no-op where the pages are not flipped.
+static int black_ui_yoffset = -1; // the interface page while black is shown
+
+void display_show_black(bool on) {
+	if (fb_fd < 0 || !fb_mem || fb_page_size == 0 || on == (black_ui_yoffset >= 0)) {
+		return;
+	}
+	uint64_t t0 = ft_now_us();
+	fb_flip_wait();
+	if (on) {
+		black_ui_yoffset = (int)fb_var.yoffset;
+		memset(fb_mem + (fb_var.yoffset ? 0 : fb_page_size), 0, fb_page_size);
+		fb_var.yoffset = fb_var.yoffset ? 0 : fb_var.yres;
+	} else {
+		fb_var.yoffset = (uint32_t)black_ui_yoffset;
+		black_ui_yoffset = -1;
+	}
+	if (ioctl(fb_fd, FBIOPAN_DISPLAY, &fb_var) < 0) {
+		perror("fb: FBIOPAN_DISPLAY (black)");
+	}
+	if (!on) {
+		display_mirror_page();
+	}
+	fprintf(stderr, "fb: black page %s in %llu us\n", on ? "on" : "off", (unsigned long long)(ft_now_us() - t0));
 }
 
 void display_wake_end(lv_display_t *disp) {

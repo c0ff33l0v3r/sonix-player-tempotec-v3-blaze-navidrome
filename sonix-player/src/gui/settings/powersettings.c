@@ -53,6 +53,7 @@ static lv_obj_t *charge_value, *charge_slider;
 static lv_obj_t *auto_off_switch, *auto_off_value, *auto_off_slider, *auto_off_card;
 static lv_obj_t *led_on_switch, *led_off_switch, *led_off_card;
 static lv_obj_t *key_lock_switch;
+static lv_obj_t *instant_wake_switch;
 static lv_obj_t *standby_switch, *standby_value, *standby_slider, *standby_card;
 static lv_obj_t *charge_note;
 static lv_obj_t *axp_limit_switch, *axp_current_switch; // the R1's two, instead of the slider
@@ -292,6 +293,7 @@ static void refresh_labels(void) {
 	}
 
 	set_checked(key_lock_switch, config_get_bool("power", "lock_keys_screen_off", false));
+	set_checked(instant_wake_switch, config_get_int("power", "wake_fast_seconds", 60) < 0);
 
 	// Standby and its wait, on one card like the automatic power-off below.
 	bool standby = config_get_bool("power", "standby_mem", true);
@@ -377,6 +379,14 @@ static void key_lock_toggled_cb(lv_event_t *e) {
 	refresh_labels();
 }
 
+// The panel stays powered, black, until standby (-1) instead of power.c's
+// default 60 s; read at every screen-off, so nothing to apply.
+static void instant_wake_toggled_cb(lv_event_t *e) {
+	(void)e;
+	config_set_int("power", "wake_fast_seconds", lv_obj_has_state(instant_wake_switch, LV_STATE_CHECKED) ? -1 : 60);
+	config_save();
+}
+
 static void auto_off_toggled_cb(lv_event_t *e) {
 	(void)e;
 	config_set_bool("power", "auto_off", lv_obj_has_state(auto_off_switch, LV_STATE_CHECKED));
@@ -420,6 +430,14 @@ void powersettings_init(gui_config_t *cfg) {
 	lv_obj_add_style(standby_note, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(standby_note, &font_ui_22, 0);
 	lv_label_set_text(standby_note, tr("power_standby_mem_note"));
+
+	settingsrow_toggle(container, "power_instant_wake", &instant_wake_switch, instant_wake_toggled_cb);
+	lv_obj_t *instant_wake_note = lv_label_create(container);
+	lv_label_set_long_mode(instant_wake_note, LV_LABEL_LONG_WRAP);
+	lv_obj_set_width(instant_wake_note, lv_pct(100));
+	lv_obj_add_style(instant_wake_note, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(instant_wake_note, &font_ui_22, 0);
+	lv_label_set_text(instant_wake_note, tr("power_instant_wake_note"));
 
 	// The R1 charges through its PMIC, which takes a lower target voltage and a
 	// lower current rather than a percentage: two switches there, the slider
