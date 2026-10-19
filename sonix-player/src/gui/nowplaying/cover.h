@@ -186,6 +186,9 @@ bool cover_scaled_copy(const cover_image_t *src, int size, cover_image_t *out);
 // The id cover_source_id() keeps for `filepath`, when it keeps one: from the
 // table only, nothing is read. False for a track not seen yet.
 bool cover_known_id(const char *filepath, uint64_t *id);
+// The colour a page in this file's picture wears, when it has been worked out
+// before (cover_colours): two keyed lookups, no picture read. False otherwise.
+bool cover_tone_known(const char *filepath, uint32_t *tone, int *luma, bool *light);
 
 void cover_free(cover_image_t *img);
 

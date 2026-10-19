@@ -2759,6 +2759,20 @@ bool cover_known_id(const char *filepath, uint64_t *id) {
 	return player_id_key(filepath, key, sizeof(key)) && player_id_lookup(key, id);
 }
 
+static bool cover_tone_load(uint64_t id, cover_image_t *img);
+
+bool cover_tone_known(const char *filepath, uint32_t *tone, int *luma, bool *light) {
+	uint64_t id = 0;
+	cover_image_t img = {0};
+	if (!cover_known_id(filepath, &id) || !cover_tone_load(id, &img)) {
+		return false;
+	}
+	*tone = img.tone;
+	*luma = img.tone_luma;
+	*light = img.tone_light;
+	return true;
+}
+
 bool cover_picture_known(const char *filepath) {
 	uint64_t id = 0;
 	if (!cover_known_id(filepath, &id)) {

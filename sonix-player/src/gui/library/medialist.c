@@ -128,6 +128,7 @@ lv_obj_t *medialist_albums_screen;
 // sleeve makes a light page written in near-black, anything else a dark one
 // written in white.
 #define TINT_LIGHT_FROM COVER_PAGE_LIGHT_FROM // a sleeve this bright or brighter makes a light page
+#define TINT_SAME_STEPS 8 // page colours this close per channel are not repainted (head_show_image)
 #define TINT_LIGHT_MIN 180
 #define TINT_LIGHT_MAX 225
 #define TINT_DARK_MIN 28
@@ -318,6 +319,8 @@ typedef struct {
 	bool head_titled;	  // the page heading shows the album's name: its title has scrolled away
 	bool head_cover_requested;
 	bool head_cover_settled;
+	uint32_t head_built_at;		 // lv_tick of head_build, for the log line in head_poll
+	const char *head_colour_from; // where the page's first colour came from, for the same line
 	bool head_has_cover;
 	cover_image_t head_image;
 	int *disc_first;	  // the first row of each disc, on a record of more than one
@@ -2772,6 +2775,29 @@ static library_filter_t filter_for(library_list_t kind) {
 	}
 }
 
+// The colour of the album row just tapped in the Albums list, worked out from
+// its thumbnail, for the album's page to open in before its own cover is in
+// (head_build). Only for a record whose colour was never kept.
+static struct {
+	char value[256];
+	bool set;
+	uint32_t tone;
+	int luma;
+	bool light;
+} head_seed;
+
+static void head_seed_from_row(panel_t *p, lv_obj_t *button, const char *value) {
+	head_seed.set = false;
+	row_t *row = row_of_button(p, button);
+	if (p->kind != LIBRARY_LIST_ALBUMS || !row || !row->has_thumb) {
+		return;
+	}
+	if (cover_page_tone(&row->thumb, TINT_LIGHT_FROM, &head_seed.tone, &head_seed.luma, &head_seed.light)) {
+		snprintf(head_seed.value, sizeof(head_seed.value), "%s", value);
+		head_seed.set = true;
+	}
+}
+
 static void row_clicked_cb(lv_event_t *e) {
 	if (player_sheet_drag_active() || switcher_back_drag_active()) {
 		return; // a swipe across the list, not a tap
@@ -2882,6 +2908,7 @@ static void row_clicked_cb(lv_event_t *e) {
 		medialist_open(name, LIBRARY_LIST_ALBUMS, filter_for(p->kind), name);
 		return;
 	}
+	head_seed_from_row(p, button, name);
 	medialist_open(name, LIBRARY_LIST_TRACKS, filter_for(p->kind), name);
 }
 
@@ -4305,6 +4332,14 @@ static void local_color(lv_obj_t *obj, lv_style_prop_t prop, lv_style_selector_t
 
 static int tint_luma(lv_color_t c) { return (c.red * 299 + c.green * 587 + c.blue * 114) / 1000; }
 
+// Whether two page colours can be told apart: a channel more than a few steps off.
+static bool tint_differs(lv_color_t a, lv_color_t b) {
+	return LV_ABS(a.red - b.red) > TINT_SAME_STEPS || LV_ABS(a.green - b.green) > TINT_SAME_STEPS ||
+		   LV_ABS(a.blue - b.blue) > TINT_SAME_STEPS;
+}
+
+static void tint_from_tone(panel_t *p, uint32_t tone, int luma, bool light);
+
 // Works the page's colours out of the sleeve on the head. False when there is
 // no sleeve to take them from.
 static bool tint_from_cover(panel_t *p) {
@@ -4323,7 +4358,13 @@ static bool tint_from_cover(panel_t *p) {
 	} else if (!cover_page_tone(&p->head_image, TINT_LIGHT_FROM, &tone, &luma, &light)) {
 		return false;
 	}
+	tint_from_tone(p, tone, luma, light);
+	return true;
+}
 
+// The page's colours from a sleeve's colour, its brightness and whether a page
+// in it is a light one.
+static void tint_from_tone(panel_t *p, uint32_t tone, int luma, bool light) {
 	int r = (int)((tone >> 16) & 0xFF), g = (int)((tone >> 8) & 0xFF), b = (int)(tone & 0xFF);
 
 	// A light page is never darker than its colour: a yellow taken down to
@@ -4365,7 +4406,6 @@ static bool tint_from_cover(panel_t *p) {
 	p->tint_dim = lv_color_mix(p->tint_ink, p->tint_bg, 166);
 	p->tint_card = lv_color_mix(p->tint_ink, p->tint_bg, 22);
 	p->tint_pressed = lv_color_mix(p->tint_ink, p->tint_bg, 48);
-	return true;
 }
 
 // The head's own parts, in the sleeve's colours or the theme's.
@@ -4717,6 +4757,29 @@ static void head_build(panel_t *p) {
 		p->head_cover_requested = true;
 		p->head_cover_settled = true;
 	} else if (path[0]) {
+		// The page in the record's colour at once, the cover coming after:
+		// the colour kept the last time this picture was shown, or, for a
+		// record never opened, the one its row's thumbnail gives.
+		uint32_t tone;
+		int luma;
+		bool light;
+		p->head_colour_from = "none";
+		if (cover_tone_known(path, &tone, &luma, &light)) {
+			p->head_colour_from = "kept";
+		} else if (head_seed.set && strcmp(head_seed.value, p->filter_value) == 0) {
+			tone = head_seed.tone;
+			luma = head_seed.luma;
+			light = head_seed.light;
+			p->head_colour_from = "thumbnail";
+		}
+		head_seed.set = false;
+		if (p->head_colour_from[0] != 'n') {
+			tint_from_tone(p, tone, luma, light);
+			p->tinted = true;
+			page_paint(p);
+		}
+		p->head_built_at = lv_tick_get();
+
 		int player_w = 0, player_h = 0;
 		player_cover_box(&player_w, &player_h);
 		if (player_w > 0 && player_h > 0) {
@@ -4744,9 +4807,15 @@ static void head_show_image(panel_t *p, const cover_image_t *image) {
 	lv_obj_set_style_image_recolor_opa(p->head_cover, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_bg_opa(p->head_cover, LV_OPA_TRANSP, 0);
 	lv_image_set_src(p->head_cover, &p->head_image.dsc);
+	bool was_tinted = p->tinted;
+	lv_color_t was_bg = p->tint_bg;
 	if (tint_from_cover(p)) {
 		p->tinted = true;
-		page_paint(p);
+		// Already in a colour from before the cover came: painted again only
+		// if the sleeve's own one is visibly another.
+		if (!was_tinted || tint_differs(was_bg, p->tint_bg)) {
+			page_paint(p);
+		}
 	} else if (p->tinted) {
 		// A picture with no colour to give, in place of one that had.
 		p->tinted = false;
@@ -4787,6 +4856,8 @@ static bool head_poll(panel_t *p) {
 	if (coverloader_take(COVERLOADER_ALBUM_HEAD, &image, &finished)) {
 		head_show_image(p, &image);
 		p->head_cover_settled = true;
+		printf("medialist: album head cover shown %u ms after the page was built (first colour: %s)\n",
+			   (unsigned)lv_tick_elaps(p->head_built_at), p->head_colour_from ? p->head_colour_from : "none");
 		return false;
 	}
 	if (finished) {
