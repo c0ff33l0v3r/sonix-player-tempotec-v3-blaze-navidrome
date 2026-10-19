@@ -300,6 +300,11 @@ static void battery_read_into(char *battery_cache, size_t battery_cache_size, bo
 	bool charging = false;
 	scan_power_supplies(&percent, &charging, want_level);
 	if (want_level) {
+		// One line per change, for battery A/Bs read back from the log (pwanalyze.py).
+		if (percent >= 0 && percent != last_percent) {
+			printf("battery: %d%% (screen %s, wake_fast %ld%s)\n", percent, power_screen_is_on() ? "on" : "off",
+				   power_wake_fast_seconds(), charging ? ", charging" : "");
+		}
 		last_percent = percent;
 	} else {
 		percent = last_percent;

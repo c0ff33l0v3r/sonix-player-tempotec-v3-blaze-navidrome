@@ -1503,6 +1503,9 @@ void power_set_wake_hook(bool (*cb)(void)) { g_wake_hook = cb; }
 static bool g_panel_lit_dark;
 static uint32_t g_panel_lit_until;
 static bool g_panel_lit_no_limit; // -1: only the suspend path or double-tap wake blank it
+static volatile long g_wake_fast_used = WAKE_FAST_DEFAULT_S; // the last screen-off's, for the battery log
+
+long power_wake_fast_seconds(void) { return g_wake_fast_used; }
 
 // A blank or unblank blocks this thread for up to half a second (the touch
 // controller resets inside the write), and presses made meanwhile pile up in
@@ -1549,6 +1552,7 @@ void power_screen_off(void) {
 	set_indevs_enabled(false); // no touch events into LVGL while the panel is down
 	fade_to(BRIGHTNESS_MIN);   // smooth dim down
 	long fast_s = g_double_tap_wake ? 0 : config_get_int("power", "wake_fast_seconds", WAKE_FAST_DEFAULT_S);
+	g_wake_fast_used = fast_s;
 	if (fast_s != 0) {
 		if (g_cfg.brightness_path) {
 			write_long_to_file(g_cfg.brightness_path, 0); // below BRIGHTNESS_MIN: the backlight off

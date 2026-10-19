@@ -109,6 +109,8 @@ void power_screen_on(void);
 void power_screen_off(void);
 void power_toggle_screen(void);
 bool power_screen_is_on(void);
+// The fast-wake window the last screen-off used (-1 = until standby); any thread.
+long power_wake_fast_seconds(void);
 
 // For the main loop, after every pass of lv_timer_handler(). LVGL starts its
 // animation timer again whenever an animation is created or ends, so the pause
