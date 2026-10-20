@@ -655,8 +655,11 @@ bool alsa_mute_ramp(int rate) {
 	}
 	// The codec's own volume ramp. The AK4493's runs at the sample rate: from
 	// 0 dB to mute is 4080 steps of 1/fs (93 ms at 44.1 kHz), 16 for each
-	// 0.5 dB level, so only the levels above the one in force take time.
-	long ms = !alsa_board_is_ak4493() ? 30 : rate <= 0 ? 120 : (255 - current_volume) * 16000L / rate + 5;
+	// 0.5 dB level. A stream is waited on for 120 levels at most: 60 dB under
+	// what was playing, a cut there is below hearing and the rest of the ramp
+	// only delays the next sound.
+	long steps = 255 - current_volume < 120 ? 255 - current_volume : 120;
+	long ms = !alsa_board_is_ak4493() ? 30 : rate <= 0 ? 120 : steps * 16000L / rate + 5;
 #ifndef HOST_BUILD
 	alsa_set_control("Right Playback Volume", 255);
 	alsa_set_control("Left Playback Volume", 255);

@@ -2414,12 +2414,12 @@ static void dac_ramp_before_cut(snd_pcm_t *pcm) {
 	if (!pcm || !pcm_is_card(pcm) || !pcm_playing(pcm)) {
 		return;
 	}
-	// DoP: the codec's ramp counts the DSD rate, not the carrier's -- the
-	// slowest wait is taken rather than a guess.
-	unsigned rate = 0;
+	// DoP: the codec's ramp counts the DSD clock, not the carrier's rate --
+	// timed as DSD64's 44.1 kHz, the slowest it can be.
+	unsigned rate = get_dac_dop() == 1 ? 44100 : 0;
 	snd_pcm_hw_params_t *hw;
 	snd_pcm_hw_params_alloca(&hw);
-	if (get_dac_dop() != 1 && snd_pcm_hw_params_current(pcm, hw) == 0) {
+	if (!rate && snd_pcm_hw_params_current(pcm, hw) == 0) {
 		snd_pcm_hw_params_get_rate(hw, &rate, NULL);
 	}
 	if (alsa_mute_ramp((int)rate)) {
