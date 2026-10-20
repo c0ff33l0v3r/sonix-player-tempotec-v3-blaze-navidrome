@@ -302,8 +302,8 @@ static void battery_read_into(char *battery_cache, size_t battery_cache_size, bo
 	if (want_level) {
 		// One line per change, for battery A/Bs read back from the log (pwanalyze.py).
 		if (percent >= 0 && percent != last_percent) {
-			printf("battery: %d%% (screen %s, wake_fast %ld%s)\n", percent, power_screen_is_on() ? "on" : "off",
-				   power_wake_fast_seconds(), charging ? ", charging" : "");
+			printf("battery: %d%% (screen %s%s)\n", percent, power_screen_is_on() ? "on" : "off",
+				   charging ? ", charging" : "");
 		}
 		last_percent = percent;
 	} else {

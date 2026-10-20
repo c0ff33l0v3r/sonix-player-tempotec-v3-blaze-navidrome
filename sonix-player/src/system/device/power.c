@@ -102,11 +102,6 @@ static uint32_t since(uint32_t mark, uint32_t now) {
 // come back essentially black (backlight technically on, but too dim to see).
 #define BRIGHTNESS_ON_FLOOR 20
 
-// How long a screen-off keeps the panel powered, backlight off, so that a wake
-// inside it needs no unblank (see panel_blank_now). The user chose 60, provided the
-// panel costs under 15 mA (being measured).
-#define WAKE_FAST_DEFAULT_S 60
-
 // Bluetooth. A firmware whose /etc/init.d/S80_bt_init has not been replaced
 // still powers the chip up at every boot -- rfkill on, patchram, bluetoothd,
 // bluealsa -- whether anything uses it or not. Putting it back down is
@@ -1492,20 +1487,14 @@ static bool (*g_wake_hook)(void);
 
 void power_set_wake_hook(bool (*cb)(void)) { g_wake_hook = cb; }
 
-// [power] wake_fast_seconds = N (default WAKE_FAST_DEFAULT_S, 0 = off, -1 = until standby): a
-// screen-off that leaves the panel powered, backlight at nought and a black page
-// on it, for N seconds before really blanking it.
-// A wake inside the window needs no unblank at all -- none of the panel's
+// A screen-off leaves the panel powered, backlight at nought and a black page
+// on it, until standby blanks it: a home A/B while playing showed no
+// measurable battery cost (2026-10-19), so there is no setting.
+// A wake before that needs no unblank at all -- none of the panel's
 // ~215 ms power-on sequence, no touch resume -- only the repaint and the
-// backlight. The blank still happens at the end of the window, and always
-// before a suspend to RAM. Not with double-tap wake: that one needs the blank
-// to put the touch controller in doze.
-static bool g_panel_lit_dark;
-static uint32_t g_panel_lit_until;
-static bool g_panel_lit_no_limit; // -1: only the suspend path or double-tap wake blank it
-static volatile long g_wake_fast_used = WAKE_FAST_DEFAULT_S; // the last screen-off's, for the battery log
-
-long power_wake_fast_seconds(void) { return g_wake_fast_used; }
+// backlight. Not with double-tap wake: that one needs the blank to put the
+// touch controller in doze.
+static bool g_panel_lit_dark; // only the suspend path blanks it
 
 // A blank or unblank blocks this thread for up to half a second (the touch
 // controller resets inside the write), and presses made meanwhile pile up in
@@ -1528,7 +1517,7 @@ static void panel_blank_now(void) {
 	// unblank: the dim one a blank always left before the fast window, not
 	// the nought written for it, which the driver does not keep.
 	backlight_write(BRIGHTNESS_MIN);
-	fprintf(stderr, "power: panel blanked after the fast-wake window\n");
+	fprintf(stderr, "power: panel blanked for standby\n");
 }
 
 void power_screen_off(void) {
@@ -1551,16 +1540,12 @@ void power_screen_off(void) {
 
 	set_indevs_enabled(false); // no touch events into LVGL while the panel is down
 	fade_to(BRIGHTNESS_MIN);   // smooth dim down
-	long fast_s = g_double_tap_wake ? 0 : config_get_int("power", "wake_fast_seconds", WAKE_FAST_DEFAULT_S);
-	g_wake_fast_used = fast_s;
-	if (fast_s != 0) {
+	if (!g_double_tap_wake) {
 		if (g_cfg.brightness_path) {
 			write_long_to_file(g_cfg.brightness_path, 0); // below BRIGHTNESS_MIN: the backlight off
 		}
 		g_hw_brightness = 0;
 		g_panel_lit_dark = true;
-		g_panel_lit_no_limit = fast_s < 0;
-		g_panel_lit_until = lv_tick_get() + (uint32_t)(fast_s > 0 ? fast_s : 0) * 1000u;
 	} else {
 		screen_power(false);
 	}
@@ -1896,10 +1881,6 @@ static void power_timer_cb(lv_timer_t *timer) {
 		power_notify_activity(); // a power press always counts as activity
 		lv_display_trigger_activity(g_disp);
 		now = lv_tick_get();
-	}
-
-	if (g_panel_lit_dark && !g_screen_on && !g_panel_lit_no_limit && (int32_t)(now - g_panel_lit_until) >= 0) {
-		panel_blank_now();
 	}
 
 	// 2. music playing keeps resetting the suspend clock (but not the screen
