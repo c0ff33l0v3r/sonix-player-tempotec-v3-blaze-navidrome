@@ -1736,20 +1736,22 @@ void power_screen_on(void) {
 	} while (0)
 	WAKE_STEP("before"); // radios, clock, the wake hook
 
-	if (g_panel_lit_dark) {
-		display_show_black(false); // before anything is drawn or lit
+	// Woken inside the fast window: the panel never went down (see
+	// panel_blank_now), so there is no unblank, settle or touch resume to do.
+	bool lit = g_panel_lit_dark;
+	g_panel_lit_dark = false;
+	if (lit) {
+		display_black_wake(); // the full repaint below pans the black away
 	}
 
 	// Nothing is drawn while the panel is dark (refr_request_cb), and the
 	// unblank below presents whatever the framebuffer holds: the page as it was
 	// at the blank. What changed in the meantime is drawn now, while the panel
-	// is still off -- only the areas that changed.
-	lv_refr_now(g_disp);
-
-	// Woken inside the fast window: the panel never went down (see
-	// panel_blank_now), so there is no unblank, settle or touch resume to do.
-	bool lit = g_panel_lit_dark;
-	g_panel_lit_dark = false;
+	// is still off -- only the areas that changed. Not on a lit panel: the full
+	// repaint below is its only frame, and its only pan.
+	if (!lit) {
+		lv_refr_now(g_disp);
+	}
 
 	frameprof_begin(PROF_WAKE_UNBLANK);
 	if (!lit) {
@@ -1759,9 +1761,11 @@ void power_screen_on(void) {
 	// until the repaint below is up, or the panel shows black first.
 	// MIN and not 0: after some resumes from mem the backlight never comes
 	// back from 0 (black screen until reboot), while level changes above 0 still work.
-	// The lit panel needs it too: its backlight sits at the 0 of the fast
-	// window, and a straight 0 -> max write leaves it black.
-	backlight_write(BRIGHTNESS_MIN);
+	// The lit panel needs it too, but after its repaint (below): its backlight
+	// sits at the 0 of the fast window, and a straight 0 -> max write leaves it black.
+	if (!lit) {
+		backlight_write(BRIGHTNESS_MIN);
+	}
 	frameprof_end(PROF_WAKE_UNBLANK);
 	WAKE_STEP("unblank");
 
@@ -1831,6 +1835,12 @@ void power_screen_on(void) {
 	// configured level after the picture is all the ramp there is to do; it
 	// used to be four writes with 8 ms sleeps between, 27 ms of blocking.
 	frameprof_begin(PROF_WAKE_FADE);
+	if (lit) {
+		// Lit only once the repaint's pan is on the panel: never the black
+		// page, nor a frame of the one before.
+		display_wait_flip();
+		backlight_write(BRIGHTNESS_MIN);
+	}
 	backlight_write(g_cfg.brightness);
 	frameprof_end(PROF_WAKE_FADE);
 	WAKE_STEP("backlight");

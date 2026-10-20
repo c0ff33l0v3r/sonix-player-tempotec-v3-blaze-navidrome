@@ -69,6 +69,10 @@ void display_mirror_page(void);
 // The fast-wake window's black page: shown over the interface's, or taken
 // away again; LVGL's pages are left as they were (see main.c).
 void display_show_black(bool on);
+// A wake's black-page exit: left to the full repaint's own pan where it can be.
+void display_black_wake(void);
+// Returns once the last pan has reached the panel.
+void display_wait_flip(void);
 
 // Screen rotation: turns the picture (and the touch panel with it) through
 // 180 degrees. Also implemented by main.c, for the same reason -- only the

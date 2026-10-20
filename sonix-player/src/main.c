@@ -1315,6 +1315,8 @@ void display_wake_begin(lv_display_t *disp) { (void)disp; }
 void display_wake_end(lv_display_t *disp) { (void)disp; }
 void display_mirror_page(void) {}
 void display_show_black(bool on) { (void)on; }
+void display_black_wake(void) {}
+void display_wait_flip(void) {}
 // The window is the layout's own size: nothing is shrunk.
 bool display_is_scaled(void) { return false; }
 
@@ -2121,6 +2123,30 @@ void display_show_black(bool on) {
 		display_mirror_page();
 	}
 	fprintf(stderr, "fb: black page %s in %llu us\n", on ? "on" : "off", (unsigned long long)(ft_now_us() - t0));
+}
+
+// The end of the black page for a wake whose full repaint follows: where the
+// flush copies into the page off screen, that page is the interface's one, so
+// the repaint's own pan takes the black away -- one vsync instead of two. The
+// black page then owes a whole frame. Elsewhere, the plain way back.
+void display_black_wake(void) {
+	if (black_ui_yoffset < 0) {
+		return;
+	}
+	if (!(fb_rotated || fb_scaled)) {
+		display_show_black(false);
+		return;
+	}
+	fb_flip_wait();
+	dirty_set_full(&rot_page_pending[black_ui_yoffset ? 0 : 1]);
+	black_ui_yoffset = -1;
+	fprintf(stderr, "fb: black page off with the wake repaint\n");
+}
+
+void display_wait_flip(void) {
+	if (fb_fd >= 0) {
+		fb_flip_wait();
+	}
 }
 
 void display_wake_end(lv_display_t *disp) {
