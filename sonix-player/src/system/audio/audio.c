@@ -2371,6 +2371,17 @@ static void playback_set_rt(bool on) {
 static snd_pcm_t *follow_pcm;
 static snd_pcm_uframes_t follow_buffer;
 static snd_pcm_uframes_t follow_filled;
+static long follow_started_ms; // log_ms() when it was first seen started, 0 = not started
+
+// How long after a start the thread stays at the interface's level. The card
+// is started by the driver on a kernel worker at normal priority (soc_aic
+// start_work): codecs unmuted, muted again one after the other over i2c, clock
+// stopped and restarted, unmuted. A real-time thread decoding the next chunk
+// right then held that worker for 30-43 ms in 9 of 32 starts at 192 kHz, with
+// one AK4493 unmuted and its ramp (21 ms at 192 kHz) at full level when the
+// clock was cut: a very loud pop. Uncontended the sequence takes about 7 ms,
+// and the buffer is full here.
+#define PLAYBACK_START_SETTLE_MS 100
 
 static bool pcm_playing(snd_pcm_t *pcm) {
 	snd_pcm_state_t st = snd_pcm_state(pcm);
@@ -2387,6 +2398,7 @@ static void playback_follow(snd_pcm_t *pcm) {
 		follow_pcm = pcm;
 		follow_filled = 0;
 		follow_buffer = 0;
+		follow_started_ms = 0;
 		snd_pcm_uframes_t period = 0;
 		if (pcm && snd_pcm_get_params(pcm, &follow_buffer, &period) < 0) {
 			follow_buffer = 0;
@@ -2396,12 +2408,19 @@ static void playback_follow(snd_pcm_t *pcm) {
 		playback_set_rt(false);
 		return;
 	}
-	if (pcm_playing(pcm)) {
+	bool playing = pcm_playing(pcm);
+	if (playing) {
 		follow_filled = 0;
-		playback_set_rt(true);
+	}
+	if (!playing && !(follow_buffer > 0 && follow_filled >= follow_buffer)) {
+		follow_started_ms = 0;
+		playback_set_rt(false);
 		return;
 	}
-	playback_set_rt(follow_buffer > 0 && follow_filled >= follow_buffer);
+	if (!follow_started_ms) {
+		follow_started_ms = log_ms();
+	}
+	playback_set_rt(log_ms() - follow_started_ms >= PLAYBACK_START_SETTLE_MS);
 }
 
 // After a write of `frames` to `pcm`.
