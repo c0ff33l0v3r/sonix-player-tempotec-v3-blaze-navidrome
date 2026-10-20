@@ -647,19 +647,24 @@ static void write_dac_attenuation(void) {
 	alsa_set_control("Left Playback Volume", current_volume);
 }
 
-void alsa_suspend_mute(void) {
+void alsa_suspend_mute(void) { alsa_mute_ramp(0); }
+
+bool alsa_mute_ramp(int rate) {
 	if (alsa_board_is_cs43131() || suspend_muted) {
-		return;
+		return false;
 	}
+	// The codec's own volume ramp. The AK4493's runs at the sample rate: from
+	// 0 dB to mute is 4080 steps of 1/fs (93 ms at 44.1 kHz), 16 for each
+	// 0.5 dB level, so only the levels above the one in force take time.
+	long ms = !alsa_board_is_ak4493() ? 30 : rate <= 0 ? 120 : (255 - current_volume) * 16000L / rate + 5;
 #ifndef HOST_BUILD
 	alsa_set_control("Right Playback Volume", 255);
 	alsa_set_control("Left Playback Volume", 255);
-	// The codec's own volume ramp. The AK4493's runs at the sample rate: from
-	// 0 dB to mute is 4080 steps of 1/fs, about 93 ms at 44.1 kHz.
-	usleep((alsa_board_is_ak4493() ? 120 : 30) * 1000);
+	usleep(ms * 1000);
 #endif
 	suspend_muted = true;
-	fprintf(stderr, "alsa: DAC muted for suspend\n");
+	fprintf(stderr, "alsa: DAC ramped to mute (%ld ms)\n", ms);
+	return true;
 }
 
 void alsa_suspend_restore(void) {
@@ -671,7 +676,7 @@ void alsa_suspend_restore(void) {
 	write_dac_attenuation();
 	usleep(30 * 1000);
 #endif
-	fprintf(stderr, "alsa: DAC level restored after suspend\n");
+	fprintf(stderr, "alsa: DAC level restored\n");
 }
 
 int alsa_dsd_gain_index(void) { return dsd_gain_index; }

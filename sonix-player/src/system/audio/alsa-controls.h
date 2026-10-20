@@ -143,6 +143,11 @@ void alsa_controls_reapply(void);
 void alsa_suspend_mute(void);
 void alsa_suspend_restore(void);
 
+// The same mute for a stream that is still playing, waited on only for as long
+// as the codec's own ramp takes from the level in force at `rate` (0: the
+// slowest case). False when the DAC was already held, or has no such control.
+bool alsa_mute_ramp(int rate);
+
 
 // The hardware control is an attenuation: 0 is loudest, 255 is silent. Nothing
 // outside this file should have to know that, so the UI and the key handlers

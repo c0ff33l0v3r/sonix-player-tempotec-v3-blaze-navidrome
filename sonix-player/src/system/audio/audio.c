@@ -84,6 +84,8 @@ static volatile unsigned loop_turns;
 
 unsigned audio_loop_turns(void) { return loop_turns; }
 
+static void dac_ramp_before_cut(snd_pcm_t *pcm);
+
 static int64_t pause_stop_stream(snd_pcm_t *pcm, int frame_bytes) {
 	// No stream is a fair answer, not a fault: the device is handed back after
 	// a few seconds of pause and this is called on the way into pause. Alsa
@@ -98,6 +100,8 @@ static int64_t pause_stop_stream(snd_pcm_t *pcm, int frame_bytes) {
 		queued = 0; // buffered amount unknown: resume a touch late
 	}
 
+	// Counted before the fade, so the resume plays the faded part again.
+	dac_ramp_before_cut(pcm);
 	snd_pcm_drop(pcm);
 
 	fprintf(stderr, "audio[%ld]: paused (stream dropped, %ld frames unplayed)\n", log_ms(), (long)queued);
@@ -199,10 +203,12 @@ static char output_pcm[160] = AUDIO_DEFAULT_PCM;
 
 // Whether 32-bit frames for `pcm` go out as S24_LE. Decided from the handle's
 // own name, so it is right for a handle that fell back to the card.
-static bool pcm_takes_s24(snd_pcm_t *pcm, int bits) {
-	const char *name = (pcm && bits == 32) ? snd_pcm_name(pcm) : NULL;
+static bool pcm_is_card(snd_pcm_t *pcm) {
+	const char *name = pcm ? snd_pcm_name(pcm) : NULL;
 	return name && strcmp(name, AUDIO_DEFAULT_PCM) == 0;
 }
+
+static bool pcm_takes_s24(snd_pcm_t *pcm, int bits) { return bits == 32 && pcm_is_card(pcm); }
 
 typedef struct {
 	int32_t *data;
@@ -1181,6 +1187,7 @@ static bool skip_hold_prepare(snd_pcm_t *pcm, bool passthrough, bool is_paused) 
 	if (!next_waiting) {
 		return false; // a stop, or the end of the queue: close as usual
 	}
+	dac_ramp_before_cut(pcm);
 	snd_pcm_drop(pcm);
 	if (snd_pcm_prepare(pcm) < 0) {
 		return false;
@@ -2388,6 +2395,45 @@ static bool pcm_playing(snd_pcm_t *pcm) {
 	return st == SND_PCM_STATE_RUNNING || st == SND_PCM_STATE_DRAINING;
 }
 
+// ---------------------------------------------------------------------------
+// The tick of a stream cut in the middle of the music
+//
+// The driver's stop (soc_aic stop_work) mutes the two AK4493s over i2c and
+// stops their clock about 5 ms later, while the codecs' own ramp down takes up
+// to 4080/fs (93 ms at 44.1 kHz): the DAC stops at almost the level it was
+// playing, and a pause, a seek or a skip ticks. The stock player cuts the same
+// way -- an XRUN ioctl, with its fade off by default -- and ticks the same.
+//
+// So before such a cut the DAC is taken down with its own attenuator and the
+// cut lands on silence. The samples are never touched. It comes back up, with
+// the same ramp, once the next stream on the card runs.
+// ---------------------------------------------------------------------------
+static volatile bool dac_ramped; // taken to mute here, not yet brought back
+
+static void dac_ramp_before_cut(snd_pcm_t *pcm) {
+	if (!pcm || !pcm_is_card(pcm) || !pcm_playing(pcm)) {
+		return;
+	}
+	// DoP: the codec's ramp counts the DSD rate, not the carrier's -- the
+	// slowest wait is taken rather than a guess.
+	unsigned rate = 0;
+	snd_pcm_hw_params_t *hw;
+	snd_pcm_hw_params_alloca(&hw);
+	if (get_dac_dop() != 1 && snd_pcm_hw_params_current(pcm, hw) == 0) {
+		snd_pcm_hw_params_get_rate(hw, &rate, NULL);
+	}
+	if (alsa_mute_ramp((int)rate)) {
+		dac_ramped = true;
+	}
+}
+
+static void dac_ramp_release(snd_pcm_t *pcm) {
+	if (dac_ramped && pcm_is_card(pcm) && pcm_playing(pcm)) {
+		dac_ramped = false;
+		alsa_suspend_restore();
+	}
+}
+
 // Real-time while `pcm` plays, the interface's level otherwise. NULL is a
 // device about to be opened. A whole buffer written also counts as playing,
 // whatever the state says: the stream starts on a full buffer, so by then it
@@ -2411,6 +2457,7 @@ static void playback_follow(snd_pcm_t *pcm) {
 	bool playing = pcm_playing(pcm);
 	if (playing) {
 		follow_filled = 0;
+		dac_ramp_release(pcm);
 	}
 	if (!playing && !(follow_buffer > 0 && follow_filled >= follow_buffer)) {
 		follow_started_ms = 0;
@@ -2724,6 +2771,7 @@ static void requeue_rescale(requeue_t *q, snd_pcm_t **pcm, int channels, int rat
 static bool pcm_reroute(snd_pcm_t **pcm, int channels, int rate, int bits, snd_pcm_uframes_t *period) {
 	fprintf(stderr, "audio[%ld]: jack changed, rerouting\n", log_ms());
 	if (*pcm) {
+		dac_ramp_before_cut(*pcm);
 		snd_pcm_drop(*pcm);
 		snd_pcm_close(*pcm);
 		*pcm = NULL;
@@ -2911,6 +2959,7 @@ static void seek_flush(snd_pcm_t *pcm, bool already_dropped) {
 	if (pcm_is_bluetooth(pcm) && !already_dropped) {
 		return;
 	}
+	dac_ramp_before_cut(pcm);
 	snd_pcm_drop(pcm);
 	snd_pcm_prepare(pcm);
 }
@@ -3394,6 +3443,7 @@ static void play_wav_file(const char *filepath) {
 			}
 			pcm_drain_bounded(pcm_handle);
 		} else {
+			dac_ramp_before_cut(pcm_handle);
 			snd_pcm_drop(pcm_handle);
 			}
 		snd_pcm_close(pcm_handle);
@@ -3654,6 +3704,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		if (config_get_int("audio", "dsd_start_mute", 1)) {
 			alsa_suspend_mute();
 			dsd_muted = true;
+			dac_ramped = false; // a mute left by a cut is this one's to lift now
 		}
 		set_dac_dop(1);
 	}
@@ -3797,6 +3848,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				// Silence while waiting, when there is a stream to silence: a
 				// seek can arrive with the device handed back.
 				if (pcm_handle) {
+					dac_ramp_before_cut(pcm_handle);
 					snd_pcm_drop(pcm_handle);
 					dropped_while_waiting = true;
 				}
@@ -4346,6 +4398,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				pcm_drain_bounded(pcm_handle);
 			}
 		} else {
+			dac_ramp_before_cut(pcm_handle);
 			snd_pcm_drop(pcm_handle);
 			}
 		snd_pcm_close(pcm_handle);
@@ -5292,6 +5345,7 @@ static bool external_follow_output(void) {
 	// Dropped rather than drained: what is still in the buffer belongs to the
 	// socket nobody is listening to any more, and draining it would play it
 	// there before the change took effect.
+	dac_ramp_before_cut(external_pcm);
 	snd_pcm_drop(external_pcm);
 	snd_pcm_close(external_pcm);
 	external_pcm = NULL;
@@ -5438,6 +5492,9 @@ int audio_external_write(const void *frames, int count) {
 		fprintf(stderr, "audio: external write failed: %s\n", snd_strerror((int)got));
 		break;
 	}
+	if (written > 0) {
+		dac_ramp_release(external_pcm);
+	}
 
 	pthread_mutex_unlock(&external_lock);
 	return written;
@@ -5447,6 +5504,7 @@ void audio_external_end(void) {
 	pthread_mutex_lock(&external_lock);
 
 	if (external_pcm) {
+		dac_ramp_before_cut(external_pcm);
 		snd_pcm_drop(external_pcm);
 		snd_pcm_close(external_pcm);
 		external_pcm = NULL;
