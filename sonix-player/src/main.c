@@ -19,6 +19,7 @@
 #include "src/gui/nowplaying/cover.h"
 #include "src/system/audio/waveform.h"
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/shell/icons.h"
 #include "src/gui/shell/uiscale.h"
 #include "src/gui/shell/gui.h"
 #include "src/system/core/frameprof.h"
@@ -2662,6 +2663,14 @@ int main(int argc, char **argv) {
 			   model ? model->name : "no model this build knows, so the default");
 	}
 	ui_panel_width = panel_w;
+	// The icons are drawn for one width at build time (PANEL_WIDTH in the
+	// Makefile); chevron_left is 36 px at 480. Any other size means every icon
+	// on screen is the wrong size, and this line is the only one that says so.
+	if ((int32_t)icon_chevron_left.header.w != ui_px(36)) {
+		printf("panel: the icons were built for another panel width (chevron %d px, %d expected): build with "
+			   "PANEL_WIDTH=%d\n",
+			   (int)icon_chevron_left.header.w, (int)ui_px(36), panel_w);
+	}
 
 	// The fonts, before anything can create a widget and after the panel is
 	// known, since their sizes go through ui_px(): every lv_font_t the

@@ -10,6 +10,12 @@ new one is added:
     pip install cairosvg pillow
     python3 tools/svg_to_lvgl.py
 
+For a panel that is not 480 px wide, --width W draws every icon at the size
+ui_px() gives (src/gui/shell/uiscale.h, same rounding) and --out DIR writes
+icons.c/icons.h there instead; the Makefile does this when PANEL_WIDTH is set:
+
+    python3 tools/svg_to_lvgl.py --width 320 --out build_gen
+
 Two kinds of icon come out of this:
 
   * SVGs are emitted as ARGB8888 *white* shapes. The colour comes from LVGL at
@@ -503,12 +509,27 @@ def c_array(data, per_line=12):
     return "\n".join(lines)
 
 
+def ui_px(n, width):
+    """uiscale.h's ui_px() for a positive size."""
+    return (n * width + 240) // 480
+
+
 def main():
+    args = sys.argv[1:]
+    width = int(args[args.index("--width") + 1]) if "--width" in args else 480
+    out_c, out_h = OUT_C, OUT_H
+    if "--out" in args:
+        out_dir = args[args.index("--out") + 1]
+        out_c, out_h = os.path.join(out_dir, "icons.c"), os.path.join(out_dir, "icons.h")
+
+    def scaled(size):
+        return tuple(ui_px(n, width) for n in size) if isinstance(size, tuple) else ui_px(size, width)
+
     parts_c = []
     parts_h = []
 
-    entries = [(f, n, s, False) for f, n, s in ICONS]
-    entries += [(f, n, size, True) for f, n, size in COLOR_ICONS]
+    entries = [(f, n, scaled(s), False) for f, n, s in ICONS]
+    entries += [(f, n, scaled(size), True) for f, n, size in COLOR_ICONS]
 
     for filename, name, size, keep_colour in entries:
         path = os.path.join(ICON_DIR, filename)
@@ -544,19 +565,19 @@ def main():
         " */\n\n"
     )
 
-    with open(OUT_C, "w") as f:
+    with open(out_c, "w") as f:
         f.write(header)
         f.write('#include "icons.h"\n\n#include <stdint.h>\n\n')
         f.write("\n".join(parts_c))
 
-    with open(OUT_H, "w") as f:
+    with open(out_h, "w") as f:
         f.write(header)
         f.write("#ifndef ICONS_H\n#define ICONS_H\n\n")
         f.write('#include "lvgl/lvgl.h"\n\n')
         f.write("\n".join(parts_h))
         f.write("\n\n#endif // ICONS_H\n")
 
-    print("wrote %s and %s" % (OUT_C, OUT_H))
+    print("wrote %s and %s" % (out_c, out_h))
 
 
 if __name__ == "__main__":

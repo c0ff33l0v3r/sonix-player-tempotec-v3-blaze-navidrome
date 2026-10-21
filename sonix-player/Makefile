@@ -270,13 +270,44 @@ HOST_OBJS = $(APP_SRCS:src/%.c=build_host/%.o) $(APP_CXX_SRCS:src/%.cpp=build_ho
 TARGET_OBJS = $(APP_SRCS:src/%.c=build_target/%.o) $(APP_CXX_SRCS:src/%.cpp=build_target/%.opp) \
 			  $(LVGL_SRCS:$(LVGL_DIR)/%.c=build_target/lvgl/%.o)
 
+# PANEL_WIDTH=W builds for a panel W px wide: the icons are drawn at the size
+# ui_px() gives (tools/svg_to_lvgl.py --width, needs cairosvg; ICON_PYTHON picks
+# the interpreter) in place of the checked-in icons.c, which is drawn for 480.
+# The rest of the interface scales at run time and needs nothing here.
+PANEL_WIDTH ?= 480
+ICON_PYTHON ?= python3
+ifneq ($(PANEL_WIDTH),480)
+ICONS_GEN = build_gen/icons-$(PANEL_WIDTH)/icons.c
+APP_SRCS := $(filter-out src/gui/shell/icons.c,$(APP_SRCS))
+HOST_OBJS += build_host/icons-$(PANEL_WIDTH).o
+TARGET_OBJS += build_target/icons-$(PANEL_WIDTH).o
+
+$(ICONS_GEN): tools/svg_to_lvgl.py $(wildcard assets/icons/*)
+	@mkdir -p $(dir $@)
+	$(ICON_PYTHON) tools/svg_to_lvgl.py --width $(PANEL_WIDTH) --out $(dir $@)
+
+build_host/icons-$(PANEL_WIDTH).o: $(ICONS_GEN)
+	$(CC) $(HOST_CFLAGS) -c $< -o $@
+
+build_target/icons-$(PANEL_WIDTH).o: $(ICONS_GEN)
+	$(CROSS_CC) $(TARGET_CFLAGS) -c $< -o $@
+endif
+
+# Rewritten only when PANEL_WIDTH changes, so that switching back to a width
+# whose objects are older than the binary still relinks it.
+PANEL_WIDTH_STAMP = build_gen/panel_width
+$(PANEL_WIDTH_STAMP): FORCE
+	@mkdir -p $(dir $@)
+	@echo $(PANEL_WIDTH) > $@.tmp
+	@if cmp -s $@.tmp $@; then rm -f $@.tmp; else mv $@.tmp $@; fi
+
 .PHONY: all host target clean compile_commands.json
 
 all: host compile_commands.json
 
 host: $(HOST_BIN) compile_commands.json
 
-$(HOST_BIN): $(HOST_OBJS)
+$(HOST_BIN): $(HOST_OBJS) $(PANEL_WIDTH_STAMP)
 	$(HOST_LD) -o $@ $(HOST_OBJS) $(HOST_LDFLAGS)
 	@echo "Host build complete: Run './$(HOST_BIN)' to start the simulator."
 
@@ -316,7 +347,7 @@ build_host/lvgl/%.o: $(LVGL_DIR)/%.c
 
 target: $(TARGET_BIN) $(LAUNCH_BIN) compile_commands.json
 
-$(TARGET_BIN): $(TARGET_OBJS)
+$(TARGET_BIN): $(TARGET_OBJS) $(PANEL_WIDTH_STAMP)
 	$(TARGET_LD) -o $@ $(TARGET_OBJS) $(TARGET_LDFLAGS)
 	@$(MAKE) --no-print-directory check-abi
 	@$(MAKE) --no-print-directory strip-target
