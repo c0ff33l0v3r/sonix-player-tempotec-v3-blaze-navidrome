@@ -690,7 +690,7 @@ static void kb_preview_show(keyboard_t *kb, lv_obj_t *key, const char *text) {
 	lv_obj_get_coords(kb->host, &host_coords);
 
 	int x = (coords.x1 + coords.x2) / 2 - w / 2 - host_coords.x1;
-	int right_limit = lv_obj_get_width(kb->host) - w - 2;
+	int right_limit = lv_obj_get_width(kb->host) - w - ui_px(2);
 	if (x > right_limit) {
 		x = right_limit;
 	}
@@ -819,8 +819,8 @@ static void kb_variants_open(keyboard_t *kb, lv_obj_t *key, const char *cap) {
 	} else {
 		x = key_x + cell_w / 2 + KB_VARIANT_PAD - w;
 	}
-	if (x > host_w - w - 2) {
-		x = host_w - w - 2;
+	if (x > host_w - w - ui_px(2)) {
+		x = host_w - w - ui_px(2);
 	}
 	if (x < 2) {
 		x = 2;
@@ -984,8 +984,8 @@ static void kb_build(keyboard_t *kb) {
 	lv_event_cb_t on_accept = kb->on_accept;
 	void *user = kb->accept_user;
 
-	int row_h = (height - 16 - 3 * 7) / 4;
-	int key_w = (width - 16 - 9 * 6) / 10;
+	int row_h = (height - ui_px(16) - 3 * ui_px(7)) / 4;
+	int key_w = (width - ui_px(16) - 9 * ui_px(6)) / 10;
 	int index = 0;
 
 	// The two panels, stacked inside the tray: QWERTY and T9. Only one stays
@@ -1013,7 +1013,7 @@ static void kb_build(keyboard_t *kb) {
 	kb->rows[1] = kb_make_row(kb->qwerty, row_h);
 	kb->rows[2] = kb_make_row(kb->qwerty, row_h);
 
-	kb->shift_btn = kb_make_key(kb->rows[2], key_w + 14, kb_shift_cb, kb);
+	kb->shift_btn = kb_make_key(kb->rows[2], key_w + ui_px(14), kb_shift_cb, kb);
 	kb->shift_icon = kb_key_icon(kb->shift_btn, &icon_shift);
 
 	for (index = 0; index < KB_MAX_KEYS; index++) {
@@ -1029,19 +1029,19 @@ static void kb_build(keyboard_t *kb) {
 		lv_obj_add_event_cb(kb->letter_btn[index], kb_variants_cb, LV_EVENT_PRESS_LOST, &kb->refs[index]);
 	}
 
-	kb->delete_btn = kb_make_key(kb->rows[2], key_w + 14, kb_delete_cb, kb);
+	kb->delete_btn = kb_make_key(kb->rows[2], key_w + ui_px(14), kb_delete_cb, kb);
 	kb_key_icon(kb->delete_btn, &icon_delete);
 	// Holding delete keeps deleting.
 	lv_obj_add_event_cb(kb->delete_btn, kb_delete_cb, LV_EVENT_LONG_PRESSED_REPEAT, kb);
 
 	lv_obj_t *row4 = kb_make_row(kb->qwerty, row_h);
-	lv_obj_t *mode = kb_make_key(row4, 84, kb_mode_cb, kb);
+	lv_obj_t *mode = kb_make_key(row4, ui_px(84), kb_mode_cb, kb);
 	kb->mode_label = kb_key_label(mode);
 	// Held rather than tapped, the same key offers the other alphabets in use.
 	lv_obj_add_event_cb(mode, kb_layouts_cb, LV_EVENT_LONG_PRESSED, kb);
 	lv_obj_t *space = kb_make_key(row4, 0, kb_space_cb, kb); // grows
 	kb_key_icon(space, &icon_space);
-	kb->accept_btn = kb_make_key(row4, 84, on_accept, user);
+	kb->accept_btn = kb_make_key(row4, ui_px(84), on_accept, user);
 	lv_obj_set_style_bg_color(kb->accept_btn, theme()->accent, 0);
 	if (accept_icon) {
 		lv_obj_t *glyph = kb_key_icon(kb->accept_btn, accept_icon);
@@ -1067,7 +1067,7 @@ static void kb_build(keyboard_t *kb) {
 	lv_obj_set_flex_align(kb->t9, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
 	kb->t9_last_key = -1;
-	int t9_key_w = (width - 16 - 2 * 6) / 3;
+	int t9_key_w = (width - ui_px(16) - 2 * ui_px(6)) / 3;
 	for (int r = 0; r < 3; r++) {
 		lv_obj_t *trow = kb_make_row(kb->t9, row_h);
 		for (int c = 0; c < 3; c++) {
@@ -1084,18 +1084,18 @@ static void kb_build(keyboard_t *kb) {
 	}
 	lv_obj_t *t9_row4 = kb_make_row(kb->t9, row_h);
 	// The mode switch, always first: "123" in letter mode, "abc" in number mode.
-	lv_obj_t *t9_mode = kb_make_key(t9_row4, 84, kb_t9_mode_cb, kb);
+	lv_obj_t *t9_mode = kb_make_key(t9_row4, ui_px(84), kb_t9_mode_cb, kb);
 	kb->t9_mode_label = kb_key_label(t9_mode);
 	lv_obj_add_event_cb(t9_mode, kb_layouts_cb, LV_EVENT_LONG_PRESSED, kb);
-	kb->t9_shift_btn = kb_make_key(t9_row4, key_w + 14, kb_t9_shift_cb, kb);
+	kb->t9_shift_btn = kb_make_key(t9_row4, key_w + ui_px(14), kb_t9_shift_cb, kb);
 	kb->t9_shift_icon = kb_key_icon(kb->t9_shift_btn, &icon_shift);
 	// The "0" that takes the shift icon's place in number mode.
 	lv_obj_t *t9_space = kb_make_key(t9_row4, 0, kb_t9_space_cb, kb); // grows
 	kb_key_icon(t9_space, &icon_space);
-	lv_obj_t *t9_del = kb_make_key(t9_row4, key_w + 14, kb_delete_cb, kb);
+	lv_obj_t *t9_del = kb_make_key(t9_row4, key_w + ui_px(14), kb_delete_cb, kb);
 	kb_key_icon(t9_del, &icon_delete);
 	lv_obj_add_event_cb(t9_del, kb_delete_cb, LV_EVENT_LONG_PRESSED_REPEAT, kb);
-	kb->t9_accept_btn = kb_make_key(t9_row4, 84, on_accept, user);
+	kb->t9_accept_btn = kb_make_key(t9_row4, ui_px(84), on_accept, user);
 	lv_obj_set_style_bg_color(kb->t9_accept_btn, theme()->accent, 0);
 	if (accept_icon) {
 		lv_obj_t *glyph = kb_key_icon(kb->t9_accept_btn, accept_icon);

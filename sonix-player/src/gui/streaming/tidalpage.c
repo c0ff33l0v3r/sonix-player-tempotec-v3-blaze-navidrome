@@ -2154,7 +2154,7 @@ static void build_search_page(gui_config_t *cfg) {
 	}
 	paint_search_pills();
 
-	search_keyboard = keyboard_create(search_screen, cfg->screen_width, 316, search_field, NULL, "ok",
+	search_keyboard = keyboard_create(search_screen, cfg->screen_width, ui_px(316), search_field, NULL, "ok",
 									  search_accept_cb, NULL);
 	switcher_attach_back_gesture(search_screen);
 	theme_register_refresh(paint_search_pills);

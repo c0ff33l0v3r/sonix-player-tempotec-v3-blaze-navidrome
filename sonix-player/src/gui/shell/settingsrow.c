@@ -987,9 +987,9 @@ void settingsrow_toggle_duration(lv_obj_t *parent, const char *title, lv_event_c
 		fill_wheel_numbers(minutes_options, sizeof(minutes_options), 59, "%02d");
 	}
 
-	out->hours = make_duration_roller(out->wheels, hours_options, 76, change_cb);
+	out->hours = make_duration_roller(out->wheels, hours_options, ui_px(76), change_cb);
 	wheel_unit(out->wheels, "h");
-	out->minutes = make_duration_roller(out->wheels, minutes_options, 86, change_cb);
+	out->minutes = make_duration_roller(out->wheels, minutes_options, ui_px(86), change_cb);
 	wheel_unit(out->wheels, "min");
 }
 

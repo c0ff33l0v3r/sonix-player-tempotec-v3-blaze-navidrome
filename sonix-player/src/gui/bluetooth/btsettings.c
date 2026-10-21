@@ -327,7 +327,7 @@ static void build_rename_layer(gui_config_t *cfg) {
 	keyboard_style_caret(rename_field);
 
 	rename_keyboard =
-		keyboard_create(rename_layer, cfg->screen_width, 316, rename_field, NULL, "ok", rename_accept_cb, NULL);
+		keyboard_create(rename_layer, cfg->screen_width, ui_px(316), rename_field, NULL, "ok", rename_accept_cb, NULL);
 }
 
 static void row_free_cb(lv_event_t *e) { free(lv_event_get_user_data(e)); }

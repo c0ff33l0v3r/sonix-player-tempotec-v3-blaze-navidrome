@@ -79,7 +79,7 @@
 // The sheet's own padding. The cards are aligned inside the content area, so
 // every y below is measured from there and not from the top of the screen;
 // measuring from the screen puts the close line over the second card.
-#define PANEL_PAD_TOP(cfg) ((cfg)->padding + 8)
+#define PANEL_PAD_TOP(cfg) ((cfg)->padding + ui_px(8))
 #define PANEL_PAD_BOTTOM ui_px(8)
 
 static lv_obj_t *veil;	// dims the page still showing while the sheet is part-way in
@@ -2216,14 +2216,14 @@ void quickpanel_init(gui_config_t *cfg) {
 
 	// Repeat/shuffle pinned left, the star pinned right, transport centred
 	// between them: the player's arrangement.
-	lv_obj_t *repeat_btn = make_flat_button(transport, 56, repeat_cb);
+	lv_obj_t *repeat_btn = make_flat_button(transport, ui_px(56), repeat_cb);
 	np_repeat_btn = repeat_btn;
 	lv_obj_set_ignore_layout(repeat_btn, true);
 	lv_obj_align(repeat_btn, LV_ALIGN_LEFT_MID, 0, 0);
 	np_repeat_icon = lv_image_create(repeat_btn);
 	lv_obj_center(np_repeat_icon);
 
-	lv_obj_t *prev_btn = make_flat_button(transport, 76, prev_cb);
+	lv_obj_t *prev_btn = make_flat_button(transport, ui_px(76), prev_cb);
 	np_prev_btn = prev_btn;
 	np_star_icon = NULL; // really created further down, once the star button exists
 	lv_obj_t *prev_icon = lv_image_create(prev_btn);
@@ -2235,7 +2235,7 @@ void quickpanel_init(gui_config_t *cfg) {
 
 	// The play disc keeps the neutral circle colour the other round controls use;
 	// the white disc belongs over artwork, not on a card that follows the theme.
-	lv_obj_t *play_btn = make_flat_button(transport, 84, play_cb);
+	lv_obj_t *play_btn = make_flat_button(transport, ui_px(84), play_cb);
 	lv_obj_set_style_radius(play_btn, LV_RADIUS_CIRCLE, 0);
 	lv_obj_add_style(play_btn, &theme_style_switch, 0);
 	lv_obj_set_style_bg_opa(play_btn, LV_OPA_COVER, 0);
@@ -2244,7 +2244,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_add_style(np_play_icon, &theme_style_icon, 0);
 	lv_obj_center(np_play_icon);
 
-	lv_obj_t *next_btn = make_flat_button(transport, 76, next_cb);
+	lv_obj_t *next_btn = make_flat_button(transport, ui_px(76), next_cb);
 	np_next_btn = next_btn;
 	lv_obj_t *next_icon = lv_image_create(next_btn);
 	// The look of the three while a station connects; see the refresh.
@@ -2257,7 +2257,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_set_style_image_recolor_opa(next_icon, LV_OPA_COVER, 0);
 	lv_obj_center(next_icon);
 
-	lv_obj_t *star_btn = make_flat_button(transport, 56, star_cb);
+	lv_obj_t *star_btn = make_flat_button(transport, ui_px(56), star_cb);
 	np_star_btn = star_btn;
 	lv_obj_set_ignore_layout(star_btn, true);
 	lv_obj_align(star_btn, LV_ALIGN_RIGHT_MID, 0, 0);

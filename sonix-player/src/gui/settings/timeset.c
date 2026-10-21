@@ -1097,12 +1097,12 @@ void timeset_init(gui_config_t *cfg) {
 	// too narrow to hit on a 480 px panel, and the two boxed groups read as
 	// "the date" and "the time" at a glance.
 	date_card = make_card(content);
-	roller_day = make_roller(date_card, days_options, 86);
-	roller_month = make_roller(date_card, MONTHS, 184);
-	roller_year = make_roller(date_card, years_options, 110);
+	roller_day = make_roller(date_card, days_options, ui_px(86));
+	roller_month = make_roller(date_card, MONTHS, ui_px(184));
+	roller_year = make_roller(date_card, years_options, ui_px(110));
 
 	time_card = make_card(content);
-	roller_hour = make_roller(time_card, hours_options, 118);
+	roller_hour = make_roller(time_card, hours_options, ui_px(118));
 
 	// The colon between the two, like every clock dialog.
 	lv_obj_t *colon = lv_label_create(time_card);
@@ -1110,12 +1110,12 @@ void timeset_init(gui_config_t *cfg) {
 	lv_obj_add_style(colon, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(colon, &font_ui_32, 0);
 
-	roller_minute = make_roller(time_card, minutes_options, 118);
+	roller_minute = make_roller(time_card, minutes_options, ui_px(118));
 
 	// The third roller always exists and is merely hidden: building and
 	// destroying it on every format change would mean rebuilding its styling too
 	// and re-entering it in the list the theme repaints.
-	roller_ampm = make_roller(time_card, AMPM_OPTIONS, 92);
+	roller_ampm = make_roller(time_card, AMPM_OPTIONS, ui_px(92));
 	lv_obj_set_hidden(roller_ampm, true);
 
 	// Time zone, above "24 hour", because it decides what time the rollers above

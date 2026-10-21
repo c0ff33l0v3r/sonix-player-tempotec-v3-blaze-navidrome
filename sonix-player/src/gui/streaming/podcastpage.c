@@ -2581,7 +2581,7 @@ static void build_offline_banner(lv_obj_t *column, gui_config_t *cfg) {
 #define LISTEN_ROW_HEIGHT ui_px(96)
 // Between the block and the rows: wider than the gap between two rows, so the
 // list of podcasts reads as starting there.
-#define TOP_BLOCK_GAP (ROW_GAP + 18)
+#define TOP_BLOCK_GAP (ROW_GAP + ui_px(18))
 
 // The episode the first row shows: "" while it is hidden.
 static char listen_now_path[512];
@@ -3245,7 +3245,7 @@ static void build_search_page(gui_config_t *cfg) {
 	// No search-type pills, unlike Qobuz and Tidal: there the search runs over
 	// tracks, albums and artists, here there is one thing only to search for.
 	search_keyboard =
-		keyboard_create(search_screen, cfg->screen_width, 316, search_field, NULL, "ok", search_accept_cb, NULL);
+		keyboard_create(search_screen, cfg->screen_width, ui_px(316), search_field, NULL, "ok", search_accept_cb, NULL);
 	switcher_attach_back_gesture(search_screen);
 }
 

@@ -662,7 +662,7 @@ static int build_front_keys(const side_t *side, gui_config_t *cfg) {
 		lv_obj_set_scrollable(zone, false);
 		lv_obj_add_event_cb(zone, pick_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)key->button);
 
-		int leader_top = cy + FRONT_HIT / 2 - 6;
+		int leader_top = cy + FRONT_HIT / 2 - ui_px(6);
 		add_leader(cx - 1, leader_top, 2, y - leader_top);
 
 		int x = cx - FRONT_LEADER_IN;
@@ -769,7 +769,7 @@ void remap_init(gui_config_t *cfg) {
 		vol_side.w = 186;
 		vol_side.h = 294;
 		vol_side.x = cfg->screen_width - vol_side.w;
-		vol_side.y = cfg->screen_height - vol_side.h + 4;
+		vol_side.y = cfg->screen_height - vol_side.h + ui_px(4);
 		build_side(&vol_side, cfg);
 	} else {
 		// Under the last row, in the column the rows use.

@@ -1441,7 +1441,7 @@ void playlistpage_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(name_field, &font_ui_24, 0);
 	keyboard_style_caret(name_field);
 
-	name_keyboard = keyboard_create(name_layer, cfg->screen_width, 316, name_field, NULL, "ok", name_accept_cb, NULL);
+	name_keyboard = keyboard_create(name_layer, cfg->screen_width, ui_px(316), name_field, NULL, "ok", name_accept_cb, NULL);
 
 	// --- the import button, in the title row's corner ------------------------
 	import_btn = lv_btn_create(playlistpage_screen);

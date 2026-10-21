@@ -186,7 +186,7 @@ void ebooksettings_init(gui_config_t *cfg) {
 		lv_obj_set_scrollable(line, false);
 	}
 
-	ebookbar_create(&preview, preview_paper, (int32_t)cfg->screen_width - 2 * cfg->padding - 28);
+	ebookbar_create(&preview, preview_paper, (int32_t)cfg->screen_width - 2 * cfg->padding - ui_px(28));
 
 	// --- and the switches, in what scrolls
 	option_list = lv_obj_create(ebooksettings_screen);

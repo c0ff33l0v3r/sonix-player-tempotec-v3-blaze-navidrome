@@ -1362,7 +1362,7 @@ static void build_search_page(gui_config_t *cfg) {
 
 	// 316 px is the other search page's keyboard height, and the two want to be
 	// the same keyboard in the same place.
-	search_keyboard = keyboard_create(radiosearch_screen, cfg->screen_width, 316, search_field, &icon_search, NULL,
+	search_keyboard = keyboard_create(radiosearch_screen, cfg->screen_width, ui_px(316), search_field, &icon_search, NULL,
 									  search_accept_cb, NULL);
 
 	lv_obj_add_event_cb(radiosearch_screen, search_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);

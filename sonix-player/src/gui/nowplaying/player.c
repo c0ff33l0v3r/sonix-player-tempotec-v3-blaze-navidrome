@@ -927,7 +927,7 @@ static void progress_slider_set(int value) {
 	int32_t len = lv_area_get_width(&coords) - lv_obj_get_style_pad_left(progress_slider, LV_PART_MAIN) -
 				  lv_obj_get_style_pad_right(progress_slider, LV_PART_MAIN);
 	int32_t end = left + (int32_t)((int64_t)(value - bar->min_value) * len / (bar->max_value - bar->min_value));
-	int32_t half = lv_area_get_width(&drawn) / 2 + 2; // the knob, and a rounding pixel either way
+	int32_t half = lv_area_get_width(&drawn) / 2 + ui_px(2); // the knob, and a rounding pixel either way
 	int32_t ext = lv_obj_get_ext_draw_size(progress_slider);
 	lv_area_t dirty = {
 		.x1 = LV_MIN(drawn.x1, end - half) - ext,
@@ -1468,7 +1468,7 @@ static int lyrics_view_h;
 // Timed lines have room above the first and below the last, so either can be
 // brought to the middle; untimed ones read from the top.
 static void lyrics_pad(void) {
-	int around = lyrics_cur.synced ? lyrics_view_h / 2 - 20 : LYRICS_FADE_PX / 2;
+	int around = lyrics_cur.synced ? lyrics_view_h / 2 - ui_px(20) : LYRICS_FADE_PX / 2;
 	lv_obj_set_style_pad_top(lyrics_view, around, 0);
 	lv_obj_set_style_pad_bottom(lyrics_view, lyrics_cur.synced ? around : LYRICS_FADE_PX, 0);
 }
@@ -2057,7 +2057,7 @@ static void lyrics_layout(void) {
 		return;
 	}
 	int head_bottom = lyrics_head_top() + STUDIO_HEAD_H + STUDIO_BADGE_GAP;
-	int top = layout_alt_now || layout_studio_now ? head_bottom : back_btn_centre_y() + 28;
+	int top = layout_alt_now || layout_studio_now ? head_bottom : back_btn_centre_y() + ui_px(28);
 	int pane_y = 0;
 	int x = 0, w = cover_box_w, h = cover_box_h - top;
 	if (layout_studio_now) {
@@ -2554,7 +2554,7 @@ static void lyrics_build(void) {
 	lv_obj_t *col = lv_obj_create(lyrics_head);
 	lyrics_head_col = col;
 	lv_obj_remove_style_all(col);
-	lv_obj_set_size(col, cover_box_w - 2 * STUDIO_MARGIN - 2 * 68, LV_SIZE_CONTENT);
+	lv_obj_set_size(col, cover_box_w - 2 * STUDIO_MARGIN - 2 * ui_px(68), LV_SIZE_CONTENT);
 	lv_obj_align(col, LV_ALIGN_CENTER, 0, 0);
 	lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -3055,7 +3055,7 @@ static void apply_layout(void) {
 		// nothing at all. Here they size themselves -- so each pill ends where
 		// its own text ends -- up to what is left of the sleeve once the star's
 		// disc and the margins are taken off.
-		int room = cover_box_w - 2 * ALT_PAD - ALT_FAV_SIZE - 2 * ALT_PILL_PAD_H - 24;
+		int room = cover_box_w - 2 * ALT_PAD - ALT_FAV_SIZE - 2 * ALT_PILL_PAD_H - ui_px(24);
 		if (song_title_label) {
 			lv_obj_set_parent(song_title_label, alt_title_pill);
 			lv_obj_set_width(song_title_label, LV_SIZE_CONTENT);
@@ -6167,7 +6167,7 @@ void player_init(gui_config_t *cfg) {
 	// against one of them.
 	studio_text_col = lv_obj_create(studio_head);
 	lv_obj_remove_style_all(studio_text_col);
-	lv_obj_set_size(studio_text_col, cover_size - 2 * STUDIO_MARGIN - 2 * 68, LV_SIZE_CONTENT);
+	lv_obj_set_size(studio_text_col, cover_size - 2 * STUDIO_MARGIN - 2 * ui_px(68), LV_SIZE_CONTENT);
 	lv_obj_align(studio_text_col, LV_ALIGN_CENTER, 0, 0);
 	lv_obj_set_flex_flow(studio_text_col, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(studio_text_col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);

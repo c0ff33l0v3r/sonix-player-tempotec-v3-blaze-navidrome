@@ -875,7 +875,7 @@ void podcastopml_init(gui_config_t *cfg) {
 	lv_obj_align(feeds_status, LV_ALIGN_TOP_LEFT, cfg->padding + ui_px(4), top + ui_px(84));
 
 	// The list starts under the file and the count.
-	int list_top = top + 116;
+	int list_top = top + ui_px(116);
 	lv_obj_set_size(feeds_list, lv_pct(100), cfg->screen_height - list_top);
 	lv_obj_align(feeds_list, LV_ALIGN_TOP_LEFT, 0, list_top);
 

@@ -835,7 +835,7 @@ void search_init(gui_config_t *cfg) {
 	int keyboard_h = 316; // tall enough for honest fingertip-sized keys
 	screen_h = cfg->screen_height;
 	keyboard_height = keyboard_h;
-	results_top = top + 62 + 10;
+	results_top = top + ui_px(62) + ui_px(10);
 
 	field = lv_textarea_create(search_screen);
 	lv_textarea_set_one_line(field, true);

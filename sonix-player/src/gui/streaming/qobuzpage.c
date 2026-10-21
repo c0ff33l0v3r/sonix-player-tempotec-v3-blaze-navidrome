@@ -1923,7 +1923,7 @@ static void build_search_page(gui_config_t *cfg) {
 	}
 	paint_search_pills();
 
-	search_keyboard = keyboard_create(search_screen, cfg->screen_width, 316, search_field, NULL, "ok",
+	search_keyboard = keyboard_create(search_screen, cfg->screen_width, ui_px(316), search_field, NULL, "ok",
 									  search_accept_cb, NULL);
 	switcher_attach_back_gesture(search_screen);
 	theme_register_refresh(paint_search_pills);
@@ -2011,7 +2011,7 @@ static void build_login_page(gui_config_t *cfg) {
 	int top = settingsrow_content_top(cfg);
 
 	user_field = make_field(login_screen, cfg, "qobuz_username_or_email", top);
-	password_field = make_field(login_screen, cfg, "password", top + 78);
+	password_field = make_field(login_screen, cfg, "password", top + ui_px(78));
 
 	// The password as on any modern system: dots from the first keystroke, and
 	// the eye to reveal the whole of it. Zero show time means the character is
@@ -2040,7 +2040,7 @@ static void build_login_page(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(note, &font_ui_18, 0);
 	lv_label_set_text(note, tr("qobuz_login_note"));
 
-	login_keyboard = keyboard_create(login_screen, cfg->screen_width, 316, user_field, NULL, "ok", login_accept_cb,
+	login_keyboard = keyboard_create(login_screen, cfg->screen_width, ui_px(316), user_field, NULL, "ok", login_accept_cb,
 									 NULL);
 	switcher_attach_back_gesture(login_screen);
 }

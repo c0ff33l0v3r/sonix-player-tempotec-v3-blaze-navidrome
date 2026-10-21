@@ -250,7 +250,7 @@ static void build_login(gui_config_t *cfg) {
 	int top = settingsrow_content_top(cfg);
 
 	user_field = make_field(login_screen, cfg, "lastfm_username", top);
-	password_field = make_field(login_screen, cfg, "password", top + 78);
+	password_field = make_field(login_screen, cfg, "password", top + ui_px(78));
 	keyboard_style_password(password_field, 0);
 	lv_obj_set_style_pad_right(password_field, ui_px(60), 0);
 
@@ -275,7 +275,7 @@ static void build_login(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(note, &font_ui_18, 0);
 	lv_label_set_text(note, tr("lastfm_login_note"));
 
-	login_keyboard = keyboard_create(login_screen, cfg->screen_width, 316, user_field, NULL, "ok", login_accept_cb, NULL);
+	login_keyboard = keyboard_create(login_screen, cfg->screen_width, ui_px(316), user_field, NULL, "ok", login_accept_cb, NULL);
 	switcher_attach_back_gesture(login_screen);
 }
 

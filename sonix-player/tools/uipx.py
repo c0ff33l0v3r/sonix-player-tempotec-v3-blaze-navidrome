@@ -40,6 +40,11 @@ for p in PX_STYLES:
     CALLS['lv_obj_set_style_' + p] = (1,)
     CALLS['lv_style_set_' + p] = (1,)
 CALLS['lv_obj_set_style_size'] = (1, 2)
+# Sonix's own helpers that take a size in pixels.
+CALLS.update({
+    'keyboard_create': (1, 2), 'kb_make_key': (1,), 'make_flat_button': (1,),
+    'make_roller': (2,), 'make_duration_roller': (2,),
+})
 
 TRANSPARENT = {'MIN', 'MAX', 'LV_MIN', 'LV_MAX'}
 FACTOR_NEIGHBOURS = set('*/%<>=!&|^')
