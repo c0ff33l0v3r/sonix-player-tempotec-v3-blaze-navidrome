@@ -27,14 +27,18 @@ lv_obj_t *flappybird_screen;
 // ---------------------------------------------------------------------------
 //
 // The game runs in the artwork's own pixels, 60 steps a second, and every
-// drawing is shown at four times its size, drawn straight into `frame`. The
-// background and the ground are kept already widened four times
-// (`bg_wide`, `ground_wide`), so a row of either is one or two memcpy.
+// drawing is shown at SCALE times its size (four on a 480 px wide panel, two on
+// a 320 one), drawn straight into `frame`. The background and the ground are
+// kept already widened SCALE times (`bg_wide`, `ground_wide`), so a row of
+// either is a memcpy or a few.
 
 #define ART_DIR SONIX_RESOURCE_DIR "/gui/flappybird"
 #define ART_MAX_BYTES (256 * 1024)
 
-#define SCALE 4
+// 4 on a 480 px wide panel, 2 on a 320 one: even, so a unit (below) is a
+// whole number of pixels. Set in flappybird_init().
+static int scale = 4;
+#define SCALE scale
 
 #define STEP_US 16667
 #define MAX_STEPS_PER_TICK 4
@@ -130,18 +134,21 @@ lv_obj_t *flappybird_screen;
 // Half of a fade through black between two screens of the game.
 #define FADE_STEPS 10
 
-// Screen positions, in panel pixels, for the 720-row panel. On a taller one
-// the menus and the labels move down by half the extra rows (layout_shift).
-#define TITLE_LOGO_Y 96
-#define TITLE_PLAY_ABOVE_GROUND 20
-#define CORNER_MARGIN 24
-#define SCORE_Y 40
-#define READY_LABEL_Y 100
-#define HOW_TO_ABOVE_GROUND 16
-#define READY_BIRD_ABOVE_HOW_TO 34
-#define OVER_LABEL_Y 60
-#define OVER_BOARD_Y 170
-#define OVER_BUTTONS_GAP 24
+// Screen positions, in panel pixels at four times the artwork, for the 720-row
+// panel; PANEL_PX() takes one to this panel's SCALE, so the labels keep their
+// place among the drawings. On a taller panel the menus and the labels move
+// down by half the extra rows (layout_shift).
+#define PANEL_PX(n) ((n) * SCALE / 4)
+#define TITLE_LOGO_Y PANEL_PX(96)
+#define TITLE_PLAY_ABOVE_GROUND PANEL_PX(20)
+#define CORNER_MARGIN PANEL_PX(24)
+#define SCORE_Y PANEL_PX(40)
+#define READY_LABEL_Y PANEL_PX(100)
+#define HOW_TO_ABOVE_GROUND PANEL_PX(16)
+#define READY_BIRD_ABOVE_HOW_TO PANEL_PX(34)
+#define OVER_LABEL_Y PANEL_PX(60)
+#define OVER_BOARD_Y PANEL_PX(170)
+#define OVER_BUTTONS_GAP PANEL_PX(24)
 #define BUTTON_PRESS_SHIFT SCALE
 
 // Artwork pixels between two digits: the running score's overlap by one, the
@@ -264,13 +271,14 @@ static bool sprite_load(sprite_t *s, const char *name) {
 	return true;
 }
 
-// Pixel pairs, so each artwork pixel goes in as two 32-bit stores.
+// Pixel pairs, so each artwork pixel goes in as SCALE / 2 32-bit stores.
 static void widen_row(uint16_t *dst, const uint16_t *src, int n) {
 	uint32_t *d = (uint32_t *)dst;
 	for (int x = 0; x < n; x++) {
 		uint32_t pair = (uint32_t)src[x] | ((uint32_t)src[x] << 16);
-		d[2 * x] = pair;
-		d[2 * x + 1] = pair;
+		for (int k = 0; k < SCALE / 2; k++) {
+			*d++ = pair;
+		}
 	}
 }
 
@@ -1538,10 +1546,11 @@ void flappybird_open(void) {
 
 void flappybird_init(gui_config_t *cfg) {
 	panel_w = (int)cfg->screen_width;
+	scale = panel_w >= 240 ? 2 * (panel_w / 240) : 2;
 	panel_h = (int)cfg->screen_height;
 	view_h = panel_h / SCALE;
 	ground_top = view_h - GROUND_H;
-	layout_shift = (panel_h - 720) / 2;
+	layout_shift = (panel_h - PANEL_PX(720)) / 2;
 	// The background stands on the bottom of the panel.
 	bg_row0 = BG_H - view_h;
 

@@ -50,9 +50,9 @@ lv_obj_t *gearboyplay_screen;
 //
 // 220 pixels a side, so the left thumb of a hand holding the device can find it
 // without looking.
-#define DPAD_X0 20
-#define DPAD_Y0 466
-#define DPAD_SIZE 220
+#define DPAD_X0 ui_px(20)
+#define DPAD_Y0 ui_px(466)
+#define DPAD_SIZE ui_px(220)
 #define DPAD_CELL (DPAD_SIZE / 3)
 #define DPAD_CX (DPAD_X0 + DPAD_SIZE / 2)
 #define DPAD_CY (DPAD_Y0 + DPAD_SIZE / 2)
@@ -60,24 +60,24 @@ lv_obj_t *gearboyplay_screen;
 // A and B, diagonal as on the real machine. The rectangle is both the drawing
 // and the touch area: 110 pixels, already wider than a fingertip, and growing
 // the area past the drawing would make the two buttons touch.
-#define BTN_SIZE 110
-#define A_X 352
-#define A_Y 450
-#define B_X 300
-#define B_Y 592
+#define BTN_SIZE ui_px(110)
+#define A_X ui_px(352)
+#define A_Y ui_px(450)
+#define B_X ui_px(300)
+#define B_Y ui_px(592)
 
 // Select and Start: two drawn pills in a row under the D-pad and A/B when the
 // panel has PILL_ROW_NEEDS rows (the R1), otherwise two invisible rectangles in
 // the bottom corners of the picture (the R3 Pro II).
-#define CORNER_W 110
-#define CORNER_H 60
+#define CORNER_W ui_px(110)
+#define CORNER_H ui_px(60)
 #define CORNER_Y (GAME_H - CORNER_H)
 
-#define PILL_W 150
-#define PILL_H 52
-#define PILL_GAP 40 // between the two
-#define PILL_TOP_GAP 16 // clear of B, the lowest of the round buttons
-#define PILL_BOTTOM_GAP 24 // clear of the bottom edge
+#define PILL_W ui_px(150)
+#define PILL_H ui_px(52)
+#define PILL_GAP ui_px(40) // between the two
+#define PILL_TOP_GAP ui_px(16) // clear of B, the lowest of the round buttons
+#define PILL_BOTTOM_GAP ui_px(24) // clear of the bottom edge
 #define PILL_X0 ((GAME_W - 2 * PILL_W - PILL_GAP) / 2)
 
 // The lowest pixel the D-pad and A/B reach.
@@ -95,8 +95,8 @@ lv_obj_t *gearboyplay_screen;
 //
 // The middle because it is the only part of the picture a playing hand never
 // rests on.
-#define MENU_W 240
-#define MENU_H 200
+#define MENU_W ui_px(240)
+#define MENU_H ui_px(200)
 #define MENU_X ((GAME_W - MENU_W) / 2)
 #define MENU_Y (SCREEN_TOP + (GAME_H - MENU_H) / 2)
 
@@ -340,7 +340,7 @@ static void build_dpad(lv_obj_t *parent) {
 	lv_obj_set_style_radius(h, ui_px(16), 0);
 
 	// The hub in the middle, as on the real D-pad.
-	const int hub = 38;
+	const int hub = ui_px(38);
 	lv_obj_t *dot = lv_obj_create(parent);
 	lv_obj_remove_style_all(dot);
 	lv_obj_set_size(dot, hub, hub);
@@ -575,7 +575,7 @@ static void build_menu(void) {
 
 // The badge: a 56-pixel disc in the corner with the icon inside. It takes no
 // touch -- it is a label, not a control.
-#define BADGE_SIZE 56
+#define BADGE_SIZE ui_px(56)
 
 static void build_badge(void) {
 	badge = lv_obj_create(gearboyplay_screen);
@@ -825,6 +825,8 @@ static void refresh_theme(void) {
 
 void gearboyplay_init(gui_config_t *cfg) {
 	panel_h = (int)cfg->screen_height;
+	// The picture at the largest whole scale the panel is wide enough for.
+	gearboy_set_scale((int)cfg->screen_width / 160);
 	pill_row = panel_h >= PILL_ROW_NEEDS;
 	pill_y = panel_h - PILL_BOTTOM_GAP - PILL_H;
 

@@ -14,12 +14,17 @@
 // sound cannot drift apart because one loop produces both. A computed usleep
 // in place of that would slip a frame every few seconds.
 //
-// The framebuffer is already scaled 3x (480x432). The scaling costs a
-// millisecond and runs on the emulator thread, which has room for it, rather
-// than on the UI thread, which does not.
+// The framebuffer is already scaled by a whole number: 3x (480x432) on a 480
+// px wide panel, 2x (320x288) on a 320 one. The scaling costs a millisecond
+// and runs on the emulator thread, which has room for it, rather than on the
+// UI thread, which does not.
 
-#define GEARBOY_SCREEN_W 480
-#define GEARBOY_SCREEN_H 432
+#define GEARBOY_SCREEN_W (160 * gearboy_scale())
+#define GEARBOY_SCREEN_H (144 * gearboy_scale())
+
+// The scale, 2 or 3 (anything else is taken as 3). Set before gearboy_start().
+void gearboy_set_scale(int scale);
+int gearboy_scale(void);
 
 #define GEARBOY_TITLE_MAX 128
 

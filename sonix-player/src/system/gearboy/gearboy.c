@@ -30,6 +30,8 @@ void gearboy_request_savestate(void) {}
 void gearboy_request_loadstate(void) {}
 int gearboy_take_state_result(void) { return 0; }
 void gearboy_refresh_video_settings(void) {}
+void gearboy_set_scale(int scale) { (void)scale; }
+int gearboy_scale(void) { return 3; }
 
 #else
 
@@ -165,8 +167,14 @@ bool gearboy_failed(void) { return failed_flag; }
 const char *gearboy_title(void) { return title; }
 const uint16_t *gearboy_screen(void) { return screen; }
 
+static int gb_scale = 3;
+void gearboy_set_scale(int scale) { gb_scale = scale == 2 ? 2 : 3; }
+int gearboy_scale(void) { return gb_scale; }
+
 static void blit3x(const uint16_t *src, uint16_t *dst);
 static void blit3x_grid(const uint16_t *src, uint16_t *dst, int shader);
+static void blit2x(const uint16_t *src, uint16_t *dst);
+static void blit2x_grid(const uint16_t *src, uint16_t *dst, int shader);
 
 bool gearboy_present(void) {
 	if (!screen || gb_ready_index < 0) {
@@ -183,9 +191,9 @@ bool gearboy_present(void) {
 		}
 		__sync_synchronize();
 		if (g_shader != 0) {
-			blit3x_grid(gb_frames[index], screen, g_shader);
+			(gb_scale == 2 ? blit2x_grid : blit3x_grid)(gb_frames[index], screen, g_shader);
 		} else {
-			blit3x(gb_frames[index], screen);
+			(gb_scale == 2 ? blit2x : blit3x)(gb_frames[index], screen);
 		}
 		__sync_synchronize();
 		// Only once the core has advanced by as many frames as there are
@@ -327,6 +335,53 @@ static void blit3x_grid(const uint16_t *src, uint16_t *dst, int shader) {
 			d[1] = dimmed;
 			d[2] = corner ? dim25(p) : dimmed;
 			d += 3;
+		}
+	}
+}
+
+// The same two at 2x, for a 320 px wide panel: two pixels become four, two
+// aligned 32-bit stores, and the one repeated row is a memcpy.
+static void blit2x(const uint16_t *src, uint16_t *dst) {
+	const int dst_w = GEARBOY_SCREEN_W;
+	const size_t row_bytes = (size_t)dst_w * 2;
+
+	for (int y = 0; y < GB_HEIGHT; y++) {
+		const uint16_t *s = src + (size_t)y * GB_WIDTH;
+		uint16_t *row = dst + (size_t)(y * 2) * dst_w;
+		uint32_t *d = (uint32_t *)row;
+
+		for (int x = 0; x < GB_WIDTH; x += 2) {
+			uint32_t p0 = s[x];
+			uint32_t p1 = s[x + 1];
+			d[0] = p0 | (p0 << 16);
+			d[1] = p1 | (p1 << 16);
+			d += 2;
+		}
+
+		memcpy(row + dst_w, row, row_bytes);
+	}
+}
+
+// The grid at 2x: the square's second column and second row are the dimmed
+// ones, the same dims as at 3x. A quarter of each square stays full, not four
+// ninths, so the grid modes read darker here.
+static void blit2x_grid(const uint16_t *src, uint16_t *dst, int shader) {
+	const int dst_w = GEARBOY_SCREEN_W;
+	const bool strong = shader >= 2;
+	const bool corner = shader == 3;
+
+	for (int y = 0; y < GB_HEIGHT; y++) {
+		const uint16_t *s = src + (size_t)y * GB_WIDTH;
+		uint16_t *row0 = dst + (size_t)(y * 2) * dst_w;
+		uint16_t *row1 = row0 + dst_w;
+
+		for (int x = 0; x < GB_WIDTH; x++) {
+			uint16_t p = s[x];
+			uint16_t dimmed = strong ? dim50(p) : dim75(p);
+			row0[2 * x] = p;
+			row0[2 * x + 1] = dimmed;
+			row1[2 * x] = dimmed;
+			row1[2 * x + 1] = corner ? dim25(p) : dimmed;
 		}
 	}
 }

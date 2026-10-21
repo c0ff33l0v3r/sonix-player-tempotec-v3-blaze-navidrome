@@ -2033,7 +2033,7 @@ void coverflow_init(gui_config_t *cfg) {
 	// record on its way past the top edge stops at the grip instead of sliding
 	// over it.
 	int top = cfg->top_bar_height + CF_BAR_TOP + CF_BAR_HIT_H;
-	int bottom = 74; // the album name below the crate
+	int bottom = ui_px(74); // the album name below the crate
 	int height = cfg->screen_height - top - bottom;
 	viewport = lv_obj_create(sheet);
 	lv_obj_remove_style_all(viewport);
