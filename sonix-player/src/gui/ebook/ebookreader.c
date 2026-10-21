@@ -247,19 +247,19 @@ static void position_load(const char *path, uint32_t *spine, uint32_t *block, ui
 // exactly the difference.
 static int32_t block_margin_top(const ebook_block_t *b) {
 	if (b->type == EBOOK_BLOCK_RULE || b->type == EBOOK_BLOCK_HEADING || b->type == EBOOK_BLOCK_IMAGE) {
-		return opt_size / 2;
+		return ui_px(opt_size) / 2;
 	}
 	return 0;
 }
 
 static int32_t block_margin_bottom(const ebook_block_t *b) {
 	if (b->type == EBOOK_BLOCK_RULE || b->type == EBOOK_BLOCK_IMAGE) {
-		return opt_size / 2;
+		return ui_px(opt_size) / 2;
 	}
 	// A whole line under a heading, two thirds of one between paragraphs: with
 	// only a third they read as one wall of text, with a whole one a page holds
 	// noticeably less.
-	return b->type == EBOOK_BLOCK_HEADING ? opt_size : opt_size * 2 / 3;
+	return b->type == EBOOK_BLOCK_HEADING ? ui_px(opt_size) : ui_px(opt_size) * 2 / 3;
 }
 
 // ---------------------------------------------------------------------------
@@ -429,9 +429,9 @@ static lv_obj_t *build_block(lv_obj_t *parent, const ebook_block_t *b, uint32_t 
 	lv_obj_set_clickable(group, false);
 	// A fixed width and the height of the content: the lines wrap at the width.
 	lv_spangroup_set_overflow(group, LV_SPAN_OVERFLOW_CLIP);
-	lv_obj_set_size(group, width - b->indent * opt_size, LV_SIZE_CONTENT);
-	lv_obj_set_style_margin_left(group, b->indent * opt_size, 0);
-	lv_obj_set_style_text_line_space(group, opt_line, 0);
+	lv_obj_set_size(group, width - b->indent * ui_px(opt_size), LV_SIZE_CONTENT);
+	lv_obj_set_style_margin_left(group, b->indent * ui_px(opt_size), 0);
+	lv_obj_set_style_text_line_space(group, ui_px(opt_line), 0);
 	lv_obj_set_style_margin_top(group, block_margin_top(b), 0);
 	lv_obj_set_style_margin_bottom(group, block_margin_bottom(b), 0);
 	// A heading is centred because that is what a heading looks like; anything
@@ -530,7 +530,7 @@ static uint32_t chars_that_fit(lv_obj_t *parent, const ebook_block_t *b, uint32_
 	while (low < high) {
 		uint32_t mid = low + (high - low + 1u) / 2u;
 		lv_obj_t *probe = build_block(parent, b, from, mid, width);
-		int32_t h = probe ? group_height(probe, width - b->indent * opt_size) : 0;
+		int32_t h = probe ? group_height(probe, width - b->indent * ui_px(opt_size)) : 0;
 		if (probe) {
 			lv_obj_delete(probe);
 		}
@@ -593,8 +593,8 @@ static void lay_out_rows(lv_obj_t *box, uint32_t block, uint32_t offset, uint32_
 						 bool *ended) {
 	lv_obj_clean(box);
 
-	int width = (int)g_cfg->screen_width - 2 * opt_margin;
-	int32_t budget = (int32_t)g_cfg->screen_height - 2 * opt_margin - bar_space();
+	int width = (int)g_cfg->screen_width - 2 * ui_px(opt_margin);
+	int32_t budget = (int32_t)g_cfg->screen_height - 2 * ui_px(opt_margin) - bar_space();
 	int32_t used = 0;
 
 	while (block < ebook_block_count(book)) {
@@ -607,7 +607,7 @@ static void lay_out_rows(lv_obj_t *box, uint32_t block, uint32_t offset, uint32_
 
 		lv_obj_t *whole = build_block(box, b, offset, remaining ? remaining : 1u, width);
 		int32_t h =
-			whole ? group_height(whole, width - b->indent * opt_size) + block_margin_top(b) + block_margin_bottom(b)
+			whole ? group_height(whole, width - b->indent * ui_px(opt_size)) + block_margin_top(b) + block_margin_bottom(b)
 				  : 0;
 
 		if (b->type == EBOOK_BLOCK_IMAGE) {
@@ -934,7 +934,7 @@ static bool opens(uint32_t cp) {
 }
 
 // The space between two columns: half an em plus the line spacing setting.
-static int32_t column_pitch(int32_t em) { return em + em / 2 + opt_line; }
+static int32_t column_pitch(int32_t em) { return em + em / 2 + ui_px(opt_line); }
 
 // Where a letter goes in its cell, whose top is `y` on the column centred on
 // `centre_x`: the point lv_draw_letter() is given -- the middle of the
@@ -969,8 +969,8 @@ static void lay_out_columns(lv_obj_t *box, uint32_t block, uint32_t offset, uint
 							bool *ended) {
 	lv_obj_clean(box);
 
-	int32_t width = (int32_t)g_cfg->screen_width - 2 * opt_margin;
-	int32_t height = (int32_t)g_cfg->screen_height - 2 * opt_margin - bar_space();
+	int32_t width = (int32_t)g_cfg->screen_width - 2 * ui_px(opt_margin);
+	int32_t height = (int32_t)g_cfg->screen_height - 2 * ui_px(opt_margin) - bar_space();
 	int32_t em = ebookfonts_size();
 	int32_t pitch = column_pitch(em);
 	int columns = width >= em ? (int)((width - em) / pitch) + 1 : 1;
@@ -1436,7 +1436,7 @@ static void render_vertical(void) {
 	}
 	lv_obj_clean(page_box);
 
-	int width = (int)g_cfg->screen_width - 2 * opt_margin;
+	int width = (int)g_cfg->screen_width - 2 * ui_px(opt_margin);
 	uint32_t count = ebook_block_count(book);
 
 	if (ebook_chapter_index(book) > 0) {
@@ -2243,8 +2243,8 @@ static void option_cb(lv_event_t *e) {
 	if (which == OPT_SIZE) {
 		ebookfonts_set_size(opt_size);
 	} else if (which == OPT_MARGIN) {
-		lv_obj_set_style_pad_all(page_box, opt_margin, 0);
-		lv_obj_set_style_pad_all(page_spare, opt_margin, 0);
+		lv_obj_set_style_pad_all(page_box, ui_px(opt_margin), 0);
+		lv_obj_set_style_pad_all(page_spare, ui_px(opt_margin), 0);
 	}
 
 	// The reading position survives all four because it is a character offset
@@ -2707,8 +2707,8 @@ void ebookreader_open(const char *path) {
 	int32_t box_h = (int32_t)g_cfg->screen_height - bar_space();
 	lv_obj_set_height(page_box, box_h);
 	lv_obj_set_height(page_spare, box_h);
-	lv_obj_set_style_pad_all(page_box, opt_margin, 0);
-	lv_obj_set_style_pad_all(page_spare, opt_margin, 0);
+	lv_obj_set_style_pad_all(page_box, ui_px(opt_margin), 0);
+	lv_obj_set_style_pad_all(page_spare, ui_px(opt_margin), 0);
 	lv_obj_set_x(page_box, 0);
 	lv_obj_set_x(page_spare, (int32_t)g_cfg->screen_width);
 	turning = false;
@@ -2750,7 +2750,7 @@ static lv_obj_t *make_page_box(gui_config_t *cfg) {
 	lv_obj_remove_style_all(box);
 	lv_obj_set_size(box, cfg->screen_width, cfg->screen_height - bar_space());
 	lv_obj_set_pos(box, 0, 0);
-	lv_obj_set_style_pad_all(box, opt_margin, 0);
+	lv_obj_set_style_pad_all(box, ui_px(opt_margin), 0);
 	lv_obj_set_scrollable(box, false);
 	lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_clickable(box, true);

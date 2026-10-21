@@ -11,7 +11,7 @@
 wrap only touches integer literals that are a pixel argument of a known call,
 at the top of that argument or inside plain parentheses or MIN/MAX. A literal
 beside * / % << >> or a comparison is a factor, not a size, and is left alone,
-as is everything inside any other nested call. #defines and local arithmetic
+as is everything inside a divisor's parentheses or any other nested call. #defines and local arithmetic
 are not touched: those are done by hand and show up in check.
 """
 import difflib
@@ -121,7 +121,10 @@ def px_literals(src, start, end):
             i = m.end()
             continue
         if c == '(':
-            stack.append(False)
+            # A divisor is a count -- / (steps - 1) -- so nothing in it is a size.
+            divisor = neighbour(src, i - 1, -1) in ('/', '%')
+            stack.append(divisor)
+            opaque += divisor
         elif c == ')' and stack:
             opaque -= stack.pop()
         elif c.isdigit() and not (src[i - 1].isalnum() or src[i - 1] in '_.'):

@@ -38,6 +38,7 @@ void ebookfonts_close(void);
 // Re-opens every face that is currently loaded at a new size. What the font
 // size setting calls.
 bool ebookfonts_set_size(int size);
+// The faces' size on this panel: the setting through ui_px(), as drawn.
 int ebookfonts_size(void);
 
 // The face for a run of text. `bold` and `italic` come from the book; a face

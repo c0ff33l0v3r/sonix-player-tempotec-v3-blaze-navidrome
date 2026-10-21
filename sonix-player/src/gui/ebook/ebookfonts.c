@@ -6,6 +6,7 @@
 
 #include "src/gui/fonts/fonts.h"
 #include "src/system/core/respath.h"
+#include "src/gui/shell/uiscale.h"
 
 // The firmware's own copy, then the card's.
 #define EBOOK_FONT_DIR SONIX_RESOURCE_DIR "/fonts/ebook"
@@ -62,7 +63,7 @@ static lv_font_t *open_face(face_t which, int size) {
 	// are in the file, which is the whole point of shipping four of them. Asking
 	// FreeType to slant Bookerly Regular would produce a fifth thing that is
 	// neither the publisher's italic nor the designer's.
-	lv_font_t *font = lv_freetype_font_create(path, LV_FREETYPE_FONT_RENDER_MODE_BITMAP, (uint32_t)size,
+	lv_font_t *font = lv_freetype_font_create(path, LV_FREETYPE_FONT_RENDER_MODE_BITMAP, (uint32_t)ui_px(size),
 											  LV_FREETYPE_FONT_STYLE_NORMAL);
 	// Rodin's line is two ems tall -- its hhea line gap is a whole em -- which
 	// sets a book double-spaced. A line of one and a half ems, the em box (0.12
@@ -70,8 +71,8 @@ static lv_font_t *open_face(face_t which, int size) {
 	// prose is usually leaded; the spacing setting adds to it as it does to
 	// Bookerly's.
 	if (font && face_files == JAPANESE_FILES) {
-		font->line_height = size * 3 / 2;
-		font->base_line = size * 37 / 100;
+		font->line_height = ui_px(size) * 3 / 2;
+		font->base_line = ui_px(size) * 37 / 100;
 	}
 	return font;
 }
@@ -136,7 +137,7 @@ bool ebookfonts_set_size(int size) {
 	return have_regular;
 }
 
-int ebookfonts_size(void) { return current_size; }
+int ebookfonts_size(void) { return ui_px(current_size); }
 bool ebookfonts_present(void) { return have_regular; }
 
 // Loads a face the first time the book asks for it. `tried` is what stops a
