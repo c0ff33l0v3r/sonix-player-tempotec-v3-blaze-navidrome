@@ -29,6 +29,8 @@
 //
 // Re-measure these four if BATTERY_ICON_SIZE changes: decode icon_battery_small
 // and find the fully transparent rectangle inside the outline.
+// shortcut: ui_px() of the 26 px icon's hole is the 17 px icon's hole on a 320
+// wide panel (measured: 3, 5, 9, 7); re-measure for any other width.
 #define BATTERY_CAVITY_X ui_px(4)
 #define BATTERY_CAVITY_Y ui_px(8)
 #define BATTERY_CAVITY_W ui_px(14)

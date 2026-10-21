@@ -115,7 +115,7 @@
 #define CF_BACK_W ui_px(380)
 #define CF_BACK_PAD ui_px(18)
 #define CF_BACK_BODY_W (CF_BACK_W - 2 * CF_BACK_PAD)
-#define CF_BACK_H_MIN 120
+#define CF_BACK_H_MIN ui_px(120)
 #define CF_BACK_LIST_MAX 400
 #define CF_BACK_ROW_H ui_px(50)
 #define CF_BACK_ROWS 64

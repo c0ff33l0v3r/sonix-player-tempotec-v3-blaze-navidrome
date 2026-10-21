@@ -44,10 +44,10 @@
 // The inner cavity of the battery shell, in the SVG's 24x24 coordinates: the
 // body rect runs 2..18 with a 2px stroke centred on it, so the hole is 3..17
 // across and 7..17 down.
-#define BATTERY_CAVITY_X ui_px(3)
-#define BATTERY_CAVITY_Y ui_px(7)
-#define BATTERY_CAVITY_W ui_px(14)
-#define BATTERY_CAVITY_H ui_px(10)
+#define BATTERY_CAVITY_X 3
+#define BATTERY_CAVITY_Y 7
+#define BATTERY_CAVITY_W 14
+#define BATTERY_CAVITY_H 10
 
 // The charging shell is the same body with a notch cut top and bottom for the
 // bolt to pass through, so any fill drawn inside it leaks through the openings
