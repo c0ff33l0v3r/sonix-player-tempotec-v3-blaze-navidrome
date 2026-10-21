@@ -27,7 +27,7 @@
 #include "src/system/streaming/podcastsubs.h"
 #include "src/gui/shell/uiscale.h"
 
-#define FEED_ROW_HEIGHT 80
+#define FEED_ROW_HEIGHT ui_px(80)
 #define EXPORT_NAME "Sonix.opml"
 
 static gui_config_t *g_cfg;

@@ -20,10 +20,10 @@ lv_obj_t *airpodspage_screen;
 
 // A column is a picture, a ring, and a number. The picture's box is a fixed
 // height so a short case and a tall earbud put their rings on the same line.
-#define ART_HEIGHT 72
-#define RING_SIZE 46
-#define RING_WIDTH 4
-#define COLUMN_GAP 10
+#define ART_HEIGHT ui_px(72)
+#define RING_SIZE ui_px(46)
+#define RING_WIDTH ui_px(4)
+#define COLUMN_GAP ui_px(10)
 
 // Where the ring and the bolt in it turn from green to red. The same pair of
 // colours the status bar's battery uses, so a level means the same thing
@@ -33,8 +33,8 @@ lv_obj_t *airpodspage_screen;
 #define COLOR_LOW lv_color_make(220, 60, 50)
 
 // Three of them across 480 px, with the card's own padding either side.
-#define TAB_HEIGHT 60
-#define TAB_WIDTH 124
+#define TAB_HEIGHT ui_px(60)
+#define TAB_WIDTH ui_px(124)
 
 static lv_obj_t *card;
 static lv_obj_t *columns[3];

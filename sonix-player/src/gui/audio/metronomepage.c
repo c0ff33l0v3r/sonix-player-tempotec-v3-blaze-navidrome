@@ -36,11 +36,11 @@ lv_obj_t *metronomepage_screen;
 #define TAP_RESET_MS 2000
 #define TAP_KEEP 5
 
-#define ROUND_BTN 64
-#define PLAY_BTN 88
-#define PILL_H 56
-#define DOT 16
-#define DOT_FIRST 20
+#define ROUND_BTN ui_px(64)
+#define PLAY_BTN ui_px(88)
+#define PILL_H ui_px(56)
+#define DOT ui_px(16)
+#define DOT_FIRST ui_px(20)
 
 static lv_obj_t *drawing;
 static lv_obj_t *dots[METRONOME_BEATS_MAX];

@@ -34,11 +34,11 @@
 
 #define QR_KOFI SONIX_RESOURCE_DIR "/gui/ko-fi-qr-code.png"
 #define QR_BOOSTY SONIX_RESOURCE_DIR "/gui/boosty-qr-code.png"
-#define QR_SIZE 380
+#define QR_SIZE ui_px(380)
 
 // White border around the code. The file has its own quiet zone; this is the
 // card's margin, so the rounded corners do not eat into it.
-#define QR_PAD 14
+#define QR_PAD ui_px(14)
 
 // Taps before the press that opens it.
 #define EASTEREGG_TAPS 5

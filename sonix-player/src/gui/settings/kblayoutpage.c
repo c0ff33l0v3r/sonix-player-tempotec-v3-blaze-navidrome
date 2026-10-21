@@ -26,24 +26,24 @@ lv_obj_t *kblayoutpage_screen;
 // is held near its top or bottom edge.
 // ---------------------------------------------------------------------------
 
-#define ROW_HEIGHT 72
-#define ROW_GAP 8
+#define ROW_HEIGHT ui_px(72)
+#define ROW_GAP ui_px(8)
 #define ROW_PITCH (ROW_HEIGHT + ROW_GAP)
-#define ROW_RADIUS 12
-#define HEADING_H 40
-#define GRIP_SIZE 64
+#define ROW_RADIUS ui_px(12)
+#define HEADING_H ui_px(40)
+#define GRIP_SIZE ui_px(64)
 
 // The second list is a drop target even when it is empty, so it is never
 // shorter than one row.
 #define LIST_MIN_ROWS 1
 
 // How far the finger has to travel before a release counts as a drop.
-#define DROP_MIN_TRAVEL 8
+#define DROP_MIN_TRAVEL ui_px(8)
 
 // A held row this close to either end of the page scrolls it by EDGE_STEP per
 // input read.
-#define EDGE_PX 70
-#define EDGE_STEP 18
+#define EDGE_PX ui_px(70)
+#define EDGE_STEP ui_px(18)
 
 typedef struct {
 	lv_obj_t *row;

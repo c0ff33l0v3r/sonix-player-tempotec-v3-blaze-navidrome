@@ -11,8 +11,8 @@
 // allocator to speak of, a modal that builds and tears down its widgets on
 // every question is a leak waiting to happen.
 
-#define CARD_W 400
-#define BUTTON_H 64
+#define CARD_W ui_px(400)
+#define BUTTON_H ui_px(64)
 
 static lv_obj_t *veil;
 static lv_obj_t *card;

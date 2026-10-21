@@ -17,9 +17,9 @@
 // The pill follows the theme rather than being dark in both: it sits over the
 // controls block as well as over artwork, and a fixed dark pill would be the
 // only black thing on a light screen.
-#define OVERLAY_WIDTH 340
-#define OVERLAY_HEIGHT 72
-#define OVERLAY_TOP_Y 96 // clear of the artwork
+#define OVERLAY_WIDTH ui_px(340)
+#define OVERLAY_HEIGHT ui_px(72)
+#define OVERLAY_TOP_Y ui_px(96) // clear of the artwork
 #define OVERLAY_RADIUS (OVERLAY_HEIGHT / 2)
 #define OVERLAY_HIDE_MS 1600
 

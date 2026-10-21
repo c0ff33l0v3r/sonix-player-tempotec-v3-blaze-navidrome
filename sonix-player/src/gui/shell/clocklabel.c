@@ -4,9 +4,10 @@
 #include <time.h>
 
 #include "src/system/device/clock.h"
+#include "src/gui/shell/uiscale.h"
 
 // Between the last figure and the suffix.
-#define SUFFIX_GAP_PX 3
+#define SUFFIX_GAP_PX ui_px(3)
 
 // The height of a figure as a share of the font's size, in hundredths: what
 // the top of the suffix is lined up with.

@@ -53,7 +53,7 @@ static const char *const WELCOME_WORDS[] = {
 
 // Travel of the slide in and out. Deliberately small: it accompanies the fade
 // rather than being a carousel.
-#define WELCOME_SLIDE_PX 46
+#define WELCOME_SLIDE_PX ui_px(46)
 
 static lv_obj_t *panel;
 static lv_obj_t *word_label;

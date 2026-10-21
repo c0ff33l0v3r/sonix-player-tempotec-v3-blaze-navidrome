@@ -58,21 +58,21 @@
 // against the roughly 400 px the card leaves inside its padding, so a fifth
 // does not fit however tight the gap gets: the extra controls wrap onto a
 // second line rather than shrinking.
-#define CIRCLE_BUTTON_SIZE 88
-#define CIRCLE_BUTTON_GAP 14
+#define CIRCLE_BUTTON_SIZE ui_px(88)
+#define CIRCLE_BUTTON_GAP ui_px(14)
 #define QP_BUTTONS_PER_LINE 4
 
 // How the sheet divides the screen up: a strip for the close hint at the
 // bottom, small gaps at the top and between the cards, and the rest split
 // evenly between them. The leftover space goes to the cards rather than around
 // them, or on a 720 px panel everything sits high.
-#define CARD_PADDING 20
-#define HINT_STRIP_H 52 // room under the cards for the close line
-#define CARD_TOP_GAP 12 // between the status bar and the first card
-#define CARD_GAP 16	   // between the two cards
-#define CARD_ROW_GAP 12 // between the blocks inside the controls card
-#define HANDLE_ROOM 24	// added under the slider when the card has a handle
-#define BRIGHT_ROW_H 44
+#define CARD_PADDING ui_px(20)
+#define HINT_STRIP_H ui_px(52) // room under the cards for the close line
+#define CARD_TOP_GAP ui_px(12) // between the status bar and the first card
+#define CARD_GAP ui_px(16)	   // between the two cards
+#define CARD_ROW_GAP ui_px(12) // between the blocks inside the controls card
+#define HANDLE_ROOM ui_px(24)	// added under the slider when the card has a handle
+#define BRIGHT_ROW_H ui_px(44)
 // The dimmest backlight level on the slider: 0 would put the backlight out.
 #define BRIGHTNESS_FLOOR 1
 
@@ -80,7 +80,7 @@
 // every y below is measured from there and not from the top of the screen;
 // measuring from the screen puts the close line over the second card.
 #define PANEL_PAD_TOP(cfg) ((cfg)->padding + 8)
-#define PANEL_PAD_BOTTOM 8
+#define PANEL_PAD_BOTTOM ui_px(8)
 
 static lv_obj_t *veil;	// dims the page still showing while the sheet is part-way in
 static lv_obj_t *panel; // the full-screen sheet, parked above the top edge
@@ -176,14 +176,14 @@ static uint32_t drag_begin_ms;
 // against -- so the sheet followed the finger and then snapped back, which from
 // the outside is a control centre that ignores a quick swipe. The floor keeps
 // the wobble of a tap out of it.
-#define FLICK_MIN_PX 40
-#define FLICK_SPEED_PX_S 500
+#define FLICK_MIN_PX ui_px(40)
+#define FLICK_SPEED_PX_S ui_px(500)
 
 // How far a drag has to travel before the release opens or closes rather than
 // snapping back. Fixed pixels and not a share of the panel: both players have
 // the same 480-wide glass, so the same gesture decides the same way on the
 // 720-tall R3 Pro II and the 800-tall R1. 180 is a quarter of 720.
-#define DRAG_COMMIT_PX 180
+#define DRAG_COMMIT_PX ui_px(180)
 
 // ---------------------------------------------------------------------------
 // The stretch of the controls card

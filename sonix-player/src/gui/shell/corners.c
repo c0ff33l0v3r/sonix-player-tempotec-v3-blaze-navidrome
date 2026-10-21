@@ -5,8 +5,9 @@
 #include "lvgl/lvgl.h"
 
 #include "src/system/core/config.h"
+#include "src/gui/shell/uiscale.h"
 
-#define CORNER_RADIUS 28
+#define CORNER_RADIUS ui_px(28)
 // Samples per pixel along each axis, for the antialiased edge of the arc.
 #define CORNER_SAMPLES 4
 
@@ -17,14 +18,22 @@ enum { TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT };
 // fill rather than an image blend. Built, and the objects created, only once
 // the option is on: with it off, which is the default, none of this is touched.
 static lv_obj_t *corner[4];
-static uint8_t pixels[4][CORNER_RADIUS * CORNER_RADIUS];
+static uint8_t *pixels[4]; // CORNER_RADIUS squared each, allocated with the masks
 static lv_image_dsc_t image[4];
 static bool enabled;
 
 // The share of the pixel that lies outside the circle, as alpha. Worked out for
 // the top-left corner, whose arc is centred on (CORNER_RADIUS, CORNER_RADIUS),
 // and mirrored into the other three.
-static void build_masks(void) {
+static bool build_masks(void) {
+	uint8_t *all = lv_malloc(4 * CORNER_RADIUS * CORNER_RADIUS);
+	if (!all) {
+		return false;
+	}
+	for (int i = 0; i < 4; i++) {
+		pixels[i] = all + i * CORNER_RADIUS * CORNER_RADIUS;
+	}
+
 	const float r = CORNER_RADIUS;
 	for (int y = 0; y < CORNER_RADIUS; y++) {
 		for (int x = 0; x < CORNER_RADIUS; x++) {
@@ -55,9 +64,10 @@ static void build_masks(void) {
 		image[i].header.w = CORNER_RADIUS;
 		image[i].header.h = CORNER_RADIUS;
 		image[i].header.stride = CORNER_RADIUS;
-		image[i].data_size = sizeof(pixels[i]);
+		image[i].data_size = CORNER_RADIUS * CORNER_RADIUS;
 		image[i].data = (const uint8_t *)pixels[i];
 	}
+	return true;
 }
 
 // Anything created on the system layer later (the busy veils, the screenshot
@@ -80,10 +90,9 @@ static void sys_layer_changed_cb(lv_event_t *e) {
 
 // The masks and the four objects, the first time the option is on.
 static void create_corners(void) {
-	if (corner[0]) {
+	if (corner[0] || (!pixels[0] && !build_masks())) {
 		return;
 	}
-	build_masks();
 
 	static const lv_align_t align[4] = {LV_ALIGN_TOP_LEFT, LV_ALIGN_TOP_RIGHT, LV_ALIGN_BOTTOM_LEFT,
 										LV_ALIGN_BOTTOM_RIGHT};

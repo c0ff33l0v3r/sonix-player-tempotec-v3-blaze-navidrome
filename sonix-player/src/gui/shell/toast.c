@@ -17,20 +17,20 @@
 #define TOAST_MAX_MS 5000
 // Not TOAST_W / TOAST_H: the second of those collides with toast.h's own
 // include guard, which is defined by the time this line is read.
-#define TOAST_WIDTH 260
+#define TOAST_WIDTH ui_px(260)
 // Past this many characters the card widens to TOAST_WIDE_WIDTH (or the panel
 // less TOAST_SIDE_MARGIN on each side): four lines at the narrow width would
 // make a tall thin column of a sentence.
 #define TOAST_WIDE_CHARS 60
-#define TOAST_WIDE_WIDTH 380
-#define TOAST_SIDE_MARGIN 30
+#define TOAST_WIDE_WIDTH ui_px(380)
+#define TOAST_SIDE_MARGIN ui_px(30)
 // The least height with a glyph above the text, so a short message keeps the
 // usual square card. The card grows past it for a longer one -- the AutoEq
 // messages run to three sentences -- and never past the panel less
 // TOAST_SIDE_MARGIN above and below. Without a glyph there is no least height:
 // 200 px of card around a single line reads as an empty box with a sentence
 // lost in the middle of it.
-#define TOAST_HEIGHT 200
+#define TOAST_HEIGHT ui_px(200)
 
 // The Adwaita "success" green, the same one the active chevrons use, so a
 // confirmation reads as one across the interface, and the Adwaita red beside

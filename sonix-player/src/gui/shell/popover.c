@@ -9,10 +9,10 @@
 #include "src/gui/shell/uiscale.h"
 
 #define POPOVER_MAX_ITEMS 7
-#define POPOVER_WIDTH 284
-#define POPOVER_ROW_HEIGHT 62
-#define POPOVER_RADIUS 16
-#define POPOVER_MARGIN 10 // gap between the anchor and the card, and to screen edges
+#define POPOVER_WIDTH ui_px(284)
+#define POPOVER_ROW_HEIGHT ui_px(62)
+#define POPOVER_RADIUS ui_px(16)
+#define POPOVER_MARGIN ui_px(10) // gap between the anchor and the card, and to screen edges
 
 static lv_obj_t *veil; // full-screen, catches the tap that dismisses
 static lv_obj_t *card;

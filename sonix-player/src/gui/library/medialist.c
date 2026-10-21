@@ -39,13 +39,13 @@ lv_obj_t *medialist_tracks_screen;
 lv_obj_t *medialist_albums_screen;
 
 // The exact geometry of the file browser's rows, so the two lists are twins.
-#define ROW_HEIGHT 100
-#define ROW_GAP 8
+#define ROW_HEIGHT ui_px(100)
+#define ROW_GAP ui_px(8)
 #define ROW_PITCH (ROW_HEIGHT + ROW_GAP)
-#define ROW_RADIUS 12
-#define ROW_PAD 14
-#define THUMB_SIZE 72
-#define QUALITY_GAP 4 // between a title and the badge under it
+#define ROW_RADIUS ui_px(12)
+#define ROW_PAD ui_px(14)
+#define THUMB_SIZE ui_px(72)
+#define QUALITY_GAP ui_px(4) // between a title and the badge under it
 #define ROW_POOL 12
 
 // How many rows are held in RAM for a query-backed list: the twelve on screen
@@ -57,9 +57,9 @@ lv_obj_t *medialist_albums_screen;
 // It lives INSIDE the row's left padding, so nothing on the row moves to make
 // space for it -- the thumbnail still starts at ROW_PAD whether the mark is
 // there or not.
-#define PLAYMARK_WIDTH 6
-#define PLAYMARK_HEIGHT 52
-#define PLAYMARK_INSET 4 // from the row's left edge
+#define PLAYMARK_WIDTH ui_px(6)
+#define PLAYMARK_HEIGHT ui_px(52)
+#define PLAYMARK_INSET ui_px(4) // from the row's left edge
 
 // Where in the coverloader's slot table each pool lives (the browser owns
 // 0..9; see coverloader.h).
@@ -80,8 +80,8 @@ lv_obj_t *medialist_albums_screen;
 // album grouping beside circle-play on an artist's tracks, shuffle beside the
 // reverse on Favourites. The strip is sized for the most whatever a particular
 // list shows -- see build_panel() for what happens when it is not.
-#define CORNER_BUTTON_SIZE 56
-#define CORNER_GAP 4
+#define CORNER_BUTTON_SIZE ui_px(56)
+#define CORNER_GAP ui_px(4)
 #define CORNER_MAX_BUTTONS 4
 
 // How often finished artwork is collected while any is pending.
@@ -89,13 +89,13 @@ lv_obj_t *medialist_albums_screen;
 #define HEAD_POLL_MS 30
 
 // The bin's red disc in selection mode.
-#define DELETE_FAB_SIZE 72
+#define DELETE_FAB_SIZE ui_px(72)
 
 // Inside a record of more than one disc, a heading above the first track of
 // each: "Disc 2". This is the height it adds above that track's row.
-#define DISC_HEAD_PITCH 44
+#define DISC_HEAD_PITCH ui_px(44)
 // The gap between a heading and the row under it.
-#define DISC_HEAD_BELOW 12
+#define DISC_HEAD_BELOW ui_px(12)
 // More changes of disc than this is not a box set but tags in disarray, and a
 // list of headings with a track or two under each reads worse than none.
 #define DISC_HEAD_MAX 64
@@ -106,22 +106,22 @@ lv_obj_t *medialist_albums_screen;
 // The head an album's page opens with in the alternative layout: the cover as
 // large as the width allows, and under it the title, the artist, the genre and
 // the year. It scrolls away with the rows.
-#define HEAD_COVER_SIZE 300
-#define HEAD_GAP 24		// between the head and the first row (or heading)
+#define HEAD_COVER_SIZE ui_px(300)
+#define HEAD_GAP ui_px(24)		// between the head and the first row (or heading)
 #define HEAD_TITLE_LINES 2
 // The three ways to start the record, in a row under the year: shuffle, play
 // and one track at random into the queue -- what circle-play offers on the
 // other lists, out where the thumb is. Play is a filled pill with its name on
 // it, the other two bare glyphs either side.
-#define HEAD_BTN_SIDE 56
-#define HEAD_PLAY_HEIGHT 56
-#define HEAD_PLAY_PAD 40 // what the pill keeps either side of its word
-#define HEAD_BTN_GAP 20
+#define HEAD_BTN_SIDE ui_px(56)
+#define HEAD_PLAY_HEIGHT ui_px(56)
+#define HEAD_PLAY_PAD ui_px(40) // what the pill keeps either side of its word
+#define HEAD_BTN_GAP ui_px(20)
 
 // Behind selection mode's buttons, while the head's cover can be under them:
 // the page's colour, part see-through, over a blur of whatever it covers.
-#define SEL_BLUR_RADIUS 18
-#define SEL_BLUR_PAD 6
+#define SEL_BLUR_RADIUS ui_px(18)
+#define SEL_BLUR_PAD ui_px(6)
 
 // The page in the sleeve's colour: one of the sleeve's colours
 // (cover_page_tone), at the brightness of the sleeve as a whole pushed away
@@ -138,7 +138,7 @@ lv_obj_t *medialist_albums_screen;
 // The track number that takes the place of the cover on each row of that
 // layout: one picture at the top says whose record it is, and the twelve
 // beneath it would only say it again.
-#define TRACKNO_WIDTH 44
+#define TRACKNO_WIDTH ui_px(44)
 
 // ---------------------------------------------------------------------------
 // The A-Z strip
@@ -161,11 +161,11 @@ lv_obj_t *medialist_albums_screen;
 // buckets, and two spellings of the same number is how they would drift apart.
 #define INDEX_BUCKETS LIBRARY_INDEX_BUCKETS
 #define INDEX_PAST_Z_SLOT LIBRARY_INDEX_PAST_Z_SLOT
-#define INDEX_BAR_WIDTH 28
+#define INDEX_BAR_WIDTH ui_px(28)
 #define INDEX_HIDE_MS 2500	// no scrolling and no touch for this long: it goes
 #define INDEX_HINT_MS 450	// the big letter outstays the finger by a moment
 #define INDEX_MIN_ROWS 30	// shorter lists are quicker to just scroll
-#define INDEX_ENGAGE_PX 6	// upward or downward movement that claims the press
+#define INDEX_ENGAGE_PX ui_px(6)	// upward or downward movement that claims the press
 
 typedef struct {
 	char *name;
@@ -2952,8 +2952,8 @@ static lv_obj_t *corner_button(lv_obj_t *parent, const lv_image_dsc_t *glyph, lv
 
 // How close to the top or bottom edge a finger has to be before the list starts
 // moving under it, and how far it moves each time the event comes round.
-#define REORDER_EDGE_PX 70
-#define REORDER_EDGE_STEP 18
+#define REORDER_EDGE_PX ui_px(70)
+#define REORDER_EDGE_STEP ui_px(18)
 
 // Only one drag can be in flight, so this is one set of variables rather than a
 // set per panel.

@@ -429,7 +429,7 @@ static void row_menu_cb(lv_event_t *e) {
 }
 
 // Side of a row thumbnail, in pixels.
-#define ROW_THUMB 60
+#define ROW_THUMB ui_px(60)
 
 // Row cover art.
 //

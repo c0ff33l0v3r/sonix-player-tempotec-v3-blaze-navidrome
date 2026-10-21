@@ -272,7 +272,7 @@ static void scan_cb(lv_event_t *e) {
 // "More below": a chevron that drops off the bottom edge as the page opens
 // with tiles under the fold. One short animation of a small picture, moved and
 // faded together, and hidden again once it is over.
-#define MORE_HINT_TRAVEL 40	   // from just above the edge to past it
+#define MORE_HINT_TRAVEL ui_px(40)	   // from just above the edge to past it
 #define MORE_HINT_DELAY_MS 150 // long enough for the page to be seen first
 #define MORE_HINT_MS 450
 

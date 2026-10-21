@@ -14,13 +14,13 @@
 
 // See ebookbar.h for why the preview and the real strip are the same code.
 
-#define BAR_TEXT_HEIGHT 22
-#define BAR_LINE_HEIGHT 3
-#define BAR_GAP 5
+#define BAR_TEXT_HEIGHT ui_px(22)
+#define BAR_LINE_HEIGHT ui_px(3)
+#define BAR_GAP ui_px(5)
 
 // The battery bitmap is rendered from the same 24x24 SVG the status bar uses,
 // at the size that suits 16-point text rather than 24-point.
-#define BATTERY_ICON_SIZE 26
+#define BATTERY_ICON_SIZE ui_px(26)
 
 // The hole inside the shell, in the icon's own pixels. Read off the rendered
 // bitmap rather than scaled from the SVG's coordinates: at 26 px the SVG
@@ -29,10 +29,10 @@
 //
 // Re-measure these four if BATTERY_ICON_SIZE changes: decode icon_battery_small
 // and find the fully transparent rectangle inside the outline.
-#define BATTERY_CAVITY_X 4
-#define BATTERY_CAVITY_Y 8
-#define BATTERY_CAVITY_W 14
-#define BATTERY_CAVITY_H 10
+#define BATTERY_CAVITY_X ui_px(4)
+#define BATTERY_CAVITY_Y ui_px(8)
+#define BATTERY_CAVITY_W ui_px(14)
+#define BATTERY_CAVITY_H ui_px(10)
 
 // What goes between two facts on the strip, the same as the player puts
 // between two facts about a track.

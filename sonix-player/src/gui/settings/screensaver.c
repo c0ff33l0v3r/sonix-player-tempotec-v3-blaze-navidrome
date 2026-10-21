@@ -26,7 +26,7 @@
 // the release lasts. The dismiss threshold itself is a quarter of the screen,
 // applied in drag_cb; short of it the panel slides back down, like the control
 // centre.
-#define DRAG_ENGAGE_PX 8
+#define DRAG_ENGAGE_PX ui_px(8)
 #define DISMISS_ANIM_MS 180
 
 static lv_obj_t *saver;		 // the whole thing, full screen on the top layer
@@ -46,7 +46,7 @@ static int strip_h;
 // What the strip falls back to when there is no artwork to size it from, and
 // the height it always has over a picture from the folder -- there the block
 // is built to order rather than borrowed, so there is nothing to measure.
-#define DEFAULT_STRIP_H 250
+#define DEFAULT_STRIP_H ui_px(250)
 
 // ---------------------------------------------------------------------------
 // Pictures from the card

@@ -43,7 +43,7 @@ lv_obj_t *ebookpage_screen;
 
 #define SHELF_MAX 300
 #define TILE_COLUMNS 2
-#define TILE_GAP 14
+#define TILE_GAP ui_px(14)
 #define COVER_RATIO_NUM 3 // covers are drawn 2:3, the shape of a paperback
 #define COVER_RATIO_DEN 2
 
@@ -114,7 +114,7 @@ static bool cover_ready(int index, const char *title, const cover_image_t *cover
 
 // One screen of margin above and below, so the next screenful is decoded before
 // it is scrolled to and the reader never watches a cover appear.
-#define COVER_LOOKAHEAD 720
+#define COVER_LOOKAHEAD ui_px(720)
 
 static void want_visible_covers(void) {
 	if (!shelf || !shelf_count || !page_container) {

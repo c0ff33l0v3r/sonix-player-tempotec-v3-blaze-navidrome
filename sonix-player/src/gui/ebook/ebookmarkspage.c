@@ -43,8 +43,8 @@ lv_obj_t *ebookmarkbookpage_screen;
 #define BOOKS_MAX 300
 // The cover beside a row. Two-to-three like a paperback, and tall enough to be
 // recognisable next to two lines of text.
-#define ROW_COVER_W 56
-#define ROW_COVER_H 84
+#define ROW_COVER_W ui_px(56)
+#define ROW_COVER_H ui_px(84)
 
 typedef struct {
 	char file[256];
@@ -346,7 +346,7 @@ static void build_rows(void) {
 	}
 }
 
-#define COVER_LOOKAHEAD 720
+#define COVER_LOOKAHEAD ui_px(720)
 
 static void want_visible_covers(void) {
 	if (!books || !book_count || !books_container) {

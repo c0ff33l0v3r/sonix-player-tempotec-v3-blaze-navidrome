@@ -726,7 +726,7 @@ static void kb_preview_cb(lv_event_t *e) {
 // so a hold and release without sliding writes the first form offered there.
 // ---------------------------------------------------------------------------
 
-#define KB_VARIANT_PAD 6
+#define KB_VARIANT_PAD ui_px(6)
 
 // The key the strip was opened from. While it is open a slide along the strip
 // must not scroll whatever page holds the keyboard.
@@ -1303,7 +1303,7 @@ static void kb_caret_deleted_cb(lv_event_t *e) {
 
 // The caret is the left border of the CURSOR part, not a block: three pixels
 // of accent, like a system text field's cursor.
-#define KB_CARET_WIDTH 3
+#define KB_CARET_WIDTH ui_px(3)
 #define KB_CARET_BLINK_MS 900 // a calm blink
 
 static void caret_set_blink(lv_obj_t *field, uint32_t ms) {
@@ -1377,7 +1377,7 @@ void keyboard_style_caret(lv_obj_t *field) {
 // placeholder, to the plain text shown when the eye is tapped, and to the
 // character LVGL leaves readable for a moment after it is typed. So it is
 // enabled only while the field really is showing bullets.
-#define KB_PASSWORD_LETTER_SPACE (-10)
+#define KB_PASSWORD_LETTER_SPACE (-ui_px(10))
 
 // The matching caret shift, which would otherwise land on top of the last
 // bullet.

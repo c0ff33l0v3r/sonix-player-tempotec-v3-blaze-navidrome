@@ -43,13 +43,13 @@ lv_obj_t *search_screen;
 // work.
 // ---------------------------------------------------------------------------
 
-#define SEARCH_THUMB 56
-#define SEARCH_ROW_H 76
-#define SEARCH_ROW_GAP 8
+#define SEARCH_THUMB ui_px(56)
+#define SEARCH_ROW_H ui_px(76)
+#define SEARCH_ROW_GAP ui_px(8)
 #define SEARCH_PITCH (SEARCH_ROW_H + SEARCH_ROW_GAP)
 #define SEARCH_THUMB_POLL_MS 200
-#define SEARCH_PILLS_H 56
-#define SEARCH_PILLS_GAP 10
+#define SEARCH_PILLS_H ui_px(56)
+#define SEARCH_PILLS_GAP ui_px(10)
 
 // Rows on screen at once on the tallest panel, plus one beyond each edge. One
 // coverloader slot each, out of the page's COVERLOADER_SEARCH_COUNT.

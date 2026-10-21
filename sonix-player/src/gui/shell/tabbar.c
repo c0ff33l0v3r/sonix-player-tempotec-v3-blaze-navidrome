@@ -7,9 +7,9 @@
 #include "src/system/core/lang.h"
 #include "src/gui/shell/uiscale.h"
 
-#define TAB_HEIGHT 46
-#define TROUGH_PAD 4
-#define TAB_PAD 10
+#define TAB_HEIGHT ui_px(46)
+#define TROUGH_PAD ui_px(4)
+#define TAB_PAD ui_px(10)
 
 // Each tab as wide as its name plus an equal share of the width left over, so a
 // long name in a language that has one is not cut to fit a third while the

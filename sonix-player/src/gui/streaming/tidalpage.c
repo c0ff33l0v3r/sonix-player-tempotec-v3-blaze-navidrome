@@ -465,7 +465,7 @@ static void row_menu_cb(lv_event_t *e) {
 }
 
 // Side length of a row thumbnail.
-#define ROW_THUMB 60
+#define ROW_THUMB ui_px(60)
 
 // Row cover art.
 //
@@ -2180,7 +2180,7 @@ static void build_search_page(gui_config_t *cfg) {
 static lv_obj_t *login_hint;
 // The login QR. 200 px on a 480 px screen: large enough for a camera to read
 // it from half a metre, small enough to leave room for the written code below.
-#define LOGIN_QR_SIZE 200
+#define LOGIN_QR_SIZE ui_px(200)
 // The quiet zone, the white border around it. The standard asks for four
 // modules; here it is a fixed border, which works better at this size.
 #define LOGIN_QR_QUIET 10

@@ -21,7 +21,7 @@
 lv_obj_t *btreceiverpage_screen;
 
 #define POLL_MS 500
-#define CODEC_BTN_SIZE 56
+#define CODEC_BTN_SIZE ui_px(56)
 
 static lv_obj_t *big_icon;
 static lv_obj_t *format_label;

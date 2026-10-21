@@ -26,8 +26,8 @@
 lv_obj_t *btsettings_screen;
 
 #define BT_PAGE_POLL_MS 500
-#define BT_ROW_H 76
-#define CORNER_BTN_SIZE 56
+#define BT_ROW_H ui_px(76)
+#define CORNER_BTN_SIZE ui_px(56)
 
 static lv_obj_t *bt_switch;
 static lv_obj_t *status_label;
@@ -219,7 +219,7 @@ static void forget_action(void *user) {
 // announces itself.
 // ---------------------------------------------------------------------------
 
-#define RENAME_CANCEL_SIZE 56
+#define RENAME_CANCEL_SIZE ui_px(56)
 
 static lv_obj_t *rename_layer;
 static lv_obj_t *rename_field;

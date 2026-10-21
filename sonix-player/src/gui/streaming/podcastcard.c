@@ -40,7 +40,7 @@
 
 #define CARD_MAX_EPISODES 400
 #define FEED_MAX_EPISODES PODCASTPAGE_FEED_MAX
-#define HERO_COVER 112
+#define HERO_COVER ui_px(112)
 
 // Below this an episode has not really been started (see podcaststate.c).
 #define RESUME_MIN_SECONDS 5.0
@@ -418,12 +418,12 @@ typedef enum {
 	FILTER_HEARD,
 } filter_t;
 
-#define EP_ROW_HEIGHT 96
-#define EP_ROW_GAP 10
+#define EP_ROW_HEIGHT ui_px(96)
+#define EP_ROW_GAP ui_px(10)
 #define EP_ROW_PITCH (EP_ROW_HEIGHT + EP_ROW_GAP)
 #define EP_ROW_POOL 10
-#define STATUS_BOX 30
-#define SEL_FAB_SIZE 72
+#define STATUS_BOX ui_px(30)
+#define SEL_FAB_SIZE ui_px(72)
 
 typedef struct {
 	lv_obj_t *button;

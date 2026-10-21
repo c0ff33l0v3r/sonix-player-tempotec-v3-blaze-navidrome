@@ -35,9 +35,9 @@ lv_obj_t *playlistpage_screen;
 // thousands of tracks, so the browser's windowing machinery would cost more
 // than it saves here.
 
-#define ROW_HEIGHT 88
-#define ROW_GAP 8
-#define ROW_RADIUS 12
+#define ROW_HEIGHT ui_px(88)
+#define ROW_GAP ui_px(8)
+#define ROW_RADIUS ui_px(12)
 #define PLAYLIST_NAME_MAX 200
 
 static gui_config_t *config;

@@ -12,10 +12,10 @@
 
 // The track lists' numbers, so the two strips are one design.
 #define BUCKETS LIBRARY_INDEX_BUCKETS
-#define BAR_WIDTH 28
+#define BAR_WIDTH ui_px(28)
 #define HIDE_MS 2500 // no scrolling and no touch for this long: it goes
 #define HINT_MS 450	 // the big letter outstays the finger by a moment
-#define ENGAGE_PX 6	 // upward or downward movement that claims the press
+#define ENGAGE_PX ui_px(6)	 // upward or downward movement that claims the press
 
 static const char *const TEXT[BUCKETS] = {"#", "A", "B", "C", "D", "E", "F", "G", "H", "I",
 										  "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S",

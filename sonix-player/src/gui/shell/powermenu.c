@@ -31,9 +31,9 @@
 // take a deliberate gesture, not a stray tap.
 // ---------------------------------------------------------------------------
 
-#define SLIDE_WIDTH 380
-#define SLIDE_HEIGHT 76
-#define SLIDE_KNOB 64
+#define SLIDE_WIDTH ui_px(380)
+#define SLIDE_HEIGHT ui_px(76)
+#define SLIDE_KNOB ui_px(64)
 // How far along (as a fraction of the track) the knob has to be on release.
 #define SLIDE_COMMIT_PCT 88
 
@@ -42,7 +42,7 @@
 // the track by half a knob (plus a hair of margin) keeps it inside.
 #define SLIDE_INSET (SLIDE_KNOB / 2 + 6)
 
-#define CANCEL_SIZE 76
+#define CANCEL_SIZE ui_px(76)
 
 static lv_obj_t *panel;
 

@@ -153,7 +153,7 @@ static void smooth_timer_sync(void) {
 // take a tap. Upwards and downwards the 84 px row still clips it; sideways the
 // previous and next buttons start about 50 px further in, so 20 reaches
 // neither.
-#define CORNER_BTN_EXT_CLICK 20
+#define CORNER_BTN_EXT_CLICK ui_px(20)
 
 // How often the progress display is carried forward between polls.
 //
@@ -178,22 +178,22 @@ static int polls_since_stop = POLLS_FAST_AFTER_STOP;
 // Height the controls block needs for its two lines of text, the bar, the
 // clocks and the buttons. Only used as a floor on screens too short to fit a
 // full-width square cover on top of it.
-#define PLAYER_MENU_MIN_HEIGHT 210
+#define PLAYER_MENU_MIN_HEIGHT ui_px(210)
 
 // The controls block as the R3 Pro II has it, 720 - 480. A taller panel (the
 // R1's 800) spreads what it has over the rows rather than leaving it empty
 // above and below them: a fifth to each end and a fifth to each of the three
 // gaps between the four rows.
-#define PLAYER_MENU_REF_HEIGHT 240
-#define PLAYER_MENU_PAD_VER 10
-#define PLAYER_MENU_GAP 12
+#define PLAYER_MENU_REF_HEIGHT ui_px(240)
+#define PLAYER_MENU_PAD_VER ui_px(10)
+#define PLAYER_MENU_GAP ui_px(12)
 
 // Studio keeps only the bar, the clocks and the transport in the controls
 // block, pushed to the bottom, with the gaps between them the standard
 // arrangement has; the panel with the sleeve takes the rest of the screen
 // above them. This is their height at PLAYER_MENU_GAP; a taller panel adds
 // what its wider gaps take.
-#define STUDIO_CONTROLS_H 172
+#define STUDIO_CONTROLS_H ui_px(172)
 
 // Album art: an image on top of a placeholder panel. The panel is always
 // there, so the layout doesn't jump between a track that has a cover and one
@@ -218,7 +218,7 @@ static lv_obj_t *below_slider_obj; // the two clocks under the bar
 // How far the four source marks keep from the corner of the artwork they
 // share. One number, because they replace each other in that corner and a
 // difference between them would read as the mark jumping.
-#define BADGE_INSET 14
+#define BADGE_INSET ui_px(14)
 
 // Where the marks sit over the artwork: in its corner, under the status bar
 // when the bar stays up.
@@ -274,32 +274,32 @@ static int cover_box_w, cover_box_h;   // the artwork spans the full screen widt
 // smaller circle of the accent colour. The ring is a wide white border over an
 // accent-coloured body rather than a second object, so it costs nothing and
 // follows the knob on its own.
-#define PROGRESS_TRACK_HEIGHT 10 // as thick as every other slider
-#define PROGRESS_KNOB_GROW 9	 // how far the knob grows past the track
-#define PROGRESS_KNOB_RING 5
+#define PROGRESS_TRACK_HEIGHT ui_px(10) // as thick as every other slider
+#define PROGRESS_KNOB_GROW ui_px(9)	 // how far the knob grows past the track
+#define PROGRESS_KNOB_RING ui_px(5)
 
 // How the shape of the track is drawn, and how much room it gets. The bars are
 // wide and well apart with rounded ends rather than a comb of hairlines: at
 // this size a hairline is one pixel of a colour that is half background, and
 // the whole thing reads as noise.
-#define WAVE_HEIGHT 64
-#define WAVE_BAR_GAP 3
-#define WAVE_MIN_BAR 3	  // a silent column is still a mark, not a hole
+#define WAVE_HEIGHT ui_px(64)
+#define WAVE_BAR_GAP ui_px(3)
+#define WAVE_MIN_BAR ui_px(3)	  // a silent column is still a mark, not a hole
 #define WAVE_PAST_OPA 255 // the part already played
 #define WAVE_TODO_OPA 80  // and the part still to come
 
 // How far the pills and the disc sit in from the corner of the sleeve, and how
 // big the disc is.
-#define ALT_PAD 16
-#define ALT_FAV_SIZE 64
-#define ALT_PILL_PAD_H 18 // what a pill keeps to the left and right of its text
-#define ALT_PILL_PAD_V 8
+#define ALT_PAD ui_px(16)
+#define ALT_FAV_SIZE ui_px(64)
+#define ALT_PILL_PAD_H ui_px(18) // what a pill keeps to the left and right of its text
+#define ALT_PILL_PAD_V ui_px(8)
 // How far past its own edges a transport button takes a press in this
 // arrangement: into the gaps between them. The star takes the whole of its disc
 // instead (apply_layout()).
-#define ALT_EXT_CLICK 14
-#define FAV_BTN_W 48
-#define FAV_BTN_H 44
+#define ALT_EXT_CLICK ui_px(14)
+#define FAV_BTN_W ui_px(48)
+#define FAV_BTN_H ui_px(44)
 
 // What the sleeve's colour becomes once it has to be painted rather than
 // thrown.
@@ -1372,13 +1372,13 @@ static void slider_over_waveform(bool over) {
 // when.
 // ---------------------------------------------------------------------------
 
-#define STUDIO_MARGIN 14	  // what the sleeve keeps to the side edges
-#define STUDIO_HEAD_H 78	  // the title, the artist and the ellipsis
-#define STUDIO_COVER_GAP 24	  // between the head and the top of the sleeve
-#define STUDIO_BADGE_GAP 6	  // between the head and the source mark under the ellipsis
-#define STUDIO_QUALITY_GAP 10 // between the sleeve and the line under it
-#define STUDIO_QUALITY_H 30
-#define STUDIO_BOTTOM 10 // under that line, before the controls begin
+#define STUDIO_MARGIN ui_px(14)	  // what the sleeve keeps to the side edges
+#define STUDIO_HEAD_H ui_px(78)	  // the title, the artist and the ellipsis
+#define STUDIO_COVER_GAP ui_px(24)	  // between the head and the top of the sleeve
+#define STUDIO_BADGE_GAP ui_px(6)	  // between the head and the source mark under the ellipsis
+#define STUDIO_QUALITY_GAP ui_px(10) // between the sleeve and the line under it
+#define STUDIO_QUALITY_H ui_px(30)
+#define STUDIO_BOTTOM ui_px(10) // under that line, before the controls begin
 #define STUDIO_COVER_MAX_PCT 83
 
 static lv_obj_t *studio_bg;		  // the blurred sleeve, the size of the screen
@@ -1392,8 +1392,8 @@ static lv_obj_t *studio_quality;	  // the icon and the format line under the sle
 static lv_obj_t *studio_quality_icon;
 static bool studio_up;
 static int studio_box_w, studio_box_h; // the panel this arrangement is laid out on
-static int menu_pad_ver = PLAYER_MENU_PAD_VER; // the controls block's spacing, see PLAYER_MENU_REF_HEIGHT
-static int menu_gap = PLAYER_MENU_GAP;
+static int menu_pad_ver; // the controls block's spacing, see PLAYER_MENU_REF_HEIGHT
+static int menu_gap;
 static int studio_cover_size;
 
 // ---------------------------------------------------------------------------
@@ -1421,8 +1421,8 @@ static int studio_cover_size;
 // page comes in with it.
 // ---------------------------------------------------------------------------
 
-#define LYRICS_FADE_PX 56
-#define LYRICS_LINE_GAP 16
+#define LYRICS_FADE_PX ui_px(56)
+#define LYRICS_LINE_GAP ui_px(16)
 #define LYRICS_DIM_OPA LV_OPA_40
 #define LYRICS_USER_HOLD_MS 4000
 #define LYRICS_STEP_MS 320 // one line moving up into the middle
@@ -1430,7 +1430,7 @@ static int studio_cover_size;
 // The page comes or goes once the finger has carried it this fraction of the
 // way; short of it, it goes back.
 #define LYRICS_COMMIT_FRACTION 4
-#define LYRICS_DRAG_PX 10 // sideways past this, a swipe and not a tap
+#define LYRICS_DRAG_PX ui_px(10) // sideways past this, a swipe and not a tap
 // Behind the words on a track with no artwork: dark in either theme, since
 // the words are white.
 #define LYRICS_FULL 1000 // lyrics_progress with the page all the way in
@@ -1891,7 +1891,7 @@ static void lyrics_star_to_head(bool up) {
 // The button at the top right while the words are all the way in: it looks them
 // up on LRCLIB again, to pick others in their place. Beside the star or the
 // ellipsis where an arrangement keeps one up there, in the corner otherwise.
-#define LYRICS_FIND_BTN 56
+#define LYRICS_FIND_BTN ui_px(56)
 static lv_obj_t *lyrics_find_btn;
 static lv_obj_t *lyrics_find_icon;
 static lv_obj_t *lyrics_find_narrowed; // the names' column, made room in
@@ -5257,7 +5257,7 @@ void player_refresh_now_playing(void) {
 #define SHEET_ANIM_MS 220
 
 // Sideways movement past this is a drag, not a tap.
-#define DRAG_COMMIT_PX 10
+#define DRAG_COMMIT_PX ui_px(10)
 
 static int sheet_width;
 static lv_obj_t *sheet_under; // the page the sheet first slid over
@@ -5673,6 +5673,8 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_radius(player_menu, 0, 0);
 	lv_obj_set_style_pad_hor(player_menu, cfg->padding, 0);
 	int spare = menu_height - PLAYER_MENU_REF_HEIGHT;
+	menu_pad_ver = PLAYER_MENU_PAD_VER;
+	menu_gap = PLAYER_MENU_GAP;
 	if (spare > 0) {
 		menu_pad_ver = PLAYER_MENU_PAD_VER + spare / 5;
 		menu_gap = PLAYER_MENU_GAP + spare / 5;

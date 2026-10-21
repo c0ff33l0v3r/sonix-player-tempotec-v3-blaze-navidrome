@@ -65,10 +65,10 @@ lv_obj_t *remap_screen;
 #define PHOTO_MAX_BYTES (2 * 1024 * 1024)
 
 // Length of the leader line tying a row to its button, and the row heights.
-#define LEADER_W 18
-#define ROW_H 44
-#define R1_ROW_H 56
-#define DOUBLE_ROW_GAP 40 // between the last button's row and the double-click row
+#define LEADER_W ui_px(18)
+#define ROW_H ui_px(44)
+#define R1_ROW_H ui_px(56)
+#define DOUBLE_ROW_GAP ui_px(40) // between the last button's row and the double-click row
 
 // The buttons, as rectangles inside the photo. They are generous in width --
 // the pictured button is thirty pixels wide, which is not a touch target -- but
@@ -122,14 +122,14 @@ static const front_key_t BLAZE_FRONT_KEYS[] = {
 	{KEYMAP_BTN_PREV, 77, 366},
 };
 
-#define BLAZE_ROW_H 40
-#define FRONT_HIT 44	   // the touch square over a front button
-#define FRONT_ROW_GAP 6	   // between the front buttons' rows, and above the first
-#define FRONT_LEADER_IN 14 // a front row starts this far left of its leader, under its text
+#define BLAZE_ROW_H ui_px(40)
+#define FRONT_HIT ui_px(44)	   // the touch square over a front button
+#define FRONT_ROW_GAP ui_px(6)	   // between the front buttons' rows, and above the first
+#define FRONT_LEADER_IN ui_px(14) // a front row starts this far left of its leader, under its text
 
 // How wide the touch zone over a flank is: the buttons sit on its outer edge,
 // on the right of a right flank and on the left of a left one.
-#define HIT_W 86
+#define HIT_W ui_px(86)
 
 typedef struct {
 	const char *dark;  // file for the dark theme

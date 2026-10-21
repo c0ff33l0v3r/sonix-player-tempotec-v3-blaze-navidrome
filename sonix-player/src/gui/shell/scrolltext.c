@@ -9,6 +9,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include "src/gui/shell/uiscale.h"
 
 // How fast the text moves, and how long it sits still before it starts (and
 // again at the end of every pass).
@@ -24,7 +25,7 @@
 // length of a track title: under a fixed duration it goes past several times
 // as fast and cannot be read at all. 55 px/s is a comfortable reading pace at
 // any length.
-#define SCROLL_SPEED_PX_S 55
+#define SCROLL_SPEED_PX_S ui_px(55)
 
 // Floor and ceiling on one pass. The floor stops a barely-overflowing title
 // from twitching; the ceiling exists only to bound the pathological case, not
@@ -106,7 +107,7 @@ static int32_t text_width(lv_obj_t *label, const char *text) {
 // stops handing out fades once it is full.
 // ---------------------------------------------------------------------------
 
-#define FADE_EDGE_PX 24
+#define FADE_EDGE_PX ui_px(24)
 #define FADE_CACHE_MAX 8
 #define FADE_LABELS_MAX 24
 #define FADE_POLL_MS 80

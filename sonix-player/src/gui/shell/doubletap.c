@@ -3,11 +3,12 @@
 #include "src/gui/shell/switcher.h"
 #include "src/system/core/config.h"
 #include "src/system/device/power.h"
+#include "src/gui/shell/uiscale.h"
 
 #define DOUBLE_TAP_MS 400 // between the two taps
 #define TAP_MAX_MS 300	  // a press held longer is not a tap
-#define TAP_SLOP_PX 20	  // movement within a tap
-#define PAIR_SLOP_PX 60	  // distance between the two taps
+#define TAP_SLOP_PX ui_px(20)	  // movement within a tap
+#define PAIR_SLOP_PX ui_px(60)	  // distance between the two taps
 
 static void doubletap_cb(lv_event_t *e) {
 	static lv_point_t down;

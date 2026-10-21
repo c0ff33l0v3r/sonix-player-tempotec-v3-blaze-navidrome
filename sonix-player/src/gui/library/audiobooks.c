@@ -217,21 +217,21 @@ static lv_obj_t *make_viewport(lv_obj_t *screen, gui_config_t *cfg, lv_obj_t **b
 // a book -- and a band of forty-eight rows read back as the viewport moves.
 // ---------------------------------------------------------------------------
 
-#define ROW_HEIGHT 100
-#define ROW_GAP 8
+#define ROW_HEIGHT ui_px(100)
+#define ROW_GAP ui_px(8)
 #define ROW_PITCH (ROW_HEIGHT + ROW_GAP)
-#define ROW_RADIUS 12
-#define ROW_PAD 14
-#define THUMB_SIZE 72
+#define ROW_RADIUS ui_px(12)
+#define ROW_PAD ui_px(14)
+#define THUMB_SIZE ui_px(72)
 #define ROW_POOL 12
 
 // How many rows are read from the database at a time. Four times the pool, so
 // scrolling a screenful does not go back to the database.
 #define WINDOW_ROWS 48
 
-#define PLAYMARK_WIDTH 6
-#define PLAYMARK_HEIGHT 52
-#define PLAYMARK_INSET 4 // from the row's left edge
+#define PLAYMARK_WIDTH ui_px(6)
+#define PLAYMARK_HEIGHT ui_px(52)
+#define PLAYMARK_INSET ui_px(4) // from the row's left edge
 
 #define THUMB_POLL_MS 150
 
@@ -814,7 +814,7 @@ static void build_books_page(gui_config_t *cfg) {
 // names are few enough to hold -- one per author or series, not per book.
 // ---------------------------------------------------------------------------
 
-#define NAME_ROW_HEIGHT 88
+#define NAME_ROW_HEIGHT ui_px(88)
 #define NAME_ROW_PITCH (NAME_ROW_HEIGHT + ROW_GAP)
 
 typedef struct {

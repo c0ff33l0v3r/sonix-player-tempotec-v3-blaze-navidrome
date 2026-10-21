@@ -35,10 +35,10 @@ lv_obj_t *radiosearch_screen;
 // The list is windowed like every other long list here: a fixed pool of row
 // widgets rides the scroll position. Two hundred stations is well past the
 // point where building a widget per entry is felt on this hardware.
-#define ROW_HEIGHT 100
-#define ROW_GAP 8
+#define ROW_HEIGHT ui_px(100)
+#define ROW_GAP ui_px(8)
 #define ROW_PITCH (ROW_HEIGHT + ROW_GAP)
-#define ROW_RADIUS 12
+#define ROW_RADIUS ui_px(12)
 #define ROW_POOL 10
 
 #define POLL_MS 300
@@ -70,16 +70,16 @@ typedef struct {
 
 // The mark on the loaded station, as the track lists draw it on the track that
 // is playing (medialist.c).
-#define PLAYMARK_WIDTH 6
-#define PLAYMARK_HEIGHT 52
-#define PLAYMARK_INSET 4 // from the row's left edge
-#define ROW_PAD_HOR 14
+#define PLAYMARK_WIDTH ui_px(6)
+#define PLAYMARK_HEIGHT ui_px(52)
+#define PLAYMARK_INSET ui_px(4) // from the row's left edge
+#define ROW_PAD_HOR ui_px(14)
 
 // radio.txt's headings: a line of dim text over the first station of each
 // group, in the gap the group's rows are pushed down by. Only that list has
 // them, so only that list's rows are placed from a table rather than at a
 // fixed pitch.
-#define HEADING_HEIGHT 56
+#define HEADING_HEIGHT ui_px(56)
 static int custom_row_y[RADIO_CUSTOM_MAX]; // where each station row sits
 static int custom_list_height;
 static lv_obj_t *heading_labels[RADIO_CUSTOM_MAX];

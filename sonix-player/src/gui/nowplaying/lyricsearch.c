@@ -16,10 +16,10 @@
 
 lv_obj_t *lyricsearch_screen;
 
-#define ROW_HEIGHT 92
-#define ROW_RADIUS 12
-#define APPLY_W 230
-#define APPLY_H 64
+#define ROW_HEIGHT ui_px(92)
+#define ROW_RADIUS ui_px(12)
+#define APPLY_W ui_px(230)
+#define APPLY_H ui_px(64)
 
 static lv_obj_t *title_label;
 static lv_obj_t *list;		   // the records

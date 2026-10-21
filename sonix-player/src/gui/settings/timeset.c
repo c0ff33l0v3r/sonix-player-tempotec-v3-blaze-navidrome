@@ -25,7 +25,7 @@
 // The chevron and the heading are laid out to the same numbers the rest of the
 // interface uses (settingsrow.c, switcher.c): one 56 px button in the corner
 // and the title beside it, not above it.
-#define TIMESET_HEADER_BTN 56
+#define TIMESET_HEADER_BTN ui_px(56)
 
 // The panel sits on the top layer so it covers the status bar too: until the
 // clock is set there is nothing useful up there anyway.

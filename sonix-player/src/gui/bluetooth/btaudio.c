@@ -249,7 +249,7 @@ static void codec_row_cb(lv_event_t *e) {
 // value would use on any other row.
 // ---------------------------------------------------------------------------
 
-#define AIRPODS_ICON_INSET 48 // clears the chevron at the row's right edge
+#define AIRPODS_ICON_INSET ui_px(48) // clears the chevron at the row's right edge
 
 static void airpods_row_cb(lv_event_t *e) {
 	(void)e;
@@ -413,7 +413,7 @@ static void screen_unloaded_cb(lv_event_t *e) {
 
 // The player's own Bluetooth name, and the sheet that changes it: a field and a
 // keyboard over the page, the same shape the preset and playlist names use.
-#define NAME_CANCEL_SIZE 56
+#define NAME_CANCEL_SIZE ui_px(56)
 
 static lv_obj_t *name_row_value;
 static lv_obj_t *name_layer;

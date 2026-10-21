@@ -117,7 +117,7 @@ void libraryscan_begin(void) {
 // Which folders: the card's top-level folders, ticked, before the scan starts
 // ---------------------------------------------------------------------------
 
-#define PICK_CHROME_H 250 // the card's title, note, buttons and padding
+#define PICK_CHROME_H ui_px(250) // the card's title, note, buttons and padding
 // Rows are made this many at a time, more as the list nears its end.
 #define PICK_BATCH 30
 

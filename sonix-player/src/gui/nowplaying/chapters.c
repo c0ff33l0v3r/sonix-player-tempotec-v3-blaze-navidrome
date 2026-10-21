@@ -23,8 +23,8 @@ lv_obj_t *chapters_screen;
 // is plainly rebuilt each time it opens, like the audiobook index itself. The
 // cap is there for a pathological file, not for any real book.
 #define MAX_ROWS 400
-#define ROW_HEIGHT 68
-#define ROW_RADIUS 12
+#define ROW_HEIGHT ui_px(68)
+#define ROW_RADIUS ui_px(12)
 
 static lv_obj_t *chapter_list;
 static lv_obj_t *empty_label;

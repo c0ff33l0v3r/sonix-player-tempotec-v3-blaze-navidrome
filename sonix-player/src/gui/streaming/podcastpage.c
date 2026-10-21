@@ -318,7 +318,7 @@ static void build_busy_layer(void) {
 // services cannot tread on each other even by accident (see qobuzart.h).
 // ---------------------------------------------------------------------------
 
-#define ROW_THUMB 60
+#define ROW_THUMB ui_px(60)
 
 static lv_obj_t *list_container;
 static lv_obj_t *list_title;
@@ -353,8 +353,8 @@ static int list_count;
 // Everything ABOUT an entry -- its cover, whether that cover failed, which row
 // lent it -- stays indexed by the entry, not by the widget. The widget is only
 // what draws it this second.
-#define ROW_HEIGHT 88
-#define ROW_GAP 12
+#define ROW_HEIGHT ui_px(88)
+#define ROW_GAP ui_px(12)
 #define ROW_PITCH (ROW_HEIGHT + ROW_GAP)
 #define ROW_POOL 12
 
@@ -2578,7 +2578,7 @@ static void build_offline_banner(lv_obj_t *column, gui_config_t *cfg) {
 // "Now listening" and "Continue listening"
 // ---------------------------------------------------------------------------
 
-#define LISTEN_ROW_HEIGHT 96
+#define LISTEN_ROW_HEIGHT ui_px(96)
 // Between the block and the rows: wider than the gap between two rows, so the
 // list of podcasts reads as starting there.
 #define TOP_BLOCK_GAP (ROW_GAP + 18)

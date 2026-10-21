@@ -15,8 +15,8 @@
 #include "src/system/device/sysinfo.h"
 #include "src/gui/shell/uiscale.h"
 
-#define CARD_W 420
-#define BUTTON_H 64
+#define CARD_W ui_px(420)
+#define BUTTON_H ui_px(64)
 #define BUTTONS 3
 #define POLL_MS 200
 
@@ -299,8 +299,8 @@ static void strip_marks(char *text) {
 }
 
 // Space above a heading, and above whatever follows a blank line.
-#define NOTES_GAP 10
-#define BULLET_INDENT 18
+#define NOTES_GAP ui_px(10)
+#define BULLET_INDENT ui_px(18)
 
 // A paragraph in font_ui_20, the stretches between bold marks in
 // font_ui_20_bold, wrapping at the width it is given.

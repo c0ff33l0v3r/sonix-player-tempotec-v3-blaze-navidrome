@@ -46,21 +46,21 @@ lv_obj_t *details_screen;
 // widgets rides the scroll position, and each row looks up its title (one
 // indexed database lookup) at the moment it binds. Opening the page costs a
 // dozen binds, not hundreds, which is what makes it instant.
-#define QUEUE_THUMB_SIZE 56
-#define QUEUE_ROW_HEIGHT 72
-#define QUEUE_ROW_GAP 8
+#define QUEUE_THUMB_SIZE ui_px(56)
+#define QUEUE_ROW_HEIGHT ui_px(72)
+#define QUEUE_ROW_GAP ui_px(8)
 #define QUEUE_ROW_PITCH (QUEUE_ROW_HEIGHT + QUEUE_ROW_GAP)
 #define QUEUE_ROW_POOL 12
-#define QUEUE_GRIP_SIZE 56
+#define QUEUE_GRIP_SIZE ui_px(56)
 
 // The room a heading takes above its rows: History over the tracks already
 // played, Now playing over the track playing and the ones after it.
-#define QUEUE_HEADER_H 48
+#define QUEUE_HEADER_H ui_px(48)
 
 // The history is split by day, under a smaller heading of its own: Today,
 // Yesterday or the date. Only the ones near the top of the page are drawn, from
 // a pool of labels, as the rows are.
-#define QUEUE_SEP_H 40
+#define QUEUE_SEP_H ui_px(40)
 #define QUEUE_SEP_POOL 8
 
 // The page rests with Now playing at the top, and the history sits above it.
@@ -69,14 +69,14 @@ lv_obj_t *details_screen;
 // it has moved QUEUE_PULL_OPEN_PX. Let go before that and it springs back.
 #define QUEUE_PULL_NUM 2
 #define QUEUE_PULL_DEN 5
-#define QUEUE_PULL_OPEN_PX 56
+#define QUEUE_PULL_OPEN_PX ui_px(56)
 
 // Carrying a row: how far the finger has to travel before a release counts as
 // a drop, and how close to an edge of the list it has to be before the list
 // moves under it, by QUEUE_EDGE_STEP each time the finger is read.
-#define QUEUE_DROP_MIN_TRAVEL 8
-#define QUEUE_EDGE_PX 70
-#define QUEUE_EDGE_STEP 18
+#define QUEUE_DROP_MIN_TRAVEL ui_px(8)
+#define QUEUE_EDGE_PX ui_px(70)
+#define QUEUE_EDGE_STEP ui_px(18)
 
 typedef struct {
 	lv_obj_t *button;

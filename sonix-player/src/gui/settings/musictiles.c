@@ -28,32 +28,32 @@ lv_obj_t *musictiles_screen;
 // top or bottom edge.
 // ---------------------------------------------------------------------------
 
-#define ROW_HEIGHT 72
-#define ROW_GAP 8
+#define ROW_HEIGHT ui_px(72)
+#define ROW_GAP ui_px(8)
 #define ROW_PITCH (ROW_HEIGHT + ROW_GAP)
-#define ROW_RADIUS 12
-#define ROW_PAD 20
-#define ICON_BOX 56
+#define ROW_RADIUS ui_px(12)
+#define ROW_PAD ui_px(20)
+#define ICON_BOX ui_px(56)
 // The tiles' own pictures are 112 px: shown at half that.
 #define ICON_SCALE (LV_SCALE_NONE / 2)
-#define HEADING_H 40
+#define HEADING_H ui_px(40)
 
 // The grip is only as large as its glyph and a margin round it; the room kept
 // for it at the end of the row is wider.
-#define GRIP_SIZE 48
-#define GRIP_SPACE 64
+#define GRIP_SIZE ui_px(48)
+#define GRIP_SPACE ui_px(64)
 
 // Either list is a drop target even when it is empty, so neither is ever
 // shorter than one row.
 #define LIST_MIN_ROWS 1
 
 // How far the finger has to travel before a release counts as a drop.
-#define DROP_MIN_TRAVEL 8
+#define DROP_MIN_TRAVEL ui_px(8)
 
 // How close to the top or bottom of the page a held row has to be before the
 // page moves under it, and how far it moves each time the event comes round.
-#define EDGE_PX 70
-#define EDGE_STEP 18
+#define EDGE_PX ui_px(70)
+#define EDGE_STEP ui_px(18)
 
 typedef struct {
 	lv_obj_t *row;

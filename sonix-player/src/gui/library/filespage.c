@@ -59,10 +59,10 @@ static bool gesture_not_tap(void) {
 // card to find out how big the file is -- and a stat on a slow card, two
 // thousand times, is a folder that takes seconds to open. Built this way, it is
 // a stat for each row that is actually on screen.
-#define ROWS_FIRST 14
-#define ROWS_MORE 14
+#define ROWS_FIRST ui_px(14)
+#define ROWS_MORE ui_px(14)
 
-#define ROW_HEIGHT 76
+#define ROW_HEIGHT ui_px(76)
 
 typedef struct {
 	char *name;	 // in the pool

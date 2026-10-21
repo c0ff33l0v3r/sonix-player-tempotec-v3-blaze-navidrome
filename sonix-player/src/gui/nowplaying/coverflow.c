@@ -62,11 +62,11 @@
 #define CF_SLOTS 6
 
 // The record: the size a square is decoded, built and drawn at.
-#define CF_MID_W 210
+#define CF_MID_W ui_px(210)
 
 // The height a fully turned record comes out at, and how wide its far edge is
 // as a percentage of its near one. Together they are the angle.
-#define CF_LEAN_H 90
+#define CF_LEAN_H ui_px(90)
 #define CF_FAR_PCT 62
 
 // How much of the colour survives at the far edge, out of 256, and how the
@@ -82,14 +82,14 @@
 // How far apart the places are, centre to centre. Less than the middle record
 // is tall on purpose: the record beside it tucks behind it, which is what gives
 // the column a front and a back instead of a stack of tiles.
-#define CF_PITCH_NEAR 118 // between the middle and the place next to it
-#define CF_PITCH_FAR 86   // between two turned places further out
+#define CF_PITCH_NEAR ui_px(118) // between the middle and the place next to it
+#define CF_PITCH_FAR ui_px(86)   // between two turned places further out
 
 // How far the finger travels to move the column by one record.
-#define CF_STEP_PX 96
+#define CF_STEP_PX ui_px(96)
 
 // The travel that separates a tap from a drag.
-#define CF_DRAG_COMMIT_PX 8
+#define CF_DRAG_COMMIT_PX ui_px(8)
 
 // The throw: a release carries on at the speed the finger had, slowing to a
 // stop, and settles on whichever record it ended nearest.
@@ -99,27 +99,27 @@
 
 // The band at the bottom of the Musica page the opening pull has to start in,
 // and the travel that hands the sheet over to the finger.
-#define CF_EDGE_H 56
-#define CF_EDGE_COMMIT_PX 12
+#define CF_EDGE_H ui_px(56)
+#define CF_EDGE_COMMIT_PX ui_px(12)
 
 // The grip at the top: how far down it sits and how big a target it is.
-#define CF_BAR_TOP 2
-#define CF_BAR_HIT_W 180
-#define CF_BAR_HIT_H 46
+#define CF_BAR_TOP ui_px(2)
+#define CF_BAR_HIT_W ui_px(180)
+#define CF_BAR_HIT_H ui_px(46)
 
 // The slide, when the finger lets go part way.
 #define CF_SHEET_MS 260
 
 // The turn, and the card behind the record.
 #define CF_FLIP_MS 130
-#define CF_BACK_W 380
-#define CF_BACK_PAD 18
+#define CF_BACK_W ui_px(380)
+#define CF_BACK_PAD ui_px(18)
 #define CF_BACK_BODY_W (CF_BACK_W - 2 * CF_BACK_PAD)
 #define CF_BACK_H_MIN 120
 #define CF_BACK_LIST_MAX 400
-#define CF_BACK_ROW_H 50
+#define CF_BACK_ROW_H ui_px(50)
 #define CF_BACK_ROWS 64
-#define CF_BACK_RADIUS 16
+#define CF_BACK_RADIUS ui_px(16)
 
 // The scroll position is kept in 16.16 of a place, so a drag moves the column
 // by fractions of a record and every record's angle moves with it.
@@ -150,10 +150,10 @@
 // instead of pooling under it. That rectangle follows the record's height,
 // which shrinks as the record turns, so a sleeve seen at an angle throws a
 // flatter light than one facing the front.
-#define CF_GLOW_INSET 12
-#define CF_GLOW_MIN_H 10
-#define CF_GLOW_RADIUS 20
-#define CF_GLOW_REACH 52 // how far past the caster the light still reaches
+#define CF_GLOW_INSET ui_px(12)
+#define CF_GLOW_MIN_H ui_px(10)
+#define CF_GLOW_RADIUS ui_px(20)
+#define CF_GLOW_REACH ui_px(52) // how far past the caster the light still reaches
 #define CF_GLOW_OPA 210	 // and how strong it is against the caster's own edge
 
 // How many levels of alpha the dither moves a pixel by, either way. An RGB565
@@ -869,19 +869,15 @@ static void glow_paint(uint8_t *map, int gw, int gh) {
 	// a visible step however faint it is made; a square arrives at nothing with
 	// no slope left, which is what makes the edge of the light impossible to
 	// find. A cube does the same but spends so much of the reach near nothing
-	// that the halo turns into a rim.
-	static uint8_t fall[CF_GLOW_REACH + 1];
-	static bool fall_ready;
-	if (!fall_ready) {
-		for (int d = 0; d <= CF_GLOW_REACH; d++) {
-			int inv = 256 - d * 256 / CF_GLOW_REACH;
-			fall[d] = (uint8_t)(((int64_t)CF_GLOW_OPA * inv * inv) >> 16);
-		}
-		fall_ready = true;
+	// that the halo turns into a rim. A few dozen entries, sized by the panel.
+	uint8_t fall[CF_GLOW_REACH + 1];
+	for (int d = 0; d <= CF_GLOW_REACH; d++) {
+		int inv = 256 - d * 256 / CF_GLOW_REACH;
+		fall[d] = (uint8_t)(((int64_t)CF_GLOW_OPA * inv * inv) >> 16);
 	}
 
 	// The horizontal term does not change down a column.
-	static int qxs[CF_GLOW_MAX_W];
+	int qxs[CF_GLOW_MAX_W];
 	for (int x = 0; x < w; x++) {
 		int off = x - cx;
 		qxs[x] = (off < 0 ? -off : off) - (hw - r);

@@ -26,8 +26,8 @@ lv_obj_t *wifisettings_screen;
 // itself happens on the wifi worker; this only redraws.
 #define WIFI_PAGE_POLL_MS 500
 
-#define WIFI_ROW_H 82
-#define CORNER_BTN_SIZE 56
+#define WIFI_ROW_H ui_px(82)
+#define CORNER_BTN_SIZE ui_px(56)
 
 static lv_obj_t *wifi_switch;
 static lv_obj_t *status_label;

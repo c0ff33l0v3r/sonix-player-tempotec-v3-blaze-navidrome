@@ -17,13 +17,13 @@
 #include "src/system/net/wifi.h"
 #include "src/gui/shell/uiscale.h"
 
-#define ROW_H 76
-#define HEADER_BTN 56
+#define ROW_H ui_px(76)
+#define HEADER_BTN ui_px(56)
 #define POLL_MS 500
 // A list left alone is scanned again this often, so a network switched on
 // while the page is up appears without a button to ask for it.
 #define RESCAN_MS 10000
-#define PASSWORD_KEYBOARD_H 316
+#define PASSWORD_KEYBOARD_H ui_px(316)
 
 static lv_obj_t *panel;
 static lv_obj_t *status_label;
