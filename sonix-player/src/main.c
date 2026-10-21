@@ -1545,7 +1545,12 @@ static uint8_t *rot_page;		   // the RAM page LVGL draws into while rotated
 // using the same per-page bookkeeping as the rotation. The touch panel follows
 // by itself: evdev maps its raw range onto the display's (logical) resolution.
 static bool fb_scaled;
-static uint8_t *scale_page;
+static uint8_t *ram_page;
+// LVGL draws into a RAM page and every flush copies what changed into the
+// framebuffer page off screen: when scaled, and on a panel whose
+// FBIOPAN_DISPLAY holds the caller for most of a frame (sysinfo slow_pan),
+// where the copy lets the flip wait on its own thread instead of this one.
+static bool fb_ram_page;
 static int32_t log_w, log_h; // the resolution LVGL renders at; the panel's unless scaled
 
 // What this frame touched, and what each framebuffer page has not been given
@@ -1765,6 +1770,18 @@ static void blit_rotated_180(uint16_t *dst, const uint16_t *src, const lv_area_t
 	}
 }
 
+// The copy when the page is neither shrunk nor turned: what changed, row by row.
+static void blit_plain(uint16_t *dst, const uint16_t *src, const lv_area_t *area, int32_t width, int32_t height) {
+	int32_t x1 = area->x1 < 0 ? 0 : area->x1;
+	int32_t y1 = area->y1 < 0 ? 0 : area->y1;
+	int32_t x2 = area->x2 >= width ? width - 1 : area->x2;
+	int32_t y2 = area->y2 >= height ? height - 1 : area->y2;
+
+	for (int32_t y = y1; y <= y2 && x1 <= x2; y++) {
+		memcpy(dst + (size_t)y * width + x1, src + (size_t)y * width + x1, (size_t)(x2 - x1 + 1) * sizeof(uint16_t));
+	}
+}
+
 // Frame timing, for the log: how long LVGL took to draw a frame, the copy onto
 // the panel page and the page flip. Summed over a second and printed only for
 // seconds with a frame over FRAME_SLOW_MS in them, so an idle player says
@@ -1824,7 +1841,7 @@ static void ft_frame_done(uint64_t flush_us, uint64_t wait_us, uint64_t blit_don
 static void fb_pan_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px) {
 	bool second_page;
 	uint64_t flush_us = ft_now_us(), wait_us = flush_us, blit_done_us = flush_us;
-	bool copied = fb_rotated || fb_scaled;
+	bool copied = fb_rotated || fb_ram_page;
 
 	if (copied) {
 		// Collect this frame's damage; the copy happens once, on the last
@@ -1849,6 +1866,8 @@ static void fb_pan_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *
 			ft.copied_px += (uint32_t)area_size(&redraw.r[i]);
 			if (fb_scaled) {
 				blit_scaled_2_3(page, (const uint16_t *)px, &redraw.r[i], fb_rotated);
+			} else if (!fb_rotated) {
+				blit_plain(page, (const uint16_t *)px, &redraw.r[i], (int32_t)fb_var.xres, (int32_t)fb_var.yres);
 			} else {
 				blit_rotated_180(page, (const uint16_t *)px, &redraw.r[i], (int32_t)fb_var.xres,
 								 (int32_t)fb_var.yres);
@@ -1960,14 +1979,20 @@ static lv_display_t *try_panned_display(void) {
 	}
 	if (model && model->panel_width * 2 == log_w * 3 && model->panel_height * 2 == log_h * 3) {
 		size_t size = (size_t)model->panel_width * (size_t)model->panel_height * 2;
-		scale_page = malloc(size);
-		if (scale_page) {
-			memset(scale_page, 0, size);
+		ram_page = malloc(size);
+		if (ram_page) {
+			memset(ram_page, 0, size);
 			log_w = model->panel_width;
 			log_h = model->panel_height;
-			fb_scaled = true;
+			fb_scaled = fb_ram_page = true;
 		} else {
 			fprintf(stderr, "fb: no memory for the %zu-byte layout page, drawing at the panel's size\n", size);
+		}
+	} else if (model && model->slow_pan) {
+		ram_page = calloc(1, fb_page_size);
+		fb_ram_page = ram_page != NULL;
+		if (!fb_ram_page) {
+			fprintf(stderr, "fb: no memory for the %zu-byte RAM page, drawing into the framebuffer\n", fb_page_size);
 		}
 	}
 
@@ -1980,14 +2005,14 @@ static lv_display_t *try_panned_display(void) {
 	}
 
 	lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
-	if (fb_scaled) {
+	if (fb_ram_page) {
 		// Both framebuffer pages owe a full frame.
 		dirty_clear(&rot_frame_dirty);
 		dirty_set_full(&rot_page_pending[0]);
 		dirty_set_full(&rot_page_pending[1]);
-		lv_display_set_buffers(disp, scale_page, NULL, (uint32_t)(log_w * log_h * 2), LV_DISPLAY_RENDER_MODE_DIRECT);
-		printf("fb: interface at %dx%d, shrunk 2/3 onto the %ux%u panel\n", (int)log_w, (int)log_h, fb_var.xres,
-			   fb_var.yres);
+		lv_display_set_buffers(disp, ram_page, NULL, (uint32_t)(log_w * log_h * 2), LV_DISPLAY_RENDER_MODE_DIRECT);
+		printf("fb: interface at %dx%d in a RAM page, %s the %ux%u panel\n", (int)log_w, (int)log_h,
+			   fb_scaled ? "shrunk 2/3 onto" : "copied onto", fb_var.xres, fb_var.yres);
 	} else {
 		lv_display_set_buffers(disp, fb_mem, fb_mem + fb_page_size, (uint32_t)fb_page_size,
 							   LV_DISPLAY_RENDER_MODE_DIRECT);
@@ -2135,7 +2160,7 @@ void display_black_wake(void) {
 	if (black_ui_yoffset < 0) {
 		return;
 	}
-	if (!(fb_rotated || fb_scaled)) {
+	if (!(fb_rotated || fb_ram_page)) {
 		display_show_black(false);
 		return;
 	}
@@ -2195,7 +2220,7 @@ void display_set_rotated(bool rotated) {
 		return;
 	}
 
-	if (fb_scaled) {
+	if (fb_ram_page) {
 		// Already drawing into a RAM page: only the copy turns, and both
 		// framebuffer pages owe a full frame the new way round.
 		fb_rotated = rotated;

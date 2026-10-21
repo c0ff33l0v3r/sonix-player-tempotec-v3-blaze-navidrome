@@ -55,10 +55,10 @@ static const sysinfo_model_t MODELS[] = {
 	},
 	{
 		// Charger in the AXP2101 PMIC; AK4493SEQ DAC with 3.5 mm and 4.4 mm.
-		// Laid out at 480x720 and shrunk 2/3 onto the 320x480 glass (main.c).
+		// Laid out at the 320x480 glass's own size: sizes go through ui_px().
 		.name = "TempoTec V3 Blaze",
-		.panel_width = 480,
-		.panel_height = 720,
+		.panel_width = 320,
+		.panel_height = 480,
 		.update_stem = "v3_analog_2025",
 		.serial_prefix = "",
 		.pmic_charger = true,
@@ -74,6 +74,8 @@ static const sysinfo_model_t MODELS[] = {
 		// left over from the base firmware and sized for other panels.
 		.one_boot_logo = true,
 		.boot_animation = true,
+		// The RAM-less ST77903 takes a new page at 45 Hz.
+		.slow_pan = true,
 	},
 };
 

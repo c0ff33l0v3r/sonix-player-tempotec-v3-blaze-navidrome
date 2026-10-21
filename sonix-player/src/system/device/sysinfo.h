@@ -77,6 +77,7 @@ typedef struct {
 	bool media_keys_swapped;   // KEY_NEXTSONG is the upper skip key, not next (system.c)
 	bool one_boot_logo;		   // /etc/logo.jpeg whatever the theme; logo1/logo2 are not its own (bootlogo.h)
 	bool boot_animation;	   // plays TempoTec's frames over that logo at startup (bootanim.h)
+	bool slow_pan;			   // FBIOPAN_DISPLAY holds the caller 10-16 ms: drawn into RAM, flipped on a thread (main.c)
 } sysinfo_model_t;
 
 // The entry for the name in the file, or NULL when the file says nothing or
