@@ -19,6 +19,7 @@
 #include "src/gui/nowplaying/cover.h"
 #include "src/system/audio/waveform.h"
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/gui/shell/gui.h"
 #include "src/system/core/frameprof.h"
 #include "src/system/core/wakeprof.h"
@@ -2563,21 +2564,6 @@ int main(int argc, char **argv) {
 	// After lv_init(), never before: it would overwrite this.
 	lv_rand_set_seed((uint32_t)time(NULL) ^ (uint32_t)getpid());
 
-	// The fonts, before anything can create a widget: every lv_font_t the
-	// interface points at is filled in here, from /usr/resource/sonix/fonts through
-	// FreeType -- the stock player's own mechanism. Without default.otf there
-	// is no drawing so much as an error message, so that is fatal.
-	if (!fonts_init()) {
-#ifdef HOST_BUILD
-		fprintf(stderr, "fonts: no default.otf in usr/resource/sonix/fonts or assets/fonts --\n"
-						"       start the simulator from the folder that holds them\n");
-		return 1;
-#else
-		park("fonts: /usr/resource/sonix/fonts/default.otf is missing or unreadable");
-		return 1;
-#endif
-	}
-
 	lv_tick_set_cb(custom_tick_get);
 
 #ifdef HOST_BUILD
@@ -2675,12 +2661,29 @@ int main(int argc, char **argv) {
 		printf("panel: laying the interface out at %dx%d (%s)\n", panel_w, panel_h,
 			   model ? model->name : "no model this build knows, so the default");
 	}
+	ui_panel_width = panel_w;
+
+	// The fonts, before anything can create a widget and after the panel is
+	// known, since their sizes go through ui_px(): every lv_font_t the
+	// interface points at is filled in here, from /usr/resource/sonix/fonts through
+	// FreeType -- the stock player's own mechanism. Without default.otf there
+	// is no drawing so much as an error message, so that is fatal.
+	if (!fonts_init()) {
+#ifdef HOST_BUILD
+		fprintf(stderr, "fonts: no default.otf in usr/resource/sonix/fonts or assets/fonts --\n"
+						"       start the simulator from the folder that holds them\n");
+		return 1;
+#else
+		park("fonts: /usr/resource/sonix/fonts/default.otf is missing or unreadable");
+		return 1;
+#endif
+	}
 
 	gui_config_t gui_cfg = {
 		.screen_width = (uint32_t)panel_w,
 		.screen_height = (uint32_t)panel_h,
-		.top_bar_height = 44,
-		.padding = 15,
+		.top_bar_height = ui_px(44),
+		.padding = ui_px(15),
 #ifdef HOST_BUILD
 		.sd_root_path = music_path,
 #else

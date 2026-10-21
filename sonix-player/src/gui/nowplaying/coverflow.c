@@ -20,6 +20,7 @@
 #include "src/system/library/library.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/core/utils.h"
+#include "src/gui/shell/uiscale.h"
 
 // ---------------------------------------------------------------------------
 // The crate
@@ -1206,8 +1207,8 @@ static bool track_fill_cb(const char *name, const char *path, const char *artist
 	lv_obj_set_size(row, lv_pct(100), CF_BACK_ROW_H);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_column(row, 12, 0);
-	lv_obj_set_style_radius(row, 8, 0);
+	lv_obj_set_style_pad_column(row, ui_px(12), 0);
+	lv_obj_set_style_radius(row, ui_px(8), 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
 	lv_obj_set_scrollable(row, false);
 	lv_obj_set_clickable(row, true);
@@ -1217,7 +1218,7 @@ static bool track_fill_cb(const char *name, const char *path, const char *artist
 	// what makes the list read as the back of one record rather than as a
 	// fragment of the library.
 	lv_obj_t *num = lv_label_create(row);
-	lv_obj_set_width(num, 26);
+	lv_obj_set_width(num, ui_px(26));
 	lv_obj_set_style_text_align(num, LV_TEXT_ALIGN_RIGHT, 0);
 	lv_obj_add_style(num, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(num, &font_ui_18, 0);
@@ -1237,7 +1238,7 @@ static bool track_fill_cb(const char *name, const char *path, const char *artist
 	// travels with it and needs no second pass over the list.
 	lv_obj_t *sep = lv_obj_create(row);
 	lv_obj_remove_style_all(sep);
-	lv_obj_set_size(sep, lv_pct(100), 1);
+	lv_obj_set_size(sep, lv_pct(100), ui_px(1));
 	lv_obj_set_style_bg_color(sep, theme()->text_secondary, 0);
 	lv_obj_set_style_bg_opa(sep, LV_OPA_20, 0);
 	lv_obj_set_ignore_layout(sep, true);
@@ -2102,7 +2103,7 @@ void coverflow_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_align(title_label, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_set_style_text_font(title_label, &font_ui_24, 0);
 	scrolltext_apply(title_label);
-	lv_obj_align(title_label, LV_ALIGN_BOTTOM_MID, 0, -34);
+	lv_obj_align(title_label, LV_ALIGN_BOTTOM_MID, 0, -ui_px(34));
 
 	empty_label = lv_label_create(sheet);
 	lv_label_set_long_mode(empty_label, LV_LABEL_LONG_WRAP);
@@ -2174,8 +2175,8 @@ void coverflow_init(gui_config_t *cfg) {
 	lv_obj_set_width(back_sub, lv_pct(100));
 	lv_obj_add_style(back_sub, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(back_sub, &font_ui_18, 0);
-	lv_obj_set_style_pad_top(back_sub, 2, 0);
-	lv_obj_set_style_pad_bottom(back_sub, 12, 0);
+	lv_obj_set_style_pad_top(back_sub, ui_px(2), 0);
+	lv_obj_set_style_pad_bottom(back_sub, ui_px(12), 0);
 
 	back_list = lv_obj_create(back_body);
 	lv_obj_remove_style_all(back_list);

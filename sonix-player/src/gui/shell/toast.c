@@ -7,6 +7,7 @@
 #include "src/system/core/lang.h"
 
 #include <string.h>
+#include "src/gui/shell/uiscale.h"
 
 #define TOAST_MS 1400
 // A longer sentence stays up longer, so it can be read to the end: this much
@@ -101,11 +102,11 @@ void toast_init(gui_config_t *cfg) {
 	lv_obj_set_style_max_height(card, lv_display_get_vertical_resolution(lv_display_get_default()) - 2 * TOAST_SIDE_MARGIN, 0);
 	lv_obj_center(card);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 20, 0);
+	lv_obj_set_style_radius(card, ui_px(20), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 20, 0);
-	lv_obj_set_style_pad_gap(card, 16, 0);
+	lv_obj_set_style_pad_all(card, ui_px(20), 0);
+	lv_obj_set_style_pad_gap(card, ui_px(16), 0);
 	lv_obj_set_scrollable(card, false);
 	lv_obj_set_clickable(card, true); // a tap on it is not a tap outside
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);

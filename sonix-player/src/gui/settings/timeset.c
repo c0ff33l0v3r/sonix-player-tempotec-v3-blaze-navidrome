@@ -17,6 +17,7 @@
 #include "src/system/core/lang.h"
 #include "src/system/device/power.h"
 #include "src/system/net/wifi.h"
+#include "src/gui/shell/uiscale.h"
 
 #define TIMESET_YEAR_FIRST 2025
 #define TIMESET_YEAR_LAST 2044
@@ -156,10 +157,10 @@ static lv_obj_t *make_roller(lv_obj_t *parent, const char *options, int width) {
 	lv_obj_set_style_border_width(roller, 0, 0);
 	lv_obj_set_style_shadow_width(roller, 0, 0);
 	lv_obj_set_style_text_font(roller, &font_ui_24, 0);
-	lv_obj_set_style_text_line_space(roller, 14, 0);
+	lv_obj_set_style_text_line_space(roller, ui_px(14), 0);
 
 	lv_obj_set_style_bg_opa(roller, LV_OPA_COVER, LV_PART_SELECTED);
-	lv_obj_set_style_radius(roller, 10, LV_PART_SELECTED);
+	lv_obj_set_style_radius(roller, ui_px(10), LV_PART_SELECTED);
 	lv_obj_set_style_text_font(roller, &font_ui_24_bold, LV_PART_SELECTED);
 
 	paint_roller(roller);
@@ -474,11 +475,11 @@ static lv_obj_t *make_card(lv_obj_t *parent) {
 	lv_obj_t *card = lv_obj_create(parent);
 	lv_obj_set_size(card, lv_pct(100), LV_SIZE_CONTENT);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, ui_px(12), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 14, 0);
-	lv_obj_set_style_pad_gap(card, 10, 0);
+	lv_obj_set_style_pad_all(card, ui_px(14), 0);
+	lv_obj_set_style_pad_gap(card, ui_px(10), 0);
 	lv_obj_set_scrollable(card, false);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -886,7 +887,7 @@ static void build_timezone_panel(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(head, 0, 0);
 	lv_obj_set_style_pad_all(head, 0, 0);
 	lv_obj_set_style_pad_hor(head, cfg->padding, 0);
-	lv_obj_set_style_pad_column(head, 14, 0);
+	lv_obj_set_style_pad_column(head, ui_px(14), 0);
 	lv_obj_set_scrollable(head, false);
 	lv_obj_set_clickable(head, false);
 	lv_obj_set_flex_flow(head, LV_FLEX_FLOW_ROW);
@@ -916,24 +917,24 @@ static void build_timezone_panel(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(tz_list, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(tz_list, 0, 0);
 	lv_obj_set_style_pad_hor(tz_list, cfg->padding, 0);
-	lv_obj_set_style_pad_ver(tz_list, 10, 0);
+	lv_obj_set_style_pad_ver(tz_list, ui_px(10), 0);
 	lv_obj_set_style_pad_top(tz_list, cfg->padding, 0); // as above: the breathing room of the other pages
-	lv_obj_set_style_pad_gap(tz_list, 8, 0);
+	lv_obj_set_style_pad_gap(tz_list, ui_px(8), 0);
 	lv_obj_set_flex_flow(tz_list, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(tz_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_scroll_dir(tz_list, LV_DIR_VER);
 
 	for (int i = 0; i < TIMEZONE_COUNT; i++) {
 		lv_obj_t *row = lv_btn_create(tz_list);
-		lv_obj_set_size(row, lv_pct(100), 74);
+		lv_obj_set_size(row, lv_pct(100), ui_px(74));
 		lv_obj_add_style(row, &theme_style_card, 0);
 		lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_set_style_radius(row, 12, 0);
+		lv_obj_set_style_radius(row, ui_px(12), 0);
 		lv_obj_set_style_border_width(row, 0, 0);
 		lv_obj_set_style_shadow_width(row, 0, 0);
-		lv_obj_set_style_pad_hor(row, 20, 0);
+		lv_obj_set_style_pad_hor(row, ui_px(20), 0);
 		lv_obj_set_style_pad_ver(row, 0, 0);
-		lv_obj_set_style_pad_column(row, 12, 0);
+		lv_obj_set_style_pad_column(row, ui_px(12), 0);
 		lv_obj_set_scrollable(row, false);
 		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 		lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -947,7 +948,7 @@ static void build_timezone_panel(gui_config_t *cfg) {
 
 		lv_obj_t *offset_label = lv_label_create(row);
 		lv_label_set_text(offset_label, offset);
-		lv_obj_set_width(offset_label, 118);
+		lv_obj_set_width(offset_label, ui_px(118));
 		lv_obj_add_style(offset_label, &theme_style_text, 0);
 		lv_obj_set_style_text_font(offset_label, &font_ui_22, 0);
 
@@ -1017,7 +1018,7 @@ void timeset_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(header_row, 0, 0);
 	lv_obj_set_style_pad_all(header_row, 0, 0);
 	lv_obj_set_style_pad_hor(header_row, cfg->padding, 0);
-	lv_obj_set_style_pad_column(header_row, 14, 0);
+	lv_obj_set_style_pad_column(header_row, ui_px(14), 0);
 	lv_obj_set_scrollable(header_row, false);
 	lv_obj_set_clickable(header_row, false);
 	lv_obj_set_flex_flow(header_row, LV_FLEX_FLOW_ROW);
@@ -1060,7 +1061,7 @@ void timeset_init(gui_config_t *cfg) {
 	// pages the content starts one padding below the header row (see
 	// settingsrow_content_top).
 	lv_obj_set_style_pad_top(content, cfg->padding, 0);
-	lv_obj_set_style_pad_gap(content, 18, 0);
+	lv_obj_set_style_pad_gap(content, ui_px(18), 0);
 	lv_obj_set_clickable(content, false);
 	lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
 
@@ -1074,7 +1075,7 @@ void timeset_init(gui_config_t *cfg) {
 	lv_obj_set_scrollable(content, true);
 	lv_obj_set_scroll_dir(content, LV_DIR_VER);
 	lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_AUTO);
-	lv_obj_set_style_pad_bottom(content, 12, 0);
+	lv_obj_set_style_pad_bottom(content, ui_px(12), 0);
 	lv_obj_set_flex_align(content, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
 	// Manual or automatic, first: it decides whether the cards below are the
@@ -1124,11 +1125,11 @@ void timeset_init(gui_config_t *cfg) {
 	lv_obj_set_size(tz_card, lv_pct(100), LV_SIZE_CONTENT);
 	lv_obj_add_style(tz_card, &theme_style_card, 0);
 	lv_obj_add_style(tz_card, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(tz_card, 12, 0);
+	lv_obj_set_style_radius(tz_card, ui_px(12), 0);
 	lv_obj_set_style_border_width(tz_card, 0, 0);
 	lv_obj_set_style_shadow_width(tz_card, 0, 0);
-	lv_obj_set_style_pad_hor(tz_card, 20, 0);
-	lv_obj_set_style_pad_ver(tz_card, 16, 0);
+	lv_obj_set_style_pad_hor(tz_card, ui_px(20), 0);
+	lv_obj_set_style_pad_ver(tz_card, ui_px(16), 0);
 	lv_obj_set_scrollable(tz_card, false);
 	lv_obj_set_flex_flow(tz_card, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(tz_card, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -1154,21 +1155,21 @@ void timeset_init(gui_config_t *cfg) {
 	dst_card = lv_obj_create(content);
 	lv_obj_set_size(dst_card, lv_pct(100), LV_SIZE_CONTENT);
 	lv_obj_add_style(dst_card, &theme_style_card, 0);
-	lv_obj_set_style_radius(dst_card, 12, 0);
+	lv_obj_set_style_radius(dst_card, ui_px(12), 0);
 	lv_obj_set_style_border_width(dst_card, 0, 0);
 	lv_obj_set_style_shadow_width(dst_card, 0, 0);
-	lv_obj_set_style_pad_hor(dst_card, 20, 0);
-	lv_obj_set_style_pad_ver(dst_card, 14, 0);
-	lv_obj_set_style_pad_gap(dst_card, 10, 0);
+	lv_obj_set_style_pad_hor(dst_card, ui_px(20), 0);
+	lv_obj_set_style_pad_ver(dst_card, ui_px(14), 0);
+	lv_obj_set_style_pad_gap(dst_card, ui_px(10), 0);
 	lv_obj_set_scrollable(dst_card, false);
 	lv_obj_set_flex_flow(dst_card, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(dst_card, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
 	for (int i = 0; i < 2; i++) {
 		lv_obj_t *pill = lv_btn_create(dst_card);
-		lv_obj_set_size(pill, LV_SIZE_CONTENT, 52);
+		lv_obj_set_size(pill, LV_SIZE_CONTENT, ui_px(52));
 		lv_obj_set_flex_grow(pill, 1);
-		lv_obj_set_style_pad_hor(pill, 14, 0);
+		lv_obj_set_style_pad_hor(pill, ui_px(14), 0);
 		lv_obj_set_style_radius(pill, LV_RADIUS_CIRCLE, 0);
 		lv_obj_set_style_shadow_width(pill, 0, 0);
 		lv_obj_set_style_border_width(pill, 0, 0);
@@ -1187,11 +1188,11 @@ void timeset_init(gui_config_t *cfg) {
 	lv_obj_t *h24_card = lv_obj_create(content);
 	lv_obj_set_size(h24_card, lv_pct(100), LV_SIZE_CONTENT);
 	lv_obj_add_style(h24_card, &theme_style_card, 0);
-	lv_obj_set_style_radius(h24_card, 12, 0);
+	lv_obj_set_style_radius(h24_card, ui_px(12), 0);
 	lv_obj_set_style_border_width(h24_card, 0, 0);
 	lv_obj_set_style_shadow_width(h24_card, 0, 0);
-	lv_obj_set_style_pad_hor(h24_card, 20, 0);
-	lv_obj_set_style_pad_ver(h24_card, 16, 0);
+	lv_obj_set_style_pad_hor(h24_card, ui_px(20), 0);
+	lv_obj_set_style_pad_ver(h24_card, ui_px(16), 0);
 	lv_obj_set_scrollable(h24_card, false);
 	lv_obj_set_flex_flow(h24_card, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(h24_card, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -1208,7 +1209,7 @@ void timeset_init(gui_config_t *cfg) {
 
 	lv_obj_t *confirm = lv_btn_create(content);
 	confirm_btn = confirm;
-	lv_obj_set_size(confirm, 230, 64);
+	lv_obj_set_size(confirm, ui_px(230), ui_px(64));
 	lv_obj_add_style(confirm, &theme_style_card, 0);
 	lv_obj_add_style(confirm, &theme_style_card_pressed, LV_STATE_PRESSED);
 	lv_obj_set_style_bg_color(confirm, theme()->accent, 0);

@@ -20,6 +20,7 @@
 #include "src/system/playback/device_state.h"
 #include "src/system/device/power.h"
 #include "src/system/device/screensaverpics.h"
+#include "src/gui/shell/uiscale.h"
 
 // Movement that turns a press into a drag, and how long the slide that follows
 // the release lasts. The dismiss threshold itself is a quarter of the screen,
@@ -669,9 +670,9 @@ void screensaver_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(info_strip, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(info_strip, 0, 0);
 	lv_obj_set_style_radius(info_strip, 0, 0);
-	lv_obj_set_style_pad_hor(info_strip, cfg->padding + 6, 0);
-	lv_obj_set_style_pad_ver(info_strip, 18, 0);
-	lv_obj_set_style_pad_gap(info_strip, 2, 0);
+	lv_obj_set_style_pad_hor(info_strip, cfg->padding + ui_px(6), 0);
+	lv_obj_set_style_pad_ver(info_strip, ui_px(18), 0);
+	lv_obj_set_style_pad_gap(info_strip, ui_px(2), 0);
 	lv_obj_set_scrollable(info_strip, false);
 	lv_obj_set_event_bubble(info_strip, true);
 	lv_obj_set_clickable(info_strip, false);
@@ -697,15 +698,15 @@ void screensaver_init(gui_config_t *cfg) {
 	// The time, in the largest figures the screen has.
 	clock_label = clocklabel_create(info_strip, &font_ui_72, 72, &font_ui_32, 32);
 	lv_obj_set_style_text_color(clock_label, lv_color_white(), 0);
-	lv_obj_set_style_pad_top(clock_label, 6, 0);
+	lv_obj_set_style_pad_top(clock_label, ui_px(6), 0);
 
 	// The way out, spelled out: swipe up. A sign, not a button -- tapping it
 	// does nothing, since the screensaver is only dismissed by dragging -- so it
 	// is not clickable and a finger landing on it talks to the saver underneath,
 	// where the drag gesture lives.
 	lv_obj_t *chevron_btn = lv_obj_create(saver);
-	lv_obj_set_size(chevron_btn, 80, 52);
-	lv_obj_align(chevron_btn, LV_ALIGN_BOTTOM_MID, 0, -4);
+	lv_obj_set_size(chevron_btn, ui_px(80), ui_px(52));
+	lv_obj_align(chevron_btn, LV_ALIGN_BOTTOM_MID, 0, -ui_px(4));
 	lv_obj_set_style_bg_opa(chevron_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(chevron_btn, 0, 0);
 	lv_obj_set_style_shadow_width(chevron_btn, 0, 0);

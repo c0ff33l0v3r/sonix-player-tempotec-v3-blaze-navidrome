@@ -49,6 +49,7 @@
 #include "src/system/remote/dlna.h"
 #include "src/system/remote/sonixlink.h"
 #include "src/system/net/wifi.h"
+#include "src/gui/shell/uiscale.h"
 
 #define PANEL_ANIM_MS 180
 #define PANEL_POLL_MS 700
@@ -1905,7 +1906,7 @@ static lv_obj_t *make_card(lv_obj_t *parent, int width, int height, int top_y) {
 	lv_obj_set_size(card, width, height);
 	lv_obj_align(card, LV_ALIGN_TOP_MID, 0, top_y);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 20, 0);
+	lv_obj_set_style_radius(card, ui_px(20), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, CARD_PADDING, 0);
@@ -1940,7 +1941,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_set_style_pad_hor(panel, cfg->padding, 0);
 	lv_obj_set_style_pad_top(panel, PANEL_PAD_TOP(cfg), 0);
 	lv_obj_set_style_pad_bottom(panel, PANEL_PAD_BOTTOM, 0);
-	lv_obj_set_style_pad_gap(panel, 14, 0);
+	lv_obj_set_style_pad_gap(panel, ui_px(14), 0);
 	lv_obj_set_scrollable(panel, false);
 	lv_obj_set_event_bubble(panel, false);
 	lv_obj_set_clickable(panel, true);
@@ -2086,8 +2087,8 @@ void quickpanel_init(gui_config_t *cfg) {
 	// it falls past the end of the track; the row clips its children, which would
 	// slice the knob down the middle. Keeping the track 13 px short of the row's
 	// right edge gives it room.
-	lv_obj_set_style_pad_right(bright_row, 13, 0);
-	lv_obj_set_style_pad_gap(bright_row, 18, 0);
+	lv_obj_set_style_pad_right(bright_row, ui_px(13), 0);
+	lv_obj_set_style_pad_gap(bright_row, ui_px(18), 0);
 	lv_obj_set_scrollable(bright_row, false);
 	lv_obj_set_event_bubble(bright_row, true);
 	lv_obj_set_flex_flow(bright_row, LV_FLEX_FLOW_ROW);
@@ -2099,7 +2100,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_set_style_image_recolor_opa(sun, LV_OPA_COVER, 0);
 
 	brightness_slider = lv_slider_create(bright_row);
-	lv_obj_set_height(brightness_slider, 10);
+	lv_obj_set_height(brightness_slider, ui_px(10));
 	lv_obj_set_flex_grow(brightness_slider, 1);
 	lv_slider_set_range(brightness_slider, BRIGHTNESS_FLOOR, 100);
 	lv_obj_set_style_radius(brightness_slider, LV_RADIUS_CIRCLE, LV_PART_MAIN);
@@ -2110,11 +2111,11 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_set_style_radius(brightness_slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
 	lv_obj_set_style_bg_color(brightness_slider, lv_color_white(), LV_PART_KNOB);
 	theme_apply_slider_knob(brightness_slider);
-	lv_obj_set_style_pad_all(brightness_slider, 8, LV_PART_KNOB);
-	lv_obj_set_style_shadow_width(brightness_slider, 8, LV_PART_KNOB);
+	lv_obj_set_style_pad_all(brightness_slider, ui_px(8), LV_PART_KNOB);
+	lv_obj_set_style_shadow_width(brightness_slider, ui_px(8), LV_PART_KNOB);
 	lv_obj_set_style_shadow_opa(brightness_slider, LV_OPA_30, LV_PART_KNOB);
 	lv_obj_set_style_shadow_color(brightness_slider, lv_color_black(), LV_PART_KNOB);
-	lv_obj_set_ext_click_area(brightness_slider, 18);
+	lv_obj_set_ext_click_area(brightness_slider, ui_px(18));
 	lv_obj_add_event_cb(brightness_slider, brightness_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
 	lv_obj_add_event_cb(brightness_slider, brightness_released_cb, LV_EVENT_RELEASED, NULL);
 
@@ -2154,7 +2155,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	// it is the same drag as anywhere else.
 	expand_handle = lv_obj_create(controls_card);
 	lv_obj_set_ignore_layout(expand_handle, true);
-	lv_obj_set_size(expand_handle, 160, HANDLE_ROOM + CARD_PADDING);
+	lv_obj_set_size(expand_handle, ui_px(160), HANDLE_ROOM + CARD_PADDING);
 	lv_obj_align(expand_handle, LV_ALIGN_BOTTOM_MID, 0, CARD_PADDING);
 	lv_obj_set_style_bg_opa(expand_handle, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(expand_handle, 0, 0);
@@ -2165,7 +2166,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_add_event_cb(expand_handle, expand_handle_clicked_cb, LV_EVENT_CLICKED, NULL);
 
 	expand_pill = lv_obj_create(expand_handle);
-	lv_obj_set_size(expand_pill, 36, 5);
+	lv_obj_set_size(expand_pill, ui_px(36), ui_px(5));
 	lv_obj_center(expand_pill);
 	lv_obj_set_style_radius(expand_pill, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_bg_color(expand_pill, theme()->text_primary, 0);
@@ -2178,7 +2179,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	np_card = make_card(panel, card_w, card_h, top_inset + card_h + CARD_GAP);
 	lv_obj_set_flex_flow(np_card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(np_card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_gap(np_card, 6, 0);
+	lv_obj_set_style_pad_gap(np_card, ui_px(6), 0);
 
 	// Title and artist are centred and scroll when too long, the same treatment
 	// as the player's now-playing lines. Each is exactly one line of its own
@@ -2202,7 +2203,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	scrolltext_apply(np_artist);
 
 	lv_obj_t *transport = lv_obj_create(np_card);
-	lv_obj_set_size(transport, lv_pct(100), 96);
+	lv_obj_set_size(transport, lv_pct(100), ui_px(96));
 	lv_obj_set_style_bg_opa(transport, 0, 0);
 	lv_obj_set_style_border_width(transport, 0, 0);
 	lv_obj_set_style_pad_all(transport, 0, 0);
@@ -2210,8 +2211,8 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_set_event_bubble(transport, true);
 	lv_obj_set_flex_flow(transport, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(transport, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_column(transport, 4, 0);
-	lv_obj_set_style_pad_top(transport, 10, 0);
+	lv_obj_set_style_pad_column(transport, ui_px(4), 0);
+	lv_obj_set_style_pad_top(transport, ui_px(10), 0);
 
 	// Repeat/shuffle pinned left, the star pinned right, transport centred
 	// between them: the player's arrangement.
@@ -2269,7 +2270,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	// landing on it talks to the surface underneath, where the gesture lives.
 	lv_obj_t *close_btn = lv_obj_create(panel);
 	lv_obj_set_ignore_layout(close_btn, true);
-	lv_obj_set_size(close_btn, 140, HINT_STRIP_H - 8);
+	lv_obj_set_size(close_btn, ui_px(140), HINT_STRIP_H - ui_px(8));
 	// Flush with the bottom of the sheet's content box, which centres the line in
 	// the band between the last card and the screen edge: the band is
 	// HINT_STRIP_H below the card plus PANEL_PAD_BOTTOM under the content box,

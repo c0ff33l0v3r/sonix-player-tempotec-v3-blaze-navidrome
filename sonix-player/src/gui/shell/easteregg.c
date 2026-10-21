@@ -11,6 +11,7 @@
 #include "src/gui/nowplaying/cover.h"
 #include "src/gui/shell/icons.h"
 #include "src/system/core/lang.h"
+#include "src/gui/shell/uiscale.h"
 
 // ---------------------------------------------------------------------------
 // The two codes
@@ -202,7 +203,7 @@ static void qr_open(void) {
 	lv_obj_set_style_bg_color(card, lv_color_white(), 0);
 	lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
 	lv_obj_set_style_border_width(card, 0, 0);
-	lv_obj_set_style_radius(card, 18, 0);
+	lv_obj_set_style_radius(card, ui_px(18), 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, QR_PAD, 0);
 	lv_obj_set_scrollable(card, false);

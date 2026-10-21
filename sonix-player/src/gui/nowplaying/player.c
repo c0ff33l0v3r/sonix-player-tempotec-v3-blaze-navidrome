@@ -67,6 +67,7 @@
 #include "lvgl/src/misc/lv_text_ap.h"
 #include "src/gui/shell/unchanged.h"
 #include "lvgl/lvgl.h"
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *player_screen;
 
@@ -2092,7 +2093,7 @@ static void lyrics_layout(void) {
 	lyrics_pad();
 	lyrics_mask_build(view_w, h);
 	lv_obj_set_size(lyrics_note, view_w, LV_SIZE_CONTENT);
-	lv_obj_set_pos(lyrics_note, view_x, view_y + h / 2 - 20);
+	lv_obj_set_pos(lyrics_note, view_x, view_y + h / 2 - ui_px(20));
 
 	if (lyrics_head) {
 		lv_obj_set_pos(lyrics_head, STUDIO_MARGIN, lyrics_head_top());
@@ -2521,7 +2522,7 @@ static void lyrics_build(void) {
 	lv_obj_set_flex_flow(lyrics_view, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(lyrics_view, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_row(lyrics_view, LYRICS_LINE_GAP, 0);
-	lv_obj_set_style_pad_hor(lyrics_view, 8, 0);
+	lv_obj_set_style_pad_hor(lyrics_view, ui_px(8), 0);
 	lv_obj_set_scroll_dir(lyrics_view, LV_DIR_VER);
 	lv_obj_set_scrollbar_mode(lyrics_view, LV_SCROLLBAR_MODE_OFF);
 	lv_obj_add_event_cb(lyrics_view, lyrics_scroll_cb, LV_EVENT_SCROLL_BEGIN, NULL);
@@ -2557,7 +2558,7 @@ static void lyrics_build(void) {
 	lv_obj_align(col, LV_ALIGN_CENTER, 0, 0);
 	lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_row(col, 4, 0);
+	lv_obj_set_style_pad_row(col, ui_px(4), 0);
 	lv_obj_set_scrollable(col, false);
 	lv_obj_set_clickable(col, false);
 
@@ -5687,7 +5688,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(song_info, 0, 0);
 	lv_obj_set_style_radius(song_info, 0, 0);
 	lv_obj_set_style_pad_all(song_info, 0, 0);
-	lv_obj_set_style_pad_column(song_info, 10, 0);
+	lv_obj_set_style_pad_column(song_info, ui_px(10), 0);
 	lv_obj_set_flex_flow(song_info, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(song_info, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_scrollable(song_info, false);
@@ -5731,7 +5732,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(song_side, 0, 0);
 	lv_obj_set_style_border_width(song_side, 0, 0);
 	lv_obj_set_style_pad_all(song_side, 0, 0);
-	lv_obj_set_style_pad_gap(song_side, 2, 0);
+	lv_obj_set_style_pad_gap(song_side, ui_px(2), 0);
 	lv_obj_set_flex_flow(song_side, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(song_side, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_scrollable(song_side, false);
@@ -5801,10 +5802,10 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_opa(progress_slider, LV_OPA_COVER, LV_PART_KNOB);
 	lv_obj_set_style_border_width(progress_slider, PROGRESS_KNOB_RING, LV_PART_KNOB);
 	lv_obj_set_style_pad_all(progress_slider, PROGRESS_KNOB_GROW, LV_PART_KNOB);
-	lv_obj_set_style_shadow_width(progress_slider, 8, LV_PART_KNOB);
+	lv_obj_set_style_shadow_width(progress_slider, ui_px(8), LV_PART_KNOB);
 	lv_obj_set_style_shadow_opa(progress_slider, LV_OPA_40, LV_PART_KNOB);
 	lv_obj_set_style_shadow_color(progress_slider, lv_color_black(), LV_PART_KNOB);
-	lv_obj_set_style_shadow_offset_y(progress_slider, 1, LV_PART_KNOB);
+	lv_obj_set_style_shadow_offset_y(progress_slider, ui_px(1), LV_PART_KNOB);
 
 	lv_obj_add_event_cb(progress_slider, progress_slider_event_cb, LV_EVENT_ALL, NULL);
 
@@ -5879,14 +5880,14 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_flex_flow(player_controls_buttons, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(player_controls_buttons, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	// Lifted a touch off the screen edge.
-	lv_obj_set_style_translate_y(player_controls_buttons, -8, 0);
+	lv_obj_set_style_translate_y(player_controls_buttons, -ui_px(8), 0);
 
 	// The repeat/shuffle button, kept out of the flex row so the transport
 	// stays centred on the screen.
 	lv_obj_t *repeat_btn = lv_btn_create(player_controls_buttons);
 	repeat_btn_obj = repeat_btn;
 	lv_obj_set_ignore_layout(repeat_btn, true);
-	lv_obj_set_size(repeat_btn, 56, 56);
+	lv_obj_set_size(repeat_btn, ui_px(56), ui_px(56));
 	lv_obj_set_style_bg_opa(repeat_btn, 0, 0);
 	lv_obj_set_style_shadow_width(repeat_btn, 0, 0);
 	lv_obj_add_event_cb(repeat_btn, repeat_btn_event_cb, LV_EVENT_CLICKED, NULL);
@@ -5905,7 +5906,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_t *speed_btn = lv_btn_create(player_controls_buttons);
 	speed_btn_obj = speed_btn;
 	lv_obj_set_ignore_layout(speed_btn, true);
-	lv_obj_set_size(speed_btn, 56, 56);
+	lv_obj_set_size(speed_btn, ui_px(56), ui_px(56));
 	lv_obj_set_style_bg_opa(speed_btn, 0, 0);
 	lv_obj_set_style_shadow_width(speed_btn, 0, 0);
 	lv_obj_add_event_cb(speed_btn, speed_btn_event_cb, LV_EVENT_CLICKED, NULL);
@@ -5924,7 +5925,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_t *more_btn = lv_btn_create(player_controls_buttons);
 	more_btn_obj = more_btn;
 	lv_obj_set_ignore_layout(more_btn, true);
-	lv_obj_set_size(more_btn, 56, 56);
+	lv_obj_set_size(more_btn, ui_px(56), ui_px(56));
 	lv_obj_set_style_bg_opa(more_btn, 0, 0);
 	lv_obj_set_style_shadow_width(more_btn, 0, 0);
 	lv_obj_add_event_cb(more_btn, more_btn_event_cb, LV_EVENT_CLICKED, NULL);
@@ -5943,7 +5944,7 @@ void player_init(gui_config_t *cfg) {
 	// and plain glyphs read better there than filled boxes.
 	lv_obj_t *prev_btn = lv_btn_create(player_controls_buttons);
 	prev_btn_obj = prev_btn;
-	lv_obj_set_size(prev_btn, 76, 76);
+	lv_obj_set_size(prev_btn, ui_px(76), ui_px(76));
 	lv_obj_set_style_bg_opa(prev_btn, 0, 0);
 	lv_obj_set_style_shadow_width(prev_btn, 0, 0);
 	prev_icon = lv_image_create(prev_btn);
@@ -5960,7 +5961,7 @@ void player_init(gui_config_t *cfg) {
 
 	// Play/pause: a white disc, with the glyph carrying the colour.
 	play_btn = lv_btn_create(player_controls_buttons);
-	lv_obj_set_size(play_btn, 84, 84);
+	lv_obj_set_size(play_btn, ui_px(84), ui_px(84));
 	lv_obj_set_style_radius(play_btn, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_bg_color(play_btn, lv_color_white(), 0); // repainted by set_over_cover
 	lv_obj_set_style_bg_opa(play_btn, LV_OPA_COVER, 0);
@@ -5974,7 +5975,7 @@ void player_init(gui_config_t *cfg) {
 
 	lv_obj_t *next_btn = lv_btn_create(player_controls_buttons);
 	next_btn_obj = next_btn;
-	lv_obj_set_size(next_btn, 76, 76);
+	lv_obj_set_size(next_btn, ui_px(76), ui_px(76));
 	lv_obj_set_style_bg_opa(next_btn, 0, 0);
 	lv_obj_set_style_shadow_width(next_btn, 0, 0);
 	next_icon = lv_image_create(next_btn);
@@ -6019,9 +6020,9 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_color(live_badge, lv_color_white(), 0);
 	lv_obj_set_style_bg_color(live_badge, lv_color_make(224, 27, 36), 0); // Adwaita red
 	lv_obj_set_style_bg_opa(live_badge, LV_OPA_COVER, 0);
-	lv_obj_set_style_radius(live_badge, 6, 0);
-	lv_obj_set_style_pad_hor(live_badge, 10, 0);
-	lv_obj_set_style_pad_ver(live_badge, 5, 0);
+	lv_obj_set_style_radius(live_badge, ui_px(6), 0);
+	lv_obj_set_style_pad_hor(live_badge, ui_px(10), 0);
+	lv_obj_set_style_pad_ver(live_badge, ui_px(5), 0);
 	lv_obj_align(live_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
 	lv_obj_set_hidden(live_badge, true);
 
@@ -6068,7 +6069,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_align(alt_text_col, LV_ALIGN_BOTTOM_LEFT, ALT_PAD, -ALT_PAD);
 	lv_obj_set_flex_flow(alt_text_col, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(alt_text_col, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-	lv_obj_set_style_pad_row(alt_text_col, 6, 0);
+	lv_obj_set_style_pad_row(alt_text_col, ui_px(6), 0);
 	lv_obj_set_scrollable(alt_text_col, false);
 	lv_obj_set_hidden(alt_text_col, true);
 	// None of this takes presses. A plain object is clickable the moment it is
@@ -6168,7 +6169,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_align(studio_text_col, LV_ALIGN_CENTER, 0, 0);
 	lv_obj_set_flex_flow(studio_text_col, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(studio_text_col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_row(studio_text_col, 4, 0);
+	lv_obj_set_style_pad_row(studio_text_col, ui_px(4), 0);
 	lv_obj_set_style_text_align(studio_text_col, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_set_scrollable(studio_text_col, false);
 	lv_obj_set_clickable(studio_text_col, false);
@@ -6188,7 +6189,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_ignore_layout(studio_empty, true);
 	lv_obj_add_style(studio_empty, &theme_style_panel, 0);
 	lv_obj_set_style_border_width(studio_empty, 0, 0);
-	lv_obj_set_style_radius(studio_empty, 8, 0);
+	lv_obj_set_style_radius(studio_empty, ui_px(8), 0);
 	lv_obj_set_scrollable(studio_empty, false);
 	lv_obj_set_clickable(studio_empty, false);
 	lv_obj_set_hidden(studio_empty, true);
@@ -6202,7 +6203,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_remove_style_all(studio_quality);
 	lv_obj_set_flex_flow(studio_quality, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(studio_quality, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_column(studio_quality, 8, 0);
+	lv_obj_set_style_pad_column(studio_quality, ui_px(8), 0);
 	lv_obj_set_scrollable(studio_quality, false);
 	lv_obj_set_clickable(studio_quality, false);
 

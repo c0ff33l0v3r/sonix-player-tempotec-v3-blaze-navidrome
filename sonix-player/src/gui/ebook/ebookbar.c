@@ -10,6 +10,7 @@
 #include "src/system/core/config.h"
 #include "src/system/playback/device_state.h"
 #include "src/system/core/lang.h"
+#include "src/gui/shell/uiscale.h"
 
 // See ebookbar.h for why the preview and the real strip are the same code.
 
@@ -138,7 +139,7 @@ void ebookbar_create(ebookbar_t *bar, lv_obj_t *parent, int32_t width) {
 	// pressed state and a theme of its own, none of which belong on paper.
 	bar->line = lv_obj_create(bar->root);
 	lv_obj_remove_style_all(bar->line);
-	lv_obj_set_size(bar->line, width - 40, BAR_LINE_HEIGHT);
+	lv_obj_set_size(bar->line, width - ui_px(40), BAR_LINE_HEIGHT);
 	lv_obj_set_style_radius(bar->line, BAR_LINE_HEIGHT / 2, 0);
 	lv_obj_set_scrollable(bar->line, false);
 
@@ -157,7 +158,7 @@ void ebookbar_create(ebookbar_t *bar, lv_obj_t *parent, int32_t width) {
 	lv_obj_set_scrollable(bar->facts, false);
 	lv_obj_set_flex_flow(bar->facts, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(bar->facts, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_column(bar->facts, 3, 0);
+	lv_obj_set_style_pad_column(bar->facts, ui_px(3), 0);
 
 	bar->text = lv_label_create(bar->facts);
 	lv_obj_set_style_text_font(bar->text, &font_ui_16, 0);
@@ -172,7 +173,7 @@ void ebookbar_create(ebookbar_t *bar, lv_obj_t *parent, int32_t width) {
 
 	bar->charge = lv_obj_create(bar->battery);
 	lv_obj_remove_style_all(bar->charge);
-	lv_obj_set_style_radius(bar->charge, 1, 0);
+	lv_obj_set_style_radius(bar->charge, ui_px(1), 0);
 
 	lv_obj_t *shell = lv_image_create(bar->battery);
 	lv_image_set_src(shell, &icon_battery_small);

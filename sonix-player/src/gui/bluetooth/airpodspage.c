@@ -12,6 +12,7 @@
 #include "src/gui/shell/theme.h"
 #include "src/system/bluetooth/airpods.h"
 #include "src/system/core/lang.h"
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *airpodspage_screen;
 
@@ -394,10 +395,10 @@ static void build_tabbar(lv_obj_t *container) {
 	lv_obj_set_width(tabbar, lv_pct(100));
 	lv_obj_set_height(tabbar, LV_SIZE_CONTENT);
 	lv_obj_add_style(tabbar, &theme_style_card, 0);
-	lv_obj_set_style_radius(tabbar, 12, 0);
+	lv_obj_set_style_radius(tabbar, ui_px(12), 0);
 	lv_obj_set_style_border_width(tabbar, 0, 0);
 	lv_obj_set_style_shadow_width(tabbar, 0, 0);
-	lv_obj_set_style_pad_all(tabbar, 10, 0);
+	lv_obj_set_style_pad_all(tabbar, ui_px(10), 0);
 	lv_obj_set_scrollable(tabbar, false);
 	lv_obj_set_event_bubble(tabbar, true);
 	lv_obj_set_flex_flow(tabbar, LV_FLEX_FLOW_ROW);
@@ -431,8 +432,8 @@ static void build_hold_page(gui_config_t *cfg) {
 	lv_obj_set_width(hint, lv_pct(100));
 	lv_obj_add_style(hint, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(hint, &font_ui_20, 0);
-	lv_obj_set_style_pad_hor(hint, 4, 0);
-	lv_obj_set_style_margin_bottom(hint, 6, 0);
+	lv_obj_set_style_pad_hor(hint, ui_px(4), 0);
+	lv_obj_set_style_margin_bottom(hint, ui_px(6), 0);
 
 	// Written out rather than looped over a table of names: the tool that keeps
 	// the language files honest follows literals into the function that
@@ -452,11 +453,11 @@ void airpodspage_init(gui_config_t *cfg) {
 	lv_obj_set_width(card, lv_pct(100));
 	lv_obj_set_height(card, LV_SIZE_CONTENT);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, ui_px(12), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_ver(card, 22, 0);
-	lv_obj_set_style_pad_hor(card, 10, 0);
+	lv_obj_set_style_pad_ver(card, ui_px(22), 0);
+	lv_obj_set_style_pad_hor(card, ui_px(10), 0);
 	lv_obj_set_scrollable(card, false);
 	lv_obj_set_event_bubble(card, true);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);

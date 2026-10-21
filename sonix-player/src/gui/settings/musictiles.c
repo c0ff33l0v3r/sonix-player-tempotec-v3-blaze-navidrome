@@ -10,6 +10,7 @@
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
 #include "src/system/core/lang.h"
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *musictiles_screen;
 
@@ -118,10 +119,10 @@ static void refresh(void) {
 	}
 
 	lv_label_set_text_fmt(in_use_count, "%d/%d", in_n, MUSIC_TILE_COUNT);
-	lv_obj_set_y(others_heading, others_heading_y() + 10);
+	lv_obj_set_y(others_heading, others_heading_y() + ui_px(10));
 
 	int rows_below = out_n < LIST_MIN_ROWS ? LIST_MIN_ROWS : out_n;
-	lv_obj_set_height(body, others_top() + rows_below * ROW_PITCH + 8);
+	lv_obj_set_height(body, others_top() + rows_below * ROW_PITCH + ui_px(8));
 }
 
 static void refresh_async(void *unused) {
@@ -163,14 +164,14 @@ static target_t target_at(lv_point_t point) {
 // scrolls with the rows.
 static void drop_line_show(target_t t) {
 	int top = t.in_use ? in_use_top() : others_top();
-	lv_obj_set_pos(drop_line, 0, top + t.at * ROW_PITCH - ROW_GAP / 2 - 2);
+	lv_obj_set_pos(drop_line, 0, top + t.at * ROW_PITCH - ROW_GAP / 2 - ui_px(2));
 	lv_obj_set_hidden(drop_line, false);
 	lv_obj_move_foreground(drop_line);
 }
 
 static void carried_look(int index, bool on) {
 	lv_obj_t *row = entries[index].row;
-	lv_obj_set_style_border_width(row, on ? 2 : 0, 0);
+	lv_obj_set_style_border_width(row, on ? ui_px(2) : 0, 0);
 	if (on) {
 		lv_obj_set_style_border_color(row, theme()->accent, 0);
 		lv_obj_set_style_border_opa(row, LV_OPA_COVER, 0);
@@ -289,7 +290,7 @@ static lv_obj_t *make_heading(lv_obj_t *parent, const char *tag, int y) {
 	lv_label_set_text(label, tr(tag));
 	lv_obj_add_style(label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(label, &font_ui_22, 0);
-	lv_obj_set_pos(label, 4, y + 10);
+	lv_obj_set_pos(label, ui_px(4), y + ui_px(10));
 	return label;
 }
 
@@ -321,8 +322,8 @@ static void make_row(entry_t *entry, int width) {
 	lv_obj_add_style(entry->name, &theme_style_text, 0);
 	lv_obj_set_style_text_font(entry->name, &font_ui_24, 0);
 	lv_label_set_long_mode(entry->name, LV_LABEL_LONG_DOT);
-	lv_obj_set_width(entry->name, width - ROW_PAD - ICON_BOX - 16 - GRIP_SPACE);
-	lv_obj_align(entry->name, LV_ALIGN_LEFT_MID, ICON_BOX + 16, 0);
+	lv_obj_set_width(entry->name, width - ROW_PAD - ICON_BOX - ui_px(16) - GRIP_SPACE);
+	lv_obj_align(entry->name, LV_ALIGN_LEFT_MID, ICON_BOX + ui_px(16), 0);
 
 	// The handle, and the only part of the row that can be taken hold of. Not
 	// a button: a tap on it does nothing. A drag on it must not find the page
@@ -377,21 +378,21 @@ void musictiles_init(gui_config_t *cfg) {
 	in_use_count = lv_label_create(body);
 	lv_obj_add_style(in_use_count, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(in_use_count, &font_ui_22, 0);
-	lv_obj_align(in_use_count, LV_ALIGN_TOP_RIGHT, -4, 10);
+	lv_obj_align(in_use_count, LV_ALIGN_TOP_RIGHT, -ui_px(4), ui_px(10));
 
 	for (int i = 0; i < MUSIC_TILE_COUNT; i++) {
 		make_row(&entries[i], width);
 	}
 
 	drop_line = lv_obj_create(body);
-	lv_obj_set_size(drop_line, width, 4);
+	lv_obj_set_size(drop_line, width, ui_px(4));
 	lv_obj_set_scrollable(drop_line, false);
 	lv_obj_set_clickable(drop_line, false);
 	lv_obj_set_style_border_width(drop_line, 0, 0);
 	lv_obj_set_style_shadow_width(drop_line, 0, 0);
 	lv_obj_set_style_pad_all(drop_line, 0, 0);
 	lv_obj_add_style(drop_line, &theme_style_accent_bg, 0);
-	lv_obj_set_style_radius(drop_line, 2, 0);
+	lv_obj_set_style_radius(drop_line, ui_px(2), 0);
 	lv_obj_set_hidden(drop_line, true);
 
 	lv_obj_add_event_cb(musictiles_screen, loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);

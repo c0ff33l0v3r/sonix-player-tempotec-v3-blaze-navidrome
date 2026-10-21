@@ -10,6 +10,7 @@
 #include "lvgl/lvgl.h"
 #include "lvgl/src/display/lv_display_private.h"
 
+#include "src/gui/shell/uiscale.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 
@@ -315,7 +316,7 @@ static bool build_set(bool large) {
 			sets[large][i] = sets[!large][i];
 			continue;
 		}
-		lv_font_t *head = open_chain(ui, size);
+		lv_font_t *head = open_chain(ui, ui_px(size));
 		if (!head) {
 			return false;
 		}

@@ -33,6 +33,7 @@
 #include "src/system/playback/playlist.h"
 #include "src/system/remote/sonixlink.h"
 #include "src/system/net/wifi.h"
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *sonixlink_screen;
 
@@ -937,7 +938,7 @@ void sonixlink_page_init(gui_config_t *cfg) {
 
 	glyph = lv_image_create(container);
 	lv_image_set_src(glyph, &icon_sonixlink_page);
-	lv_obj_set_style_margin_top(glyph, 40, 0);
+	lv_obj_set_style_margin_top(glyph, ui_px(40), 0);
 
 	status_label = lv_label_create(container);
 	lv_obj_set_width(status_label, lv_pct(100));
@@ -945,8 +946,8 @@ void sonixlink_page_init(gui_config_t *cfg) {
 	lv_obj_add_style(status_label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(status_label, &font_ui_22, 0);
 	lv_obj_set_style_text_align(status_label, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_set_style_pad_hor(status_label, 4, 0);
-	lv_obj_set_style_margin_top(status_label, 20, 0);
+	lv_obj_set_style_pad_hor(status_label, ui_px(4), 0);
+	lv_obj_set_style_margin_top(status_label, ui_px(20), 0);
 
 	// The notice says what is missing; these lead to where it is fixed. Two
 	// halves of one row, since either link will do.
@@ -954,15 +955,15 @@ void sonixlink_page_init(gui_config_t *cfg) {
 	lv_obj_remove_style_all(links_row);
 	lv_obj_set_size(links_row, lv_pct(100), LV_SIZE_CONTENT);
 	lv_obj_set_flex_flow(links_row, LV_FLEX_FLOW_ROW);
-	lv_obj_set_style_pad_column(links_row, 12, 0);
-	lv_obj_set_style_margin_top(links_row, 16, 0);
+	lv_obj_set_style_pad_column(links_row, ui_px(12), 0);
+	lv_obj_set_style_margin_top(links_row, ui_px(16), 0);
 	lv_obj_set_scrollable(links_row, false);
 	lv_obj_set_event_bubble(links_row, true);
 	lv_obj_t *wifi_half = settingsrow_add(links_row, "wi_fi", NULL, wifi_row_cb, NULL);
 	lv_obj_t *bluetooth_half = settingsrow_add(links_row, "bluetooth", NULL, bluetooth_row_cb, NULL);
-	lv_obj_set_width(wifi_half, 1);
+	lv_obj_set_width(wifi_half, ui_px(1));
 	lv_obj_set_flex_grow(wifi_half, 1);
-	lv_obj_set_width(bluetooth_half, 1);
+	lv_obj_set_width(bluetooth_half, ui_px(1));
 	lv_obj_set_flex_grow(bluetooth_half, 1);
 	hide(links_row);
 

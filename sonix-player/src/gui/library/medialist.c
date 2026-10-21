@@ -32,6 +32,7 @@
 #include "src/gui/shell/confirm.h"
 #include "src/gui/shell/toast.h"
 #include "src/gui/shell/topbar.h"
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *medialist_screen;
 lv_obj_t *medialist_tracks_screen;
@@ -1310,7 +1311,7 @@ static void sel_buttons_show(panel_t *p, bool on) {
 		lv_obj_move_foreground(p->sel_delete_btn);
 		// Room under the last row while the bin is up, so that row can be
 		// scrolled clear of it.
-		lv_obj_set_style_pad_bottom(p->list, bin ? p->cfg->padding + DELETE_FAB_SIZE + 12 : 0, 0);
+		lv_obj_set_style_pad_bottom(p->list, bin ? p->cfg->padding + DELETE_FAB_SIZE + ui_px(12) : 0, 0);
 		if (!bin) {
 			// The room gone, a list scrolled into it goes back to its end.
 			int limit = body_height(p) - lv_obj_get_height(p->list);
@@ -2689,8 +2690,8 @@ static void index_build(panel_t *p, gui_config_t *cfg) {
 
 	p->index_bar = lv_obj_create(p->screen);
 	lv_obj_remove_style_all(p->index_bar);
-	lv_obj_set_size(p->index_bar, INDEX_BAR_WIDTH, cfg->screen_height - content_top - 8);
-	lv_obj_align(p->index_bar, LV_ALIGN_TOP_RIGHT, -2, content_top + 4);
+	lv_obj_set_size(p->index_bar, INDEX_BAR_WIDTH, cfg->screen_height - content_top - ui_px(8));
+	lv_obj_align(p->index_bar, LV_ALIGN_TOP_RIGHT, -ui_px(2), content_top + ui_px(4));
 	lv_obj_set_style_bg_color(p->index_bar, theme()->surface, 0);
 	lv_obj_set_style_bg_opa(p->index_bar, LV_OPA_60, 0);
 	lv_obj_set_style_radius(p->index_bar, INDEX_BAR_WIDTH / 2, 0);
@@ -2726,11 +2727,11 @@ static void index_build(panel_t *p, gui_config_t *cfg) {
 	// a list of cards, and a card on cards is a card nobody sees.
 	p->index_hint = lv_obj_create(p->screen);
 	lv_obj_remove_style_all(p->index_hint);
-	lv_obj_set_size(p->index_hint, 132, 124);
+	lv_obj_set_size(p->index_hint, ui_px(132), ui_px(124));
 	lv_obj_align(p->index_hint, LV_ALIGN_CENTER, 0, 0);
 	lv_obj_set_style_bg_color(p->index_hint, theme()->accent, 0);
 	lv_obj_set_style_bg_opa(p->index_hint, LV_OPA_90, 0);
-	lv_obj_set_style_radius(p->index_hint, 26, 0);
+	lv_obj_set_style_radius(p->index_hint, ui_px(26), 0);
 	lv_obj_set_scrollable(p->index_hint, false);
 	lv_obj_set_clickable(p->index_hint, false);
 	lv_obj_set_hidden(p->index_hint, true);
@@ -2998,12 +2999,12 @@ static void drop_line_show(panel_t *p, int before_index) {
 		lv_obj_set_style_shadow_width(drop_line, 0, 0);
 		lv_obj_set_style_pad_all(drop_line, 0, 0);
 		lv_obj_add_style(drop_line, &theme_style_accent_bg, 0);
-		lv_obj_set_style_radius(drop_line, 2, 0);
+		lv_obj_set_style_radius(drop_line, ui_px(2), 0);
 	} else if (lv_obj_get_parent(drop_line) != p->body) {
 		lv_obj_set_parent(drop_line, p->body);
 	}
-	lv_obj_set_size(drop_line, lv_obj_get_width(p->body) - 2 * ROW_PAD, 4);
-	lv_obj_set_pos(drop_line, ROW_PAD, row_y(p, before_index) - ROW_GAP / 2 - 2);
+	lv_obj_set_size(drop_line, lv_obj_get_width(p->body) - 2 * ROW_PAD, ui_px(4));
+	lv_obj_set_pos(drop_line, ROW_PAD, row_y(p, before_index) - ROW_GAP / 2 - ui_px(2));
 	lv_obj_set_hidden(drop_line, false);
 	lv_obj_move_foreground(drop_line);
 }
@@ -3026,7 +3027,7 @@ static int index_under(const panel_t *p, lv_coord_t y) {
 static void drag_mark_rows(panel_t *p) {
 	for (int i = 0; i < ROW_POOL; i++) {
 		bool carried = drag_panel == p && p->rows[i].index >= 0 && p->rows[i].index == drag_from;
-		lv_obj_set_style_border_width(p->rows[i].button, carried ? 2 : 0, 0);
+		lv_obj_set_style_border_width(p->rows[i].button, carried ? ui_px(2) : 0, 0);
 		if (carried) {
 			lv_obj_set_style_border_color(p->rows[i].button, theme()->accent, 0);
 			lv_obj_set_style_border_opa(p->rows[i].button, LV_OPA_COVER, 0);
@@ -3566,13 +3567,13 @@ static void play_menu_dismiss_cb(lv_event_t *e) {
 
 static lv_obj_t *play_menu_row(lv_obj_t *parent, const char *text, lv_event_cb_t cb) {
 	lv_obj_t *row = lv_btn_create(parent);
-	lv_obj_set_size(row, lv_pct(100), 76);
+	lv_obj_set_size(row, lv_pct(100), ui_px(76));
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
+	lv_obj_set_style_radius(row, ui_px(12), 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 16, 0);
+	lv_obj_set_style_pad_hor(row, ui_px(16), 0);
 	lv_obj_set_scrollable(row, false);
 	lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, NULL);
 
@@ -3601,15 +3602,15 @@ static void play_menu_build(panel_t *p) {
 	lv_obj_add_event_cb(p->play_menu, play_menu_dismiss_cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *card = lv_obj_create(p->play_menu);
-	lv_obj_set_size(card, 380, LV_SIZE_CONTENT);
+	lv_obj_set_size(card, ui_px(380), LV_SIZE_CONTENT);
 	lv_obj_center(card);
 	lv_obj_add_style(card, &theme_style_screen, 0);
 	lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-	lv_obj_set_style_radius(card, 18, 0);
+	lv_obj_set_style_radius(card, ui_px(18), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 16, 0);
-	lv_obj_set_style_pad_gap(card, 10, 0);
+	lv_obj_set_style_pad_all(card, ui_px(16), 0);
+	lv_obj_set_style_pad_gap(card, ui_px(10), 0);
 	lv_obj_set_scrollable(card, false);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -3952,7 +3953,7 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 	// is one button wide and the second button of a pair lands outside its own
 	// parent, at x = -60, and is never drawn. Sizing for the most buttons that
 	// can coexist costs a strip of empty space on the pages that show fewer.
-	lv_obj_set_size(p->corner, CORNER_MAX_BUTTONS * CORNER_BUTTON_SIZE + (CORNER_MAX_BUTTONS - 1) * CORNER_GAP, 56);
+	lv_obj_set_size(p->corner, CORNER_MAX_BUTTONS * CORNER_BUTTON_SIZE + (CORNER_MAX_BUTTONS - ui_px(1)) * CORNER_GAP, ui_px(56));
 	lv_obj_set_clickable(p->corner, false); // it is a shelf, not a control
 	lv_obj_align(p->corner, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
 	lv_obj_set_scrollable(p->corner, false);
@@ -4014,7 +4015,7 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 		lv_obj_set_style_border_width(p->sel_delete_btn, 0, 0);
 		lv_obj_set_style_shadow_width(p->sel_delete_btn, 0, 0);
 		lv_obj_set_style_pad_all(p->sel_delete_btn, 0, 0);
-		lv_obj_align(p->sel_delete_btn, LV_ALIGN_BOTTOM_RIGHT, -(int)cfg->padding - 6, -(int)cfg->padding - 6);
+		lv_obj_align(p->sel_delete_btn, LV_ALIGN_BOTTOM_RIGHT, -(int)cfg->padding - ui_px(6), -(int)cfg->padding - ui_px(6));
 		lv_obj_add_event_cb(p->sel_delete_btn, sel_delete_cb, LV_EVENT_CLICKED, p);
 		lv_obj_t *bin = lv_image_create(p->sel_delete_btn);
 		lv_image_set_src(bin, &icon_trash);
@@ -4033,7 +4034,7 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 	lv_obj_set_style_text_align(p->empty, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_add_style(p->empty, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(p->empty, &font_ui_24, 0);
-	lv_obj_align(p->empty, LV_ALIGN_TOP_MID, 0, 120);
+	lv_obj_align(p->empty, LV_ALIGN_TOP_MID, 0, ui_px(120));
 	lv_obj_set_hidden(p->empty, true);
 
 	for (int i = 0; i < ROW_POOL; i++) {
@@ -4100,7 +4101,7 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 		lv_obj_set_size(row->detail, LV_PCT(100), LV_SIZE_CONTENT);
 		lv_obj_set_flex_flow(row->detail, LV_FLEX_FLOW_ROW);
 		lv_obj_set_flex_align(row->detail, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-		lv_obj_set_style_pad_column(row->detail, 8, 0);
+		lv_obj_set_style_pad_column(row->detail, ui_px(8), 0);
 		lv_obj_set_scrollable(row->detail, false);
 		lv_obj_set_clickable(row->detail, false);
 		lv_obj_set_event_bubble(row->detail, true);
@@ -4154,7 +4155,7 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 		if (is_tracks) {
 			// The per-track menu, riding the right edge of the row.
 			row->menu_btn = lv_btn_create(row->button);
-			lv_obj_set_size(row->menu_btn, 44, 44);
+			lv_obj_set_size(row->menu_btn, ui_px(44), ui_px(44));
 			lv_obj_set_style_bg_opa(row->menu_btn, LV_OPA_TRANSP, 0);
 			lv_obj_set_style_border_width(row->menu_btn, 0, 0);
 			lv_obj_set_style_shadow_width(row->menu_btn, 0, 0);
@@ -4669,7 +4670,7 @@ static void head_build(panel_t *p) {
 	lv_obj_set_pos(p->head, 0, 0);
 	lv_obj_set_flex_flow(p->head, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(p->head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_row(p->head, 6, 0);
+	lv_obj_set_style_pad_row(p->head, ui_px(6), 0);
 	// The top of the cover level with the top of the chevron, which stands
 	// centred in a corner button's height below the page's padding.
 	lv_obj_set_style_pad_top(p->head,
@@ -4692,7 +4693,7 @@ static void head_build(panel_t *p) {
 	lv_obj_add_style(p->head_cover, &theme_style_icon, 0);
 	lv_obj_set_style_image_recolor_opa(p->head_cover, LV_OPA_COVER, 0);
 	lv_obj_set_clickable(p->head_cover, false);
-	lv_obj_set_style_margin_bottom(p->head_cover, 10, 0);
+	lv_obj_set_style_margin_bottom(p->head_cover, ui_px(10), 0);
 
 	p->head_title = head_line(p->head, width, p->title, &font_ui_28, HEAD_TITLE_LINES);
 	lv_obj_add_style(p->head_title, &theme_style_text, 0);
@@ -4720,7 +4721,7 @@ static void head_build(panel_t *p) {
 	lv_obj_set_flex_flow(buttons, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(buttons, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_column(buttons, HEAD_BTN_GAP, 0);
-	lv_obj_set_style_margin_top(buttons, 12, 0);
+	lv_obj_set_style_margin_top(buttons, ui_px(12), 0);
 	lv_obj_set_scrollable(buttons, false);
 	lv_obj_set_clickable(buttons, false);
 	lv_obj_set_event_bubble(buttons, true);

@@ -22,6 +22,7 @@
 #include "src/system/bluetooth/bluetooth.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *btaudio_screen;
 
@@ -485,7 +486,7 @@ static void build_name_layer(gui_config_t *cfg) {
 	lv_label_set_text(heading, tr("bt_rename"));
 	lv_obj_add_style(heading, &theme_style_text, 0);
 	lv_obj_set_style_text_font(heading, &font_ui_24, 0);
-	lv_obj_align(heading, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + 10);
+	lv_obj_align(heading, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + ui_px(10));
 
 	lv_obj_t *cancel = lv_btn_create(name_layer);
 	lv_obj_set_size(cancel, NAME_CANCEL_SIZE, NAME_CANCEL_SIZE);
@@ -507,14 +508,14 @@ static void build_name_layer(gui_config_t *cfg) {
 	// name the adapter will take whole.
 	lv_textarea_set_max_length(name_field, BT_NAME_MAX - 1);
 	lv_textarea_set_placeholder_text(name_field, tr("name"));
-	lv_obj_set_size(name_field, cfg->screen_width - 2 * cfg->padding, 62);
+	lv_obj_set_size(name_field, cfg->screen_width - 2 * cfg->padding, ui_px(62));
 	lv_obj_set_scrollbar_mode(name_field, LV_SCROLLBAR_MODE_OFF);
-	lv_obj_align(name_field, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + 60);
+	lv_obj_align(name_field, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + ui_px(60));
 	lv_obj_add_style(name_field, &theme_style_card, 0);
-	lv_obj_set_style_radius(name_field, 12, 0);
+	lv_obj_set_style_radius(name_field, ui_px(12), 0);
 	lv_obj_set_style_border_width(name_field, 0, 0);
 	lv_obj_set_style_shadow_width(name_field, 0, 0);
-	lv_obj_set_style_pad_all(name_field, 14, 0);
+	lv_obj_set_style_pad_all(name_field, ui_px(14), 0);
 	lv_obj_set_style_text_font(name_field, &font_ui_24, 0);
 	keyboard_style_caret(name_field);
 

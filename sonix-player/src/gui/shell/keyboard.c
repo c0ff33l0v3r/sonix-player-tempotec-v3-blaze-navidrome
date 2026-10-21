@@ -15,6 +15,7 @@
 #include "src/system/core/lang.h"
 
 #include <string.h>
+#include "src/gui/shell/uiscale.h"
 
 // ---------------------------------------------------------------------------
 // The keyboard, built by hand out of real buttons: the stock LVGL keyboard
@@ -696,7 +697,7 @@ static void kb_preview_show(keyboard_t *kb, lv_obj_t *key, const char *text) {
 	if (x < 2) {
 		x = 2;
 	}
-	lv_obj_set_pos(kb->preview, x, coords.y1 - host_coords.y1 - h - 6);
+	lv_obj_set_pos(kb->preview, x, coords.y1 - host_coords.y1 - h - ui_px(6));
 }
 
 static void kb_preview_cb(lv_event_t *e) {
@@ -824,7 +825,7 @@ static void kb_variants_open(keyboard_t *kb, lv_obj_t *key, const char *cap) {
 	if (x < 2) {
 		x = 2;
 	}
-	lv_obj_set_pos(kb->variants, x, coords.y1 - host_coords.y1 - h - 6);
+	lv_obj_set_pos(kb->variants, x, coords.y1 - host_coords.y1 - h - ui_px(6));
 	lv_obj_update_layout(kb->variants);
 
 	kb->variant_sel = kb_variant_at(kb, (coords.x1 + coords.x2) / 2);
@@ -886,7 +887,7 @@ static lv_obj_t *kb_make_row(lv_obj_t *parent, int height) {
 	lv_obj_set_style_bg_opa(row, 0, 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_pad_all(row, 0, 0);
-	lv_obj_set_style_pad_gap(row, 6, 0);
+	lv_obj_set_style_pad_gap(row, ui_px(6), 0);
 	lv_obj_set_scrollable(row, false);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -903,12 +904,12 @@ static lv_obj_t *kb_make_key(lv_obj_t *row, int width, lv_event_cb_t cb, void *u
 	}
 	lv_obj_add_style(btn, &theme_style_card, 0);
 	lv_obj_add_style(btn, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(btn, 10, 0);
+	lv_obj_set_style_radius(btn, ui_px(10), 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
-	lv_obj_set_style_shadow_width(btn, 2, 0);
+	lv_obj_set_style_shadow_width(btn, ui_px(2), 0);
 	lv_obj_set_style_shadow_opa(btn, LV_OPA_20, 0);
 	lv_obj_set_style_shadow_color(btn, lv_color_black(), 0);
-	lv_obj_set_style_shadow_offset_y(btn, 1, 0);
+	lv_obj_set_style_shadow_offset_y(btn, ui_px(1), 0);
 	lv_obj_set_style_pad_all(btn, 0, 0);
 	if (cb) {
 		lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, user);
@@ -995,7 +996,7 @@ static void kb_build(keyboard_t *kb) {
 	lv_obj_set_style_bg_opa(kb->qwerty, 0, 0);
 	lv_obj_set_style_border_width(kb->qwerty, 0, 0);
 	lv_obj_set_style_pad_all(kb->qwerty, 0, 0);
-	lv_obj_set_style_pad_gap(kb->qwerty, 7, 0);
+	lv_obj_set_style_pad_gap(kb->qwerty, ui_px(7), 0);
 	lv_obj_set_scrollable(kb->qwerty, false);
 	lv_obj_set_flex_flow(kb->qwerty, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(kb->qwerty, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -1060,7 +1061,7 @@ static void kb_build(keyboard_t *kb) {
 	lv_obj_set_style_bg_opa(kb->t9, 0, 0);
 	lv_obj_set_style_border_width(kb->t9, 0, 0);
 	lv_obj_set_style_pad_all(kb->t9, 0, 0);
-	lv_obj_set_style_pad_gap(kb->t9, 7, 0);
+	lv_obj_set_style_pad_gap(kb->t9, ui_px(7), 0);
 	lv_obj_set_scrollable(kb->t9, false);
 	lv_obj_set_flex_flow(kb->t9, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(kb->t9, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -1120,14 +1121,14 @@ static void kb_build(keyboard_t *kb) {
 	// The preview bubble lives above the keyboard, on the page itself, so it
 	// can overhang the top row.
 	kb->preview = lv_obj_create(parent);
-	lv_obj_set_size(kb->preview, key_w + 22, row_h + 12);
+	lv_obj_set_size(kb->preview, key_w + ui_px(22), row_h + ui_px(12));
 	lv_obj_add_style(kb->preview, &theme_style_card, 0);
-	lv_obj_set_style_radius(kb->preview, 12, 0);
+	lv_obj_set_style_radius(kb->preview, ui_px(12), 0);
 	lv_obj_set_style_border_width(kb->preview, 0, 0);
-	lv_obj_set_style_shadow_width(kb->preview, 14, 0);
+	lv_obj_set_style_shadow_width(kb->preview, ui_px(14), 0);
 	lv_obj_set_style_shadow_opa(kb->preview, LV_OPA_30, 0);
 	lv_obj_set_style_shadow_color(kb->preview, lv_color_black(), 0);
-	lv_obj_set_style_shadow_offset_y(kb->preview, 3, 0);
+	lv_obj_set_style_shadow_offset_y(kb->preview, ui_px(3), 0);
 	lv_obj_set_style_pad_all(kb->preview, 0, 0);
 	lv_obj_set_scrollable(kb->preview, false);
 	lv_obj_set_clickable(kb->preview, false);
@@ -1142,14 +1143,14 @@ static void kb_build(keyboard_t *kb) {
 	// cell per letter, as wide as a key.
 	kb->variant_sel = -1;
 	kb->variants = lv_obj_create(parent);
-	lv_obj_set_size(kb->variants, LV_SIZE_CONTENT, row_h + 12);
+	lv_obj_set_size(kb->variants, LV_SIZE_CONTENT, row_h + ui_px(12));
 	lv_obj_add_style(kb->variants, &theme_style_card, 0);
-	lv_obj_set_style_radius(kb->variants, 12, 0);
+	lv_obj_set_style_radius(kb->variants, ui_px(12), 0);
 	lv_obj_set_style_border_width(kb->variants, 0, 0);
-	lv_obj_set_style_shadow_width(kb->variants, 14, 0);
+	lv_obj_set_style_shadow_width(kb->variants, ui_px(14), 0);
 	lv_obj_set_style_shadow_opa(kb->variants, LV_OPA_30, 0);
 	lv_obj_set_style_shadow_color(kb->variants, lv_color_black(), 0);
-	lv_obj_set_style_shadow_offset_y(kb->variants, 3, 0);
+	lv_obj_set_style_shadow_offset_y(kb->variants, ui_px(3), 0);
 	lv_obj_set_style_pad_all(kb->variants, KB_VARIANT_PAD, 0);
 	lv_obj_set_style_pad_gap(kb->variants, KB_VARIANT_PAD, 0);
 	lv_obj_set_flex_flow(kb->variants, LV_FLEX_FLOW_ROW);
@@ -1159,7 +1160,7 @@ static void kb_build(keyboard_t *kb) {
 	for (int i = 0; i < KB_LAYOUT_MAX_VARIANTS; i++) {
 		kb->variant_cell[i] = lv_obj_create(kb->variants);
 		lv_obj_set_size(kb->variant_cell[i], key_w, lv_pct(100));
-		lv_obj_set_style_radius(kb->variant_cell[i], 8, 0);
+		lv_obj_set_style_radius(kb->variant_cell[i], ui_px(8), 0);
 		lv_obj_set_style_border_width(kb->variant_cell[i], 0, 0);
 		lv_obj_set_style_bg_opa(kb->variant_cell[i], LV_OPA_TRANSP, 0);
 		lv_obj_set_style_pad_all(kb->variant_cell[i], 0, 0);
@@ -1233,8 +1234,8 @@ keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *f
 	lv_obj_set_style_bg_opa(kb->tray, LV_OPA_COVER, 0);
 	lv_obj_set_style_border_width(kb->tray, 0, 0);
 	lv_obj_set_style_radius(kb->tray, 0, 0);
-	lv_obj_set_style_pad_all(kb->tray, 8, 0);
-	lv_obj_set_style_pad_gap(kb->tray, 7, 0);
+	lv_obj_set_style_pad_all(kb->tray, ui_px(8), 0);
+	lv_obj_set_style_pad_gap(kb->tray, ui_px(7), 0);
 	lv_obj_set_scrollable(kb->tray, false);
 	lv_obj_set_flex_flow(kb->tray, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(kb->tray, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);

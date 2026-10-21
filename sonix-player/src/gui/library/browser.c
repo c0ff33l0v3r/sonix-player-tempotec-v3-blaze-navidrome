@@ -33,6 +33,7 @@
 #include "src/system/playback/playlist.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
+#include "src/gui/shell/uiscale.h"
 
 // ---------------------------------------------------------------------------
 // A windowed list.
@@ -1512,7 +1513,7 @@ static void init_list_styles(void) {
 	lv_style_set_radius(&style_list_btn, LIST_ROW_RADIUS);
 	lv_style_set_shadow_width(&style_list_btn, 0);
 	lv_style_set_pad_all(&style_list_btn, LIST_ROW_PAD);
-	lv_style_set_pad_column(&style_list_btn, 14);
+	lv_style_set_pad_column(&style_list_btn, ui_px(14));
 }
 
 // Builds the fixed pool of rows. This runs once, at startup: from here on the
@@ -1585,7 +1586,7 @@ static void build_rows(int width) {
 // Hidden until something shows it.
 static lv_obj_t *corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph, lv_event_cb_t cb) {
 	lv_obj_t *btn = lv_btn_create(browser_screen);
-	lv_obj_set_size(btn, 56, 56);
+	lv_obj_set_size(btn, ui_px(56), ui_px(56));
 	lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
 	lv_obj_set_style_shadow_width(btn, 0, 0);

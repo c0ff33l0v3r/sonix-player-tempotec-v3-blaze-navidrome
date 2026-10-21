@@ -25,6 +25,7 @@
 #include "src/system/playback/audiobook.h"
 #include "src/system/playback/device_state.h"
 #include "src/system/playback/sleeptimer.h"
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *audiobooks_screen;
 lv_obj_t *audiobooksettings_screen;
@@ -141,12 +142,12 @@ static void sort_menu_show(lv_obj_t *anchor, list_id_t list, void (*reload)(void
 // A glyph button on the title row, counted from the right edge.
 static lv_obj_t *corner_button(lv_obj_t *screen, gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph, lv_event_cb_t cb) {
 	lv_obj_t *button = lv_btn_create(screen);
-	lv_obj_set_size(button, 56, 56);
+	lv_obj_set_size(button, ui_px(56), ui_px(56));
 	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
 	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (56 + 6), cfg->padding + cfg->top_bar_height);
+	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (ui_px(56) + ui_px(6)), cfg->padding + cfg->top_bar_height);
 	if (cb) {
 		lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, NULL);
 	}
@@ -180,7 +181,7 @@ static lv_obj_t *make_viewport(lv_obj_t *screen, gui_config_t *cfg, lv_obj_t **b
 
 	lv_obj_t *body = lv_obj_create(list);
 	lv_obj_set_width(body, row_width);
-	lv_obj_set_height(body, 1);
+	lv_obj_set_height(body, ui_px(1));
 	lv_obj_set_pos(body, 0, 0);
 	lv_obj_set_style_bg_opa(body, 0, 0);
 	lv_obj_set_style_border_width(body, 0, 0);
@@ -194,7 +195,7 @@ static lv_obj_t *make_viewport(lv_obj_t *screen, gui_config_t *cfg, lv_obj_t **b
 	lv_obj_set_style_text_align(empty, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_add_style(empty, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(empty, &font_ui_24, 0);
-	lv_obj_align(empty, LV_ALIGN_TOP_MID, 0, 90);
+	lv_obj_align(empty, LV_ALIGN_TOP_MID, 0, ui_px(90));
 	lv_obj_set_hidden(empty, true);
 
 	player_sheet_attach_drag(list, true);
@@ -473,7 +474,7 @@ static void refresh_stale(void) {
 		row_drop_thumb(&rows[i]);
 		rows[i].index = -2; // every row now stands for a different book
 	}
-	lv_obj_set_height(book_body, entry_count > 0 ? entry_count * ROW_PITCH : 1);
+	lv_obj_set_height(book_body, entry_count > 0 ? entry_count * ROW_PITCH : ui_px(1));
 	show_empty(empty_label, entry_count);
 }
 
@@ -605,7 +606,7 @@ static void reload_books(void) {
 	window_first = -1;
 	window_count = 0;
 
-	lv_obj_set_height(book_body, entry_count > 0 ? entry_count * ROW_PITCH : 1);
+	lv_obj_set_height(book_body, entry_count > 0 ? entry_count * ROW_PITCH : ui_px(1));
 	lv_obj_scroll_to_y(book_list, 0, LV_ANIM_OFF);
 
 	lv_label_set_text(empty_label, books_empty_text());
@@ -919,7 +920,7 @@ static void reload_names(void) {
 	bool desc = choice == SORT_ZA || choice == SORT_NEW;
 	audiobookdb_names_for_each(names_kind == LIST_SERIES ? AUDIOBOOK_NAMES_SERIES : AUDIOBOOK_NAMES_AUTHORS, by_added, desc, names_add_cb, NULL);
 
-	lv_obj_set_height(names_body, name_count > 0 ? name_count * NAME_ROW_PITCH : 1);
+	lv_obj_set_height(names_body, name_count > 0 ? name_count * NAME_ROW_PITCH : ui_px(1));
 	lv_obj_scroll_to_y(names_list, 0, LV_ANIM_OFF);
 	lv_label_set_text(names_empty, tr(names_kind == LIST_SERIES ? "audiobook_series_empty" : "audiobook_empty_note"));
 	show_empty(names_empty, name_count);
@@ -980,8 +981,8 @@ static void build_names_page(gui_config_t *cfg) {
 		lv_obj_set_style_radius(row->button, ROW_RADIUS, 0);
 		lv_obj_set_style_border_width(row->button, 0, 0);
 		lv_obj_set_style_shadow_width(row->button, 0, 0);
-		lv_obj_set_style_pad_hor(row->button, 20, 0);
-		lv_obj_set_style_pad_column(row->button, 12, 0);
+		lv_obj_set_style_pad_hor(row->button, ui_px(20), 0);
+		lv_obj_set_style_pad_column(row->button, ui_px(12), 0);
 		lv_obj_set_hidden(row->button, true);
 		lv_obj_set_event_bubble(row->button, true);
 		lv_obj_add_event_cb(row->button, name_clicked_cb, LV_EVENT_CLICKED, NULL);
@@ -1140,11 +1141,11 @@ static void build_toggle_pills(lv_obj_t *parent, const char *title, lv_event_cb_
 	lv_obj_set_width(card, lv_pct(100));
 	lv_obj_set_height(card, LV_SIZE_CONTENT);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, ui_px(12), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 20, 0);
-	lv_obj_set_style_pad_row(card, 18, 0);
+	lv_obj_set_style_pad_all(card, ui_px(20), 0);
+	lv_obj_set_style_pad_row(card, ui_px(18), 0);
 	lv_obj_set_scrollable(card, false);
 	lv_obj_set_event_bubble(card, true);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
@@ -1173,7 +1174,7 @@ static void build_toggle_pills(lv_obj_t *parent, const char *title, lv_event_cb_
 	lv_obj_set_style_bg_opa(pills, 0, 0);
 	lv_obj_set_style_border_width(pills, 0, 0);
 	lv_obj_set_style_pad_all(pills, 0, 0);
-	lv_obj_set_style_pad_gap(pills, 10, 0);
+	lv_obj_set_style_pad_gap(pills, ui_px(10), 0);
 	lv_obj_set_scrollable(pills, false);
 	lv_obj_set_event_bubble(pills, true);
 	// Wrapping, because the four minute pills plus "end of chapter" are more
@@ -1188,8 +1189,8 @@ static void build_toggle_pills(lv_obj_t *parent, const char *title, lv_event_cb_
 
 static lv_obj_t *make_pill(lv_obj_t *parent, const char *text, int value, lv_event_cb_t cb) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, 56);
-	lv_obj_set_style_pad_hor(btn, 18, 0);
+	lv_obj_set_size(btn, LV_SIZE_CONTENT, ui_px(56));
+	lv_obj_set_style_pad_hor(btn, ui_px(18), 0);
 	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0); // Adwaita pill button
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
@@ -1383,10 +1384,10 @@ static void pick_forward_cb(lv_event_t *e) {
 
 static lv_obj_t *make_skip_choice(lv_obj_t *parent, const char *text, int seconds, lv_event_cb_t cb) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, 64);
+	lv_obj_set_size(btn, LV_SIZE_CONTENT, ui_px(64));
 	// Three across the card instead of two, so tighter than the Appearance
 	// page's pair: enough that -60 does not fall off the right edge.
-	lv_obj_set_style_pad_hor(btn, 22, 0);
+	lv_obj_set_style_pad_hor(btn, ui_px(22), 0);
 	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0); // Adwaita pill button
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
@@ -1407,11 +1408,11 @@ static lv_obj_t *make_control_card(lv_obj_t *parent, const char *title) {
 	lv_obj_set_width(card, lv_pct(100));
 	lv_obj_set_height(card, LV_SIZE_CONTENT);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, ui_px(12), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 20, 0);
-	lv_obj_set_style_pad_gap(card, 18, 0);
+	lv_obj_set_style_pad_all(card, ui_px(20), 0);
+	lv_obj_set_style_pad_gap(card, ui_px(18), 0);
 	lv_obj_set_scrollable(card, false);
 	lv_obj_set_event_bubble(card, true);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
@@ -1427,7 +1428,7 @@ static lv_obj_t *make_control_card(lv_obj_t *parent, const char *title) {
 	lv_obj_set_style_bg_opa(row, 0, 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_pad_all(row, 0, 0);
-	lv_obj_set_style_pad_gap(row, 14, 0);
+	lv_obj_set_style_pad_gap(row, ui_px(14), 0);
 	lv_obj_set_scrollable(row, false);
 	lv_obj_set_event_bubble(row, true);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
@@ -1546,7 +1547,7 @@ static void scan_row_cb(lv_event_t *e) {
 
 static lv_obj_t *scan_make_button(const char *text, lv_color_t colour, lv_event_cb_t cb, gui_config_t *cfg) {
 	lv_obj_t *button = lv_btn_create(audiobookscan_screen);
-	lv_obj_set_size(button, 240, 68);
+	lv_obj_set_size(button, ui_px(240), ui_px(68));
 	lv_obj_align(button, LV_ALIGN_BOTTOM_MID, 0, -(cfg->padding * 2));
 	lv_obj_add_style(button, &theme_style_card_pressed, LV_STATE_PRESSED);
 	lv_obj_set_style_bg_color(button, colour, 0);
@@ -1584,7 +1585,7 @@ static void build_scan_page(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(container, 0, 0);
 	lv_obj_set_style_radius(container, 0, 0);
 	lv_obj_set_style_pad_all(container, cfg->padding, 0);
-	lv_obj_set_style_pad_gap(container, 10, 0);
+	lv_obj_set_style_pad_gap(container, ui_px(10), 0);
 	lv_obj_set_scrollable(container, false);
 	lv_obj_set_flex_flow(container, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(container, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -1593,7 +1594,7 @@ static void build_scan_page(gui_config_t *cfg) {
 	lv_image_set_src(book, &icon_book_headphones);
 	lv_obj_add_style(book, &theme_style_icon, 0);
 	lv_obj_set_style_image_recolor_opa(book, LV_OPA_COVER, 0);
-	lv_obj_set_style_pad_bottom(book, 16, 0);
+	lv_obj_set_style_pad_bottom(book, ui_px(16), 0);
 
 	scan_count_label = lv_label_create(container);
 	lv_label_set_text(scan_count_label, "0");

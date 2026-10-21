@@ -20,6 +20,7 @@
 #include "src/system/input/keymap.h"
 #include "src/system/core/lang.h"
 #include "src/system/device/sysinfo.h"
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *remap_screen;
 
@@ -393,8 +394,8 @@ static lv_obj_t *dialog_heading(lv_obj_t *parent, const char *text) {
 // Pills a size down from the settings pages' own: the dialog holds ten of them.
 static lv_obj_t *dialog_pill(lv_obj_t *parent, const char *text, int value, lv_event_cb_t cb) {
 	lv_obj_t *pill = settingsrow_pill(parent, text, value, cb);
-	lv_obj_set_height(pill, 46);
-	lv_obj_set_style_pad_hor(pill, 18, 0);
+	lv_obj_set_height(pill, ui_px(46));
+	lv_obj_set_style_pad_hor(pill, ui_px(18), 0);
 	lv_obj_set_style_text_font(lv_obj_get_child(pill, 0), &font_ui_20, 0);
 	return pill;
 }
@@ -403,7 +404,7 @@ static lv_obj_t *dialog_pills(lv_obj_t *parent) {
 	lv_obj_t *pills = lv_obj_create(parent);
 	lv_obj_remove_style_all(pills);
 	lv_obj_set_size(pills, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_set_style_pad_gap(pills, 8, 0);
+	lv_obj_set_style_pad_gap(pills, ui_px(8), 0);
 	lv_obj_set_scrollable(pills, false);
 	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW_WRAP);
 	return pills;
@@ -427,11 +428,11 @@ static void build_double_dialog(gui_config_t *cfg, const hit_t *hits, int hit_co
 	lv_obj_t *card = lv_obj_create(double_veil);
 	lv_obj_set_size(card, cfg->screen_width - 2 * cfg->padding, LV_SIZE_CONTENT);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 16, 0);
+	lv_obj_set_style_radius(card, ui_px(16), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 20, 0);
-	lv_obj_set_style_pad_row(card, 10, 0);
+	lv_obj_set_style_pad_all(card, ui_px(20), 0);
+	lv_obj_set_style_pad_row(card, ui_px(10), 0);
 	// Scrolls rather than running off the panel with large text or a long
 	// language.
 	lv_obj_set_style_max_height(card, cfg->screen_height - 2 * cfg->padding, 0);
@@ -469,7 +470,7 @@ static void build_double_dialog(gui_config_t *cfg, const hit_t *hits, int hit_co
 
 	lv_obj_t *done = lv_btn_create(card);
 	double_done = done;
-	lv_obj_set_size(done, lv_pct(100), 50);
+	lv_obj_set_size(done, lv_pct(100), ui_px(50));
 	lv_obj_set_style_radius(done, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_shadow_width(done, 0, 0);
 	lv_obj_set_style_border_width(done, 0, 0);
@@ -489,12 +490,12 @@ static void build_double_row(gui_config_t *cfg, int x, int y, int w) {
 	lv_obj_set_size(row, w, LV_SIZE_CONTENT);
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 10, 0);
+	lv_obj_set_style_radius(row, ui_px(10), 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 14, 0);
-	lv_obj_set_style_pad_ver(row, 10, 0);
-	lv_obj_set_style_pad_row(row, 2, 0);
+	lv_obj_set_style_pad_hor(row, ui_px(14), 0);
+	lv_obj_set_style_pad_ver(row, ui_px(10), 0);
+	lv_obj_set_style_pad_row(row, ui_px(2), 0);
 	lv_obj_set_scrollable(row, false);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
 	lv_obj_add_event_cb(row, double_open_cb, LV_EVENT_CLICKED, NULL);
@@ -581,17 +582,17 @@ static void add_row(keymap_button_t button, int x, int y, int w) {
 	lv_obj_set_size(row, w, row_h);
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 10, 0);
+	lv_obj_set_style_radius(row, ui_px(10), 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 14, 0);
+	lv_obj_set_style_pad_hor(row, ui_px(14), 0);
 	lv_obj_set_scrollable(row, false);
 	lv_obj_add_event_cb(row, pick_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)button);
 
 	lv_obj_t *value = lv_label_create(row);
 	value_labels[button] = value;
 	lv_label_set_long_mode(value, LV_LABEL_LONG_DOT);
-	lv_obj_set_width(value, w - 28);
+	lv_obj_set_width(value, w - ui_px(28));
 	// One line, cut with dots: the rows sit a few pixels apart, and a name
 	// that wrapped would spill out of its row onto the next one. The size
 	// is chosen with the text, in refresh_values().
