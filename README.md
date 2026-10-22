@@ -123,7 +123,9 @@ say which version you run and what you did before it happened.
 ## Building
 
 Sonix builds as described in [UPSTREAM-README.md](UPSTREAM-README.md)
-(`make target` in `sonix-player/`, Rockbox MIPS toolchain). The packer builds
+(`make target` in `sonix-player/`, Rockbox MIPS toolchain). `make target` draws
+the icons for the Blaze's 320 px wide panel, so it needs a Python with
+`cairosvg` (`ICON_PYTHON=/path/to/python` if `python3` lacks it). The packer builds
 the Blaze image from the **official v1.3 firmware** (SHA-256
 `5aa1bf262e9241737086076eef0f238e54e75ae226fa0c845d126de11ac01e95`), which is
 not redistributed here:

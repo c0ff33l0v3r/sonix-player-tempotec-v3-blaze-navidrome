@@ -274,6 +274,11 @@ TARGET_OBJS = $(APP_SRCS:src/%.c=build_target/%.o) $(APP_CXX_SRCS:src/%.cpp=buil
 # ui_px() gives (tools/svg_to_lvgl.py --width, needs cairosvg; ICON_PYTHON picks
 # the interpreter) in place of the checked-in icons.c, which is drawn for 480.
 # The rest of the interface scales at run time and needs nothing here.
+# This fork ships the V3 Blaze only, whose panel is 320 wide; the simulator stays
+# at 480 so its pages can be compared with the checked-in icons.
+ifneq ($(filter target,$(MAKECMDGOALS)),)
+PANEL_WIDTH ?= 320
+endif
 PANEL_WIDTH ?= 480
 ICON_PYTHON ?= python3
 ifneq ($(PANEL_WIDTH),480)
