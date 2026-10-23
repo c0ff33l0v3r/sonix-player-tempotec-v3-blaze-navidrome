@@ -76,7 +76,7 @@ lv_obj_t *remap_screen;
 // than the wrong button.
 typedef struct {
 	keymap_button_t button;
-	int y, h; // within the photo
+	int y, h; // within the photo, in the 480 px design (ui_px() where used)
 } hit_t;
 
 // The R3 Pro II's right flank, top to bottom. Power is absent: it does one
@@ -627,14 +627,14 @@ static void build_side(side_t *side, gui_config_t *cfg) {
 
 	for (int i = 0; i < side->hit_count; i++) {
 		const hit_t *hit = &side->hits[i];
-		int centre = side->y + hit->y + hit->h / 2;
+		int centre = side->y + ui_px(hit->y) + ui_px(hit->h) / 2;
 
 		// The touch rectangle over the button in the photo. Invisible: what is
 		// seen is the photographed button itself.
 		lv_obj_t *zone = lv_obj_create(remap_screen);
 		lv_obj_remove_style_all(zone);
-		lv_obj_set_pos(zone, hit_x, side->y + hit->y);
-		lv_obj_set_size(zone, HIT_W, hit->h);
+		lv_obj_set_pos(zone, hit_x, side->y + ui_px(hit->y));
+		lv_obj_set_size(zone, HIT_W, ui_px(hit->h));
 		lv_obj_set_clickable(zone, true);
 		lv_obj_set_scrollable(zone, false);
 		lv_obj_add_event_cb(zone, pick_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)hit->button);
@@ -652,7 +652,7 @@ static int build_front_keys(const side_t *side, gui_config_t *cfg) {
 	int y = side->y + side->h + FRONT_ROW_GAP;
 	for (size_t i = 0; i < sizeof(BLAZE_FRONT_KEYS) / sizeof(BLAZE_FRONT_KEYS[0]); i++) {
 		const front_key_t *key = &BLAZE_FRONT_KEYS[i];
-		int cx = side->x + key->x, cy = side->y + key->y;
+		int cx = side->x + ui_px(key->x), cy = side->y + ui_px(key->y);
 
 		lv_obj_t *zone = lv_obj_create(remap_screen);
 		lv_obj_remove_style_all(zone);
@@ -722,8 +722,9 @@ void remap_init(gui_config_t *cfg) {
 		play_side.hits = BLAZE_FLANK_HITS;
 		play_side.hit_count = (int)(sizeof(BLAZE_FLANK_HITS) / sizeof(BLAZE_FLANK_HITS[0]));
 		play_side.rows_on_right = true;
-		play_side.w = 236;
-		play_side.h = 415;
+		// The file is drawn for the 320 panel; these are its 480 px design size.
+		play_side.w = ui_px(236);
+		play_side.h = ui_px(415);
 		play_side.x = cfg->padding; // the whole device, not a cut: clear of the edge
 		play_side.y = settingsrow_content_top(cfg);
 		build_side(&play_side, cfg);
