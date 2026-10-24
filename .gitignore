@@ -42,3 +42,6 @@ sonix-packer/sonix_launch
 
 sonix-player/sonix_charge
 sonix-packer/sonix_charge
+# Encrypted credentials created by a host simulator without SONIX_CONFIG.
+navidrome_credentials.json
+navidrome_credentials.json.tmp

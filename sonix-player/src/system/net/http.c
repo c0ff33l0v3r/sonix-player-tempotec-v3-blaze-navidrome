@@ -40,6 +40,13 @@ static __thread char last_final_url[2600];
 
 const char *http_last_final_url(void) { return last_final_url; }
 
+void http_clear_request_metadata(void) {
+	volatile char *p = last_final_url;
+	for (size_t i = 0; i < sizeof(last_final_url); i++) p[i] = 0;
+	p = last_error;
+	for (size_t i = 0; i < sizeof(last_error); i++) p[i] = 0;
+}
+
 static void clear_last_error(void) {
 	last_error[0] = '\0';
 }
@@ -406,6 +413,19 @@ static bool header_value(const char *headers, const char *name, char *out, size_
 	return false;
 }
 
+// Summarize protected API responses without copying arbitrary server headers
+// into diagnostics: headers and redirect URLs can themselves contain secrets.
+static void log_protected_response(const char *headers, int status, int lead_len) {
+	char type[64] = "", encoding[64] = "", transfer[64] = "", length[32] = "";
+	header_value(headers, "Content-Type", type, sizeof(type));
+	header_value(headers, "Content-Encoding", encoding, sizeof(encoding));
+	header_value(headers, "Transfer-Encoding", transfer, sizeof(transfer));
+	bool has_length = header_value(headers, "Content-Length", length, sizeof(length));
+	const char *format = !type[0] ? "missing" : !strncasecmp(type, "application/json", 16) ? "json" : !strncasecmp(type, "text/html", 9) ? "html" : !strncasecmp(type, "application/xml", 15) || !strncasecmp(type, "text/xml", 8) ? "xml" : "other";
+	const char *compression = !encoding[0] || !strcasecmp(encoding, "identity") ? "identity" : !strcasecmp(encoding, "gzip") ? "gzip" : !strcasecmp(encoding, "br") ? "brotli" : "other";
+	fprintf(stderr, "http: protected response status=%d content_type=%s encoding=%s framing=%s declared_bytes=%lu lead_bytes=%d\n", status, format, compression, strcasestr(transfer, "chunked") ? "chunked" : has_length ? "content_length" : "close", has_length ? strtoul(length, NULL, 10) : 0, lead_len);
+}
+
 // ---------------------------------------------------------------------------
 // http_get
 // ---------------------------------------------------------------------------
@@ -416,6 +436,8 @@ typedef struct {
 	size_t used;
 	size_t cap;
 	size_t limit;
+	bool strict, failed;
+	const char *failure;
 } body_t;
 
 static bool body_reserve(body_t *b, size_t extra) {
@@ -445,7 +467,14 @@ static bool body_reserve(body_t *b, size_t extra) {
 }
 
 static bool body_append(body_t *b, const char *data, size_t len) {
+	if (b->strict && (b->used > b->limit || len > b->limit - b->used)) {
+		b->failed = true;
+		b->failure = "body_limit";
+		return false;
+	}
 	if (!body_reserve(b, len)) {
+		b->failed = true;
+		b->failure = "body_buffer_full_or_allocation_failed";
 		return false;
 	}
 	size_t room = b->cap - b->used;
@@ -464,6 +493,7 @@ static void read_until_close(conn_t *c, body_t *b) {
 	for (;;) {
 		int got = conn_read(c, buf, sizeof(buf));
 		if (got <= 0) {
+			if (got < 0) { b->failed = true; b->failure = "read_failed_or_timeout"; }
 			return;
 		}
 		if (!body_append(b, buf, (size_t)got)) {
@@ -479,6 +509,7 @@ static void read_until_close(conn_t *c, body_t *b) {
 // becomes a gap mid-track, inside a file then marked complete and never
 // re-downloaded.
 static bool read_length(conn_t *c, body_t *b, size_t content_length) {
+	if (b->strict && content_length > b->limit) { b->failed = true; b->failure = "body_limit"; return false; }
 	char buf[8192];
 	while (b->used < content_length) {
 		size_t want = content_length - b->used;
@@ -487,6 +518,7 @@ static bool read_length(conn_t *c, body_t *b, size_t content_length) {
 		}
 		int got = conn_read(c, buf, want);
 		if (got <= 0) {
+			b->failure = "body_cut_short_or_timeout";
 			return false;
 		}
 		if (!body_append(b, buf, (size_t)got)) {
@@ -566,6 +598,8 @@ static bool source_read_line(source_t *src, char *out, size_t out_size) {
 // stations is.
 static void read_chunked(source_t *src, body_t *b) {
 	char line[64];
+	b->failed = true; // Only a valid final chunk completes a strict response.
+	b->failure = "incomplete_or_invalid_chunks";
 	for (;;) {
 		if (!source_read_line(src, line, sizeof(line))) {
 			return;
@@ -576,8 +610,13 @@ static void read_chunked(source_t *src, body_t *b) {
 		if (semi) {
 			*semi = '\0';
 		}
-		long len = strtol(line, NULL, 16);
+		char *end;
+		errno = 0;
+		long len = strtol(line, &end, 16);
+		while (*end == ' ' || *end == '\t') end++;
+		if (b->strict && (end == line || *end || errno || len < 0)) return;
 		if (len <= 0) {
+			b->failed = false;
 			return; // the last chunk (trailers, if any, are of no interest)
 		}
 
@@ -598,6 +637,7 @@ static void read_chunked(source_t *src, body_t *b) {
 		if (!source_read_exact(src, crlf, 2)) {
 			return;
 		}
+		if (b->strict && (crlf[0] != '\r' || crlf[1] != '\n')) return;
 	}
 }
 
@@ -623,6 +663,7 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 	const char *method = req->method && req->method[0] ? req->method : "GET";
 	const char *extra_headers = req->extra_headers;
 	bool want_error_body = req->want_error_body;
+	const char *log_path = req->sensitive_url ? "/[redacted]" : u->path;
 
 	size_t body_len = 0;
 	if (req->body) {
@@ -671,7 +712,12 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 	// request would put bytes from past the end of the stack on the wire. It
 	// fits with room today; this check keeps it fitting when someone adds a
 	// longer header.
-	if (n <= 0 || (size_t)n >= sizeof(request) || !conn_write_all(&conn, request, (size_t)n)) {
+	bool sent = n > 0 && (size_t)n < sizeof(request) && conn_write_all(&conn, request, (size_t)n);
+	if (req->sensitive_url) {
+		volatile char *p = request;
+		for (size_t i = 0; i < sizeof(request); i++) p[i] = 0;
+	}
+	if (!sent) {
 		conn_close(&conn);
 		return false;
 	}
@@ -689,10 +735,14 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 	int lead_len = 0;
 	int status = read_headers(&conn, headers, sizeof(headers), lead, sizeof(lead), &lead_len);
 	*status_out = status;
+	if (req->sensitive_url)
+		log_protected_response(status >= 100 ? headers : "", status, lead_len);
 
 	if (status >= 300 && status < 400) {
 		location[0] = '\0';
 		header_value(headers, "Location", location, location_size);
+		if (req->sensitive_url)
+			fprintf(stderr, "http: protected redirect status=%d destination=%s\n", status, !location[0] ? "missing" : location[0] == '/' ? "relative" : "absolute");
 		conn_close(&conn);
 		return false; // the caller decides whether to follow
 	}
@@ -702,7 +752,7 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 	// success is read from the status code, and that code is 204.
 	bool ok_status = status == 200 || (req->allow_empty_body && status >= 200 && status < 300);
 	if (!ok_status && !(want_error_body && status >= 400 && status < 500)) {
-		fprintf(stderr, "http: %s%s -> status %d\n", u->host, u->path, status);
+		fprintf(stderr, "http: %s%s -> status %d\n", u->host, log_path, status);
 		// The status goes into last_error as well as the log, so that a server
 		// that answered by saying no is not reported to the caller as silence.
 		if (!last_error[0]) {
@@ -712,7 +762,7 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 		return false;
 	}
 
-	body_t body = {.limit = limit};
+	body_t body = {.limit = limit, .strict = req->require_complete_body};
 
 	char encoding[64];
 	bool chunked = header_value(headers, "Transfer-Encoding", encoding, sizeof(encoding)) &&
@@ -723,6 +773,8 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 		read_chunked(&src, &body);
 	} else {
 		if (lead_len > 0 && !body_append(&body, lead, (size_t)lead_len)) {
+			if (req->sensitive_url)
+				fprintf(stderr, "http: protected body rejected reason=%s received_bytes=%zu limit=%zu\n", body.failure, body.used, body.limit);
 			conn_close(&conn);
 			free(body.data);
 			return false;
@@ -734,7 +786,9 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 				// Less than promised: the response is broken, not short.
 				// Delivering it anyway means half a JPEG or, worse, an audio
 				// segment with a hole in it, accepted as good and cached.
-				fprintf(stderr, "http: %s%s -> body cut short\n", u->host, u->path);
+				fprintf(stderr, "http: %s%s -> body cut short\n", u->host, log_path);
+				if (req->sensitive_url)
+					fprintf(stderr, "http: protected body rejected reason=%s received_bytes=%zu limit=%zu\n", body.failure ? body.failure : "incomplete_body", body.used, body.limit);
 				conn_close(&conn);
 				free(body.data);
 				return false;
@@ -745,6 +799,12 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 	}
 
 	conn_close(&conn);
+	if (body.strict && body.failed) {
+		if (req->sensitive_url)
+			fprintf(stderr, "http: protected body rejected reason=%s received_bytes=%zu limit=%zu\n", body.failure ? body.failure : "incomplete_body", body.used, body.limit);
+		free(body.data);
+		return false;
+	}
 
 	if (!body.data) {
 		// An empty 200 is not an answer to anything asked here, except for
@@ -757,7 +817,7 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 			}
 			body.used = 0;
 		} else {
-			fprintf(stderr, "http: %s%s -> %d with no body\n", u->host, u->path, status);
+			fprintf(stderr, "http: %s%s -> %d with no body\n", u->host, log_path, status);
 			return false;
 		}
 	}

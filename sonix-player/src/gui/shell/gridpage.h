@@ -35,6 +35,9 @@ typedef struct {
 // tiles change does not have to build its grid again.
 void gridpage_set_tile(lv_obj_t *grid, int index, const lv_image_dsc_t *icon, const char *label);
 
+// Presentation only: keep an action tile tappable while its service is offline.
+void gridpage_set_dimmed(lv_obj_t *grid, int index, bool dimmed);
+
 lv_obj_t *gridpage_build(lv_obj_t *screen, gui_config_t *cfg, const grid_entry_t *entries, int count, int columns, int rows,
 					bool clear_corner_buttons);
 

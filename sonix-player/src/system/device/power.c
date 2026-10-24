@@ -1091,6 +1091,9 @@ void power_quiet_audio_for_shutdown(void) {
 }
 
 void power_shutdown(void) {
+#ifdef HOST_BUILD
+	printf("power: simulator shutdown ignored; host OS is unchanged\n");
+#else
 	// Where the music had got to, before anything else stops. The player's own
 	// poll writes this only every ten seconds while playing and on a change of
 	// state, so without this flush a power-off loses up to ten seconds -- and a
@@ -1155,6 +1158,7 @@ void power_shutdown(void) {
 
 	// Last resort if init never got there.
 	reboot(to_charge ? RB_AUTOBOOT : RB_POWER_OFF);
+#endif
 }
 
 // The automatic shutdown, from the normal awake tick and from the RTC alarm

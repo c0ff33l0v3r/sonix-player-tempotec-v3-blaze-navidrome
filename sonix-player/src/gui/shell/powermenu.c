@@ -109,6 +109,9 @@ static void do_power_off(void) {
 }
 
 static void do_reboot(void) {
+#ifdef HOST_BUILD
+	printf("power: simulator reboot ignored; host OS is unchanged\n");
+#else
 	printf("power: rebooting\n");
 	device_state_remember_flush();
 	clock_shutdown();
@@ -136,6 +139,7 @@ static void do_reboot(void) {
 	sleep(8);
 	reboot(RB_AUTOBOOT);
 	execl("/bin/sh", "sh", "-c", "reboot", (char *)NULL);
+#endif
 }
 
 static void cancel_cb(lv_event_t *e) {

@@ -1,0 +1,462 @@
+#include "navidromesettings.h"
+
+#include "src/gui/fonts/fonts.h"
+#include "src/gui/shell/confirm.h"
+#include "src/gui/shell/icons.h"
+#include "src/gui/shell/keyboard.h"
+#include "src/gui/shell/settingsrow.h"
+#include "src/gui/shell/switcher.h"
+#include "src/gui/shell/theme.h"
+#include "src/gui/shell/uiscale.h"
+#include "src/system/core/lang.h"
+#include "src/system/streaming/navidrome.h"
+#include <string.h>
+
+typedef struct {
+	lv_obj_t *screen, *body, *status;
+	lv_obj_t *fields[3], *eyes[3];
+	keyboard_t *keyboard;
+} form_t;
+typedef enum { PASSPHRASE_CREATE, PASSPHRASE_UNLOCK, PASSPHRASE_CHANGE } pass_mode_t;
+static form_t main_form, pass_form;
+static gui_config_t *config;
+static lv_obj_t *save_button, *update_button, *reconnect_button, *unlock_button;
+static lv_obj_t *lock_button, *forget_button, *change_button, *pass_button;
+static bool updating, pass_waiting;
+static pass_mode_t pass_mode;
+static unsigned loaded_revision;
+static struct {
+	char host[ND_HOST_MAX], user[ND_USER_MAX], password[ND_SECRET_MAX];
+} staged;
+
+static bool gesture(void) { return switcher_back_drag_active(); }
+static void actions(void);
+static void save_cb(lv_event_t *e);
+static void pass_accept_cb(lv_event_t *e);
+
+static void wipe_field(lv_obj_t *field) {
+	// LVGL owns this mutable storage (including pwd_tmp in password mode).
+	// Clear it before asking LVGL to release/reallocate the old text.
+	const char *text = lv_textarea_get_text(field);
+	nd_wipe((char *)text, strlen(text));
+	lv_textarea_set_text(field, "");
+}
+
+static void keyboard_visible(form_t *f, bool visible) {
+	keyboard_set_visible(f->keyboard, visible);
+	int top = settingsrow_content_top(config);
+	lv_obj_set_height(f->body, config->screen_height - top - config->padding - (visible ? ui_px(316) : 0));
+}
+
+static void focus_cb(lv_event_t *e) {
+	if (gesture())
+		return;
+	form_t *f = lv_event_get_user_data(e);
+	lv_obj_t *field = lv_event_get_target(e);
+	keyboard_visible(f, true);
+	keyboard_set_field(f->keyboard, field);
+	for (int i = 0; i < 3; i++) {
+		bool active = f->fields[i] == field;
+		if (active)
+			lv_obj_add_state(f->fields[i], LV_STATE_FOCUSED);
+		else
+			lv_obj_remove_state(f->fields[i], LV_STATE_FOCUSED);
+		keyboard_show_caret(f->fields[i], active);
+	}
+	lv_obj_scroll_to_view(field, LV_ANIM_ON);
+}
+
+static void eye_cb(lv_event_t *e) {
+	if (gesture())
+		return;
+	lv_obj_t *field = lv_event_get_user_data(e);
+	bool hidden = !lv_textarea_get_password_mode(field);
+	lv_textarea_set_password_mode(field, hidden);
+	keyboard_refresh_password(field);
+	lv_image_set_src(lv_obj_get_child(lv_event_get_target(e), 0), hidden ? &icon_eye : &icon_eye_off);
+}
+
+static void field_changed_cb(lv_event_t *e) {
+	if (updating)
+		return;
+	if (lv_event_get_target(e) != main_form.fields[2]) {
+		updating = true;
+		wipe_field(main_form.fields[2]);
+		updating = false;
+	}
+	actions();
+}
+
+static lv_obj_t *action(form_t *f, const char *key, lv_event_cb_t cb) {
+	lv_obj_t *button = lv_btn_create(f->body);
+	lv_obj_set_width(button, lv_pct(100));
+	lv_obj_set_height(button, LV_SIZE_CONTENT);
+	lv_obj_set_style_min_height(button, ui_px(56), 0);
+	lv_obj_add_style(button, &theme_style_card, 0);
+	lv_obj_add_style(button, &theme_style_card_pressed, LV_STATE_PRESSED);
+	lv_obj_set_style_opa(button, LV_OPA_40, LV_STATE_DISABLED);
+	lv_obj_set_style_shadow_width(button, 0, 0);
+	lv_obj_set_style_pad_all(button, ui_px(12), 0);
+	lv_obj_t *label = lv_label_create(button);
+	lv_label_set_text(label, tr(key));
+	lv_obj_add_style(label, &theme_style_text, 0);
+	lv_obj_set_style_text_font(label, &font_ui_20, 0);
+	lv_obj_set_width(label, lv_pct(100));
+	lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+	lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, NULL);
+	return button;
+}
+
+static void enable(lv_obj_t *obj, bool enabled) {
+	if (enabled)
+		lv_obj_remove_state(obj, LV_STATE_DISABLED);
+	else
+		lv_obj_add_state(obj, LV_STATE_DISABLED);
+}
+
+static void visible(lv_obj_t *obj, bool show) { lv_obj_set_hidden(obj, !show); }
+
+static void make_field(form_t *f, int i, const char *key, bool secret, unsigned max_chars) {
+	lv_obj_t *row = lv_obj_create(f->body);
+	lv_obj_set_width(row, lv_pct(100));
+	lv_obj_set_height(row, ui_px(88));
+	lv_obj_remove_style_all(row);
+	lv_obj_set_size(row, lv_pct(100), ui_px(88));
+	lv_obj_set_scrollable(row, false);
+	lv_obj_t *label = lv_label_create(row);
+	lv_label_set_text(label, tr(key));
+	lv_obj_add_style(label, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(label, &font_ui_18, 0);
+	lv_obj_set_width(label, lv_pct(100));
+	lv_obj_align(label, LV_ALIGN_TOP_LEFT, 0, 0);
+	lv_obj_t *field = f->fields[i] = lv_textarea_create(row);
+	lv_textarea_set_one_line(field, true);
+	lv_textarea_set_max_length(field, max_chars);
+	lv_obj_set_size(field, lv_pct(100), ui_px(58));
+	lv_obj_align(field, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+	lv_obj_add_style(field, &theme_style_card, 0);
+	lv_obj_set_style_text_font(field, &font_ui_20, 0);
+	lv_obj_set_style_pad_all(field, ui_px(10), 0);
+	lv_obj_set_style_border_width(field, 0, 0);
+	lv_obj_set_scrollbar_mode(field, LV_SCROLLBAR_MODE_OFF);
+	keyboard_style_caret(field);
+	keyboard_show_caret(field, false);
+	lv_obj_add_event_cb(field, focus_cb, LV_EVENT_CLICKED, f);
+	if (f == &main_form)
+		lv_obj_add_event_cb(field, field_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
+	if (secret) {
+		keyboard_style_password(field, 0);
+		lv_obj_set_style_pad_right(field, ui_px(56), 0);
+		lv_obj_t *eye = f->eyes[i] = lv_btn_create(row);
+		lv_obj_set_size(eye, ui_px(54), ui_px(54));
+		lv_obj_align(eye, LV_ALIGN_BOTTOM_RIGHT, 0, -ui_px(2));
+		lv_obj_set_style_bg_opa(eye, LV_OPA_TRANSP, 0);
+		lv_obj_set_style_shadow_width(eye, 0, 0);
+		lv_obj_set_style_border_width(eye, 0, 0);
+		lv_obj_add_event_cb(eye, eye_cb, LV_EVENT_CLICKED, field);
+		lv_obj_t *icon = lv_image_create(eye);
+		lv_image_set_src(icon, &icon_eye);
+		lv_obj_add_style(icon, &theme_style_icon, 0);
+		lv_obj_center(icon);
+	}
+}
+
+static void form_init(form_t *f, const char *title) {
+	f->screen = lv_obj_create(NULL);
+	lv_obj_add_style(f->screen, &theme_style_screen, 0);
+	settingsrow_title_corner_slots(settingsrow_title(f->screen, config, title), config, 0);
+	f->body = lv_obj_create(f->screen);
+	lv_obj_remove_style_all(f->body);
+	lv_obj_set_size(f->body, config->screen_width - 2 * config->padding, config->screen_height - settingsrow_content_top(config) - config->padding);
+	lv_obj_align(f->body, LV_ALIGN_TOP_LEFT, config->padding, settingsrow_content_top(config));
+	lv_obj_set_flex_flow(f->body, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_style_pad_row(f->body, ui_px(10), 0);
+	lv_obj_set_scroll_dir(f->body, LV_DIR_VER);
+	f->status = lv_label_create(f->body);
+	lv_obj_set_width(f->status, lv_pct(100));
+	lv_obj_add_style(f->status, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(f->status, &font_ui_18, 0);
+	lv_label_set_text(f->status, "");
+	switcher_attach_back_gesture(f->screen);
+	switcher_attach_back_gesture(f->body);
+}
+
+static bool identical(const navidrome_snapshot_t *s) { return !strcmp(lv_textarea_get_text(main_form.fields[0]), s->host) && !strcmp(lv_textarea_get_text(main_form.fields[1]), s->user); }
+
+static void actions(void) {
+	navidrome_snapshot_t s;
+	navidrome_snapshot(&s);
+	bool editable = (!s.configured || s.unlocked) && !s.busy;
+	for (int i = 0; i < 3; i++)
+		enable(main_form.fields[i], editable);
+	enable(main_form.eyes[2], editable);
+	bool same = identical(&s);
+	char saved[ND_SECRET_MAX];
+	navidrome_password(saved);
+	const char *text = lv_textarea_get_text(main_form.fields[2]);
+	bool changed_password = strcmp(text, saved) != 0;
+	nd_wipe(saved, sizeof(saved));
+	bool save = editable && (!s.configured || !s.authenticated || !same);
+	visible(save_button, !s.configured || (s.unlocked && (!s.authenticated || !same)));
+	enable(save_button, save);
+	visible(update_button, s.unlocked && s.authenticated && same);
+	enable(update_button, editable && same && *text && changed_password);
+	visible(reconnect_button, s.configured && s.unlocked && same && !changed_password);
+	enable(reconnect_button, !s.busy);
+	visible(unlock_button, s.configured && !s.unlocked && !s.invalid);
+	enable(unlock_button, !s.busy);
+	visible(lock_button, s.unlocked || s.busy);
+	visible(change_button, s.unlocked);
+	enable(change_button, !s.busy);
+	visible(forget_button, s.configured || s.busy);
+	lv_label_set_text(main_form.status, tr(s.busy ? (s.state == ND_CONNECTING ? "nd_connecting" : "nd_working") : s.error ? s.error : navidrome_feedback(&s)));
+	if (!editable)
+		keyboard_visible(&main_form, false);
+}
+
+static void load_main(void) {
+	navidrome_snapshot_t s;
+	navidrome_snapshot(&s);
+	updating = true;
+	for (int i = 0; i < 3; i++) {
+		wipe_field(main_form.fields[i]);
+		keyboard_show_caret(main_form.fields[i], false);
+		lv_obj_remove_state(main_form.fields[i], LV_STATE_FOCUSED);
+	}
+	lv_textarea_set_text(main_form.fields[0], s.host);
+	lv_textarea_set_text(main_form.fields[1], s.user);
+	char password[ND_SECRET_MAX];
+	if (navidrome_password(password))
+		lv_textarea_set_text(main_form.fields[2], password);
+	nd_wipe(password, sizeof(password));
+	lv_textarea_set_password_mode(main_form.fields[2], true);
+	keyboard_refresh_password(main_form.fields[2]);
+	lv_image_set_src(lv_obj_get_child(main_form.eyes[2], 0), &icon_eye);
+	loaded_revision = s.revision;
+	updating = false;
+	keyboard_reset(main_form.keyboard);
+	keyboard_visible(&main_form, false);
+	lv_obj_scroll_to_y(main_form.body, 0, LV_ANIM_OFF);
+	actions();
+}
+
+static void main_loaded_cb(lv_event_t *e) {
+	(void)e;
+	load_main();
+}
+
+static void main_unloaded_cb(lv_event_t *e) {
+	(void)e;
+	updating = true;
+	for (int i = 0; i < 3; i++)
+		wipe_field(main_form.fields[i]);
+	updating = false;
+	keyboard_visible(&main_form, false);
+}
+
+static void pass_open(pass_mode_t mode) {
+	pass_mode = mode;
+	pass_waiting = false;
+	for (int i = 0; i < 3; i++) {
+		wipe_field(pass_form.fields[i]);
+		keyboard_show_caret(pass_form.fields[i], false);
+		lv_obj_remove_state(pass_form.fields[i], LV_STATE_FOCUSED);
+		lv_textarea_set_password_mode(pass_form.fields[i], true);
+		keyboard_refresh_password(pass_form.fields[i]);
+		lv_image_set_src(lv_obj_get_child(pass_form.eyes[i], 0), &icon_eye);
+		enable(pass_form.fields[i], true);
+		enable(pass_form.eyes[i], true);
+	}
+	// Field 0 is current/unlock, field 1 new, field 2 confirmation.
+	visible(lv_obj_get_parent(pass_form.fields[0]), mode != PASSPHRASE_CREATE);
+	visible(lv_obj_get_parent(pass_form.fields[1]), mode != PASSPHRASE_UNLOCK);
+	visible(lv_obj_get_parent(pass_form.fields[2]), mode != PASSPHRASE_UNLOCK);
+	lv_label_set_text(pass_form.status, tr(mode == PASSPHRASE_CREATE ? "nd_passphrase_note" : mode == PASSPHRASE_UNLOCK ? "nd_unlock_note" : "nd_change_note"));
+	enable(pass_button, true);
+	keyboard_reset(pass_form.keyboard);
+	keyboard_visible(&pass_form, false);
+	lv_obj_scroll_to_y(pass_form.body, 0, LV_ANIM_OFF);
+	switch_screen(pass_form.screen);
+}
+
+static void save_cb(lv_event_t *e) {
+	(void)e;
+	if (gesture())
+		return;
+	const char *host = lv_textarea_get_text(main_form.fields[0]);
+	const char *user = lv_textarea_get_text(main_form.fields[1]);
+	const char *password = lv_textarea_get_text(main_form.fields[2]);
+	char normalized[ND_HOST_MAX];
+	const char *error = navidrome_validate(host, user, password, normalized);
+	if (error) {
+		gui_notify_popup(error);
+		return;
+	}
+	navidrome_snapshot_t s;
+	navidrome_snapshot(&s);
+	if (!s.configured) {
+		nd_wipe(&staged, sizeof(staged));
+		lv_snprintf(staged.host, sizeof(staged.host), "%s", normalized);
+		lv_snprintf(staged.user, sizeof(staged.user), "%s", user);
+		lv_snprintf(staged.password, sizeof(staged.password), "%s", password);
+		pass_open(PASSPHRASE_CREATE);
+	} else {
+		navidrome_save(host, user, password, NULL);
+		actions();
+	}
+}
+
+static void reconnect_cb(lv_event_t *e) {
+	(void)e;
+	if (!gesture()) {
+		navidrome_reconnect();
+		actions();
+	}
+}
+static void unlock_cb(lv_event_t *e) {
+	(void)e;
+	if (!gesture())
+		pass_open(PASSPHRASE_UNLOCK);
+}
+static void change_cb(lv_event_t *e) {
+	(void)e;
+	if (!gesture())
+		pass_open(PASSPHRASE_CHANGE);
+}
+static void lock_cb(lv_event_t *e) {
+	(void)e;
+	if (!gesture()) {
+		navidrome_lock();
+		load_main();
+	}
+}
+static void forget_confirmed(void *unused) {
+	(void)unused;
+	navidrome_forget();
+	load_main();
+}
+static void forget_cb(lv_event_t *e) {
+	(void)e;
+	if (!gesture())
+		confirm_show(tr("nd_forget"), tr("nd_forget_confirm"), tr("nd_forget"), forget_confirmed, NULL);
+}
+
+static void pass_accept_cb(lv_event_t *e) {
+	(void)e;
+	if (gesture() || pass_waiting)
+		return;
+	const char *current = lv_textarea_get_text(pass_form.fields[0]);
+	const char *replacement = lv_textarea_get_text(pass_form.fields[1]);
+	const char *confirmation = lv_textarea_get_text(pass_form.fields[2]);
+	if (pass_mode != PASSPHRASE_UNLOCK) {
+		if (strlen(replacement) >= ND_SECRET_MAX || strlen(current) >= ND_SECRET_MAX) {
+			gui_notify_popup("nd_input_long");
+			return;
+		}
+		if (!nd_passphrase_valid(replacement)) {
+			gui_notify_popup("nd_passphrase_short");
+			return;
+		}
+		if (strcmp(replacement, confirmation)) {
+			gui_notify_popup("nd_passphrase_mismatch");
+			return;
+		}
+	}
+	bool ok = pass_mode == PASSPHRASE_CREATE ? navidrome_save(staged.host, staged.user, staged.password, replacement) : pass_mode == PASSPHRASE_UNLOCK ? navidrome_unlock(current) : navidrome_change_passphrase(current, replacement);
+	if (!ok) {
+		navidrome_snapshot_t s;
+		navidrome_snapshot(&s);
+		gui_notify_popup(s.error ? s.error : "nd_worker_error");
+		return;
+	}
+	pass_waiting = true;
+	for (int i = 0; i < 3; i++) {
+		wipe_field(pass_form.fields[i]);
+		enable(pass_form.fields[i], false);
+		enable(pass_form.eyes[i], false);
+	}
+	keyboard_visible(&pass_form, false);
+	enable(pass_button, false);
+	lv_label_set_text(pass_form.status, tr("nd_working"));
+	// Retain initial credentials for retry until commit succeeds or this page
+	// is left. The worker owns its copy; unlock password inputs are cleared above.
+}
+
+static void pass_unloaded_cb(lv_event_t *e) {
+	(void)e;
+	pass_waiting = false;
+	for (int i = 0; i < 3; i++)
+		wipe_field(pass_form.fields[i]);
+	nd_wipe(&staged, sizeof(staged));
+	keyboard_visible(&pass_form, false);
+}
+
+void navidromesettings_refresh(void) {
+	if (!main_form.screen)
+		return;
+	navidrome_snapshot_t s;
+	navidrome_snapshot(&s);
+	if (pass_waiting && pass_mode == PASSPHRASE_CREATE && s.configured)
+		nd_wipe(&staged, sizeof(staged)); // Committed, even if the network check is still pending.
+	if (lv_screen_active() == main_form.screen) {
+		if (s.revision != loaded_revision)
+			load_main();
+		else
+			actions();
+	}
+	if (lv_screen_active() == pass_form.screen && pass_waiting && !s.busy) {
+		pass_waiting = false;
+		bool success = pass_mode == PASSPHRASE_CREATE ? s.configured && s.unlocked : pass_mode == PASSPHRASE_UNLOCK ? s.unlocked : !s.error;
+		if (success)
+			switch_screen_return_to(main_form.screen);
+		else {
+			lv_label_set_text(pass_form.status, tr(s.error ? s.error : "nd_unlock_required"));
+			for (int i = 0; i < 3; i++) {
+				enable(pass_form.fields[i], true);
+				enable(pass_form.eyes[i], true);
+			}
+			enable(pass_button, true);
+		}
+	}
+	if (lv_screen_active() == pass_form.screen && pass_waiting && s.busy)
+		lv_label_set_text(pass_form.status, tr(s.state == ND_CONNECTING ? "nd_connecting" : "nd_working"));
+}
+
+void navidromesettings_open(void) { switch_screen(main_form.screen); }
+
+static void refresh_tick(lv_timer_t *timer) {
+	(void)timer;
+	// A full GUI post queue may drop a completion notice. Reading the snapshot
+	// here is local and also keeps an active unlock password page from staying busy.
+	if (lv_screen_active() == main_form.screen || lv_screen_active() == pass_form.screen)
+		navidromesettings_refresh();
+}
+
+void navidromesettings_init(gui_config_t *cfg) {
+	config = cfg;
+	form_init(&main_form, "nd_settings");
+	make_field(&main_form, 0, "nd_host", false, ND_HOST_MAX - 1);
+	lv_textarea_set_placeholder_text(main_form.fields[0], "http://music.local:4533");
+	make_field(&main_form, 1, "nd_username", false, ND_USER_MAX - 1);
+	make_field(&main_form, 2, "password", true, ND_SECRET_MAX - 1);
+	save_button = action(&main_form, "nd_save_connect", save_cb);
+	update_button = action(&main_form, "nd_update_password", save_cb);
+	reconnect_button = action(&main_form, "nd_reconnect", reconnect_cb);
+	unlock_button = action(&main_form, "nd_unlock", unlock_cb);
+	lock_button = action(&main_form, "nd_lock", lock_cb);
+	change_button = action(&main_form, "nd_change_passphrase", change_cb);
+	forget_button = action(&main_form, "nd_forget", forget_cb);
+	main_form.keyboard = keyboard_create(main_form.screen, cfg->screen_width, ui_px(316), main_form.fields[0], NULL, "ok", save_cb, NULL);
+	keyboard_visible(&main_form, false);
+	lv_obj_add_event_cb(main_form.screen, main_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+	lv_obj_add_event_cb(main_form.screen, main_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
+	form_init(&pass_form, "nd_vault");
+	make_field(&pass_form, 0, "nd_current_passphrase", true, ND_SECRET_MAX - 1);
+	make_field(&pass_form, 1, "nd_new_passphrase", true, ND_SECRET_MAX - 1);
+	make_field(&pass_form, 2, "nd_confirm_passphrase", true, ND_SECRET_MAX - 1);
+	pass_button = action(&pass_form, "ok", pass_accept_cb);
+	pass_form.keyboard = keyboard_create(pass_form.screen, cfg->screen_width, ui_px(316), pass_form.fields[0], NULL, "ok", pass_accept_cb, NULL);
+	keyboard_visible(&pass_form, false);
+	lv_obj_add_event_cb(pass_form.screen, pass_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
+	lv_timer_create(refresh_tick, 250, NULL);
+}

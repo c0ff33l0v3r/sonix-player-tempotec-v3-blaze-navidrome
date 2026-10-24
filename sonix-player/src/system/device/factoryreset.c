@@ -14,6 +14,7 @@
 #include "src/system/streaming/qobuzcache.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/tidalcache.h"
+#include "src/system/streaming/navidrome.h"
 #include "src/system/remote/dlna.h"
 #include "src/system/device/sysserver.h"
 #include "src/system/device/system.h"
@@ -191,6 +192,7 @@ void factoryreset_run(void) {
 	// This player's configuration goes now, without waiting for the reboot,
 	// and the battery history with it.
 	batterystats_forget();
+	navidrome_reset();
 	static const char *const OURS[] = {CONFIG_FILE, EBOOK_CONFIG_FILE};
 	for (size_t i = 0; i < sizeof(OURS) / sizeof(OURS[0]); i++) {
 		if (unlink(OURS[i]) == 0) {
@@ -249,6 +251,7 @@ static const char *const KEEP[] = {
 	"ebook_config.ini",
 	"ebook_config.ini.tmp",
 	"tidal_session.ini",
+	ND_VAULT_FILE,
 	"lastfm.session",
 };
 

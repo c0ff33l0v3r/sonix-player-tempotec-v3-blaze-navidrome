@@ -45,6 +45,16 @@ static void action_cb(lv_event_t *e) {
 #define TILE_ICON_CHILD 0
 #define TILE_LABEL_CHILD 1
 
+void gridpage_set_dimmed(lv_obj_t *grid, int index, bool dimmed) {
+	if (!grid || index < 0 || index >= (int)lv_obj_get_child_count(grid)) return;
+	lv_obj_t *tile = lv_obj_get_child(grid, index);
+	lv_obj_t *icon = lv_obj_get_child(tile, TILE_ICON_CHILD);
+	lv_obj_t *label = lv_obj_get_child(tile, TILE_LABEL_CHILD);
+	lv_obj_set_style_opa(icon, dimmed ? LV_OPA_40 : LV_OPA_COVER, 0);
+	lv_obj_remove_style(label, &theme_style_text_dim, 0);
+	if (dimmed) lv_obj_add_style(label, &theme_style_text_dim, 0);
+}
+
 void gridpage_set_tile(lv_obj_t *grid, int index, const lv_image_dsc_t *icon, const char *label) {
 	if (!grid || index < 0 || index >= (int)lv_obj_get_child_count(grid)) {
 		return;

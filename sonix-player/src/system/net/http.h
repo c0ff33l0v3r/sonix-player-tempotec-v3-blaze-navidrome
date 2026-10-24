@@ -60,6 +60,10 @@ bool http_get_ex(const char *url, const char *extra_headers, bool want_error_bod
 // overwritten by the next request on the same thread, so copy it immediately.
 const char *http_last_final_url(void);
 
+// Erase this thread's diagnostic URL/error after a credential-bearing request.
+// Does not change redirect processing or another thread's metadata.
+void http_clear_request_metadata(void);
+
 // ---------------------------------------------------------------------------
 // Requests that are not GET
 //
@@ -108,6 +112,13 @@ typedef struct {
 	// With this set *out is still allocated and terminated: an empty string,
 	// never NULL, so the caller always frees the same way.
 	bool allow_empty_body;
+
+	// Credential-bearing API callers opt in; catalogue/radio defaults stay as
+	// before. Never print this request's URL path/query in diagnostics.
+	bool sensitive_url;
+	// Reject oversized/truncated/unfinished bodies rather than accepting a
+	// useful prefix (the latter remains the default for radio playlists).
+	bool require_complete_body;
 
 } http_req_t;
 
