@@ -5,6 +5,7 @@
 #include "lvgl/lvgl.h"
 
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/settings/batteryusage.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/theme.h"
 #include "src/system/core/config.h"
@@ -405,6 +406,10 @@ static void standby_toggled_cb(lv_event_t *e) {
 
 void powersettings_init(gui_config_t *cfg) {
 	lv_obj_t *container = settingsrow_page(powersettings_screen, cfg, "power");
+
+	// What the battery went on, first: the row people come to this page for.
+	batteryusage_init(cfg);
+	settingsrow_add(container, "battery_usage", NULL, switch_screen_cb, batteryusage_screen);
 
 	// Suspend-to-RAM standby: suspends the player a while after the screen goes
 	// off to save battery, and playback resumes on wake. On by default. What it

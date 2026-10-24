@@ -48,6 +48,7 @@
 #include "src/system/device/led.h"
 #include "src/system/device/sysinfo.h"
 #include "src/system/device/axpcharge.h"
+#include "src/system/device/batterystats.h"
 #include "src/system/device/chargescreen.h"
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/lowbattery.h"
@@ -1028,6 +1029,10 @@ void power_shutdown(void) {
 	// last set is otherwise lost the moment the power goes.
 	clock_shutdown();
 
+	// The time since the last tick, and the counts, before the power goes.
+	batterystats_tick(g_screen_on);
+	batterystats_save();
+
 	// The radio database is on the card: close it so its journal is tidied
 	// away before the power goes, rather than left for the next boot to find.
 	radio_store_close();
@@ -1901,6 +1906,7 @@ static void power_timer_cb(lv_timer_t *timer) {
 	if (playing) {
 		g_last_playing_ms = now;
 	}
+	batterystats_tick(g_screen_on);
 
 	// 3. idle computations
 	uint32_t input_idle = input_idle_ms(now);
@@ -2163,6 +2169,7 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 	}
 	g_radio_park_after_ms = (uint32_t)park_secs * 1000u;
 
+	batterystats_init();
 	g_power_timer = lv_timer_create(power_timer_cb, POWER_TICK_MS, NULL);
 	power_slow_in_standby(g_power_timer, POWER_TICK_STANDBY_MS);
 
