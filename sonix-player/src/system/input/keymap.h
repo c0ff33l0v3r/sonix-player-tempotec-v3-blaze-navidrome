@@ -45,6 +45,7 @@ typedef enum {
 	KEYMAP_ACTION_NEXT,
 	KEYMAP_ACTION_VOLUME_UP,
 	KEYMAP_ACTION_VOLUME_DOWN,
+	KEYMAP_ACTION_GAIN, // the next gain level, Low → Mid → High → Low
 	KEYMAP_ACTION_COUNT,
 } keymap_action_t;
 

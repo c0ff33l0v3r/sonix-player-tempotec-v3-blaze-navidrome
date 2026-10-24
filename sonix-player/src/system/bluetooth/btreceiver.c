@@ -75,6 +75,10 @@ static int output_ms(void) {
 // about how long ago the last frame was.
 #define SILENCE_MS 900
 
+// How long after the last frame with sound in it the stream still counts as
+// sound, for btreceiver_is_audible(): the quiet between two tracks included.
+#define AUDIBLE_MS 5000
+
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t thread;
 static bool running;
@@ -90,6 +94,7 @@ static unsigned session_id;
 static btreceiver_state_t state;
 static unsigned serial;
 static uint32_t last_frame_ms;
+static uint32_t last_audible_ms; // the last frame that was not digital silence
 
 static uint32_t now_ms(void) {
 	struct timespec ts;
@@ -118,6 +123,13 @@ bool btreceiver_is_active(void) {
 	bool on = state.active;
 	pthread_mutex_unlock(&lock);
 	return on;
+}
+
+bool btreceiver_is_audible(void) {
+	pthread_mutex_lock(&lock);
+	bool audible = state.active && last_audible_ms != 0 && (now_ms() - last_audible_ms) < AUDIBLE_MS;
+	pthread_mutex_unlock(&lock);
+	return audible;
 }
 
 bool btreceiver_is_streaming(void) {
@@ -407,6 +419,8 @@ static session_t capture_session(const char *mac, const char *name, bool may_gue
 		}
 		pthread_mutex_unlock(&lock);
 
+		const void *out = chunk;
+		size_t out_bytes = (size_t)got * in_frame;
 		if (widen && in_bits == 24) {
 			// The top byte of an S24_4LE word is not promised to be anything,
 			// so it is shifted out rather than trusted.
@@ -414,16 +428,24 @@ static session_t capture_session(const char *mac, const char *name, bool may_gue
 			for (snd_pcm_sframes_t i = 0; i < got * (snd_pcm_sframes_t)channels; i++) {
 				wide[i] = (int32_t)(src[i] << 8);
 			}
-			audio_external_write(wide, (int)got);
+			out = wide;
+			out_bytes = (size_t)got * channels * sizeof(int32_t);
 		} else if (widen) {
 			const int16_t *src = chunk;
 			for (snd_pcm_sframes_t i = 0; i < got * (snd_pcm_sframes_t)channels; i++) {
 				wide[i] = (int32_t)((uint32_t)(uint16_t)src[i] << 16);
 			}
-			audio_external_write(wide, (int)got);
-		} else {
-			audio_external_write(chunk, (int)got);
+			out = wide;
+			out_bytes = (size_t)got * channels * sizeof(int32_t);
 		}
+		// A paused sender may go on sending frames of digital silence: every
+		// byte the same. Only frames that are not count as sound.
+		if (out_bytes > 1 && memcmp(out, (const char *)out + 1, out_bytes - 1) != 0) {
+			pthread_mutex_lock(&lock);
+			last_audible_ms = now_ms();
+			pthread_mutex_unlock(&lock);
+		}
+		audio_external_write(out, (int)got);
 	}
 
 	free(chunk);

@@ -239,6 +239,14 @@ static void really_leave(void *user) {
 	lv_async_call(leave_async, NULL);
 }
 
+void btreceiverpage_close(void) {
+	if (lv_screen_active() == btreceiverpage_screen) {
+		really_leave(NULL); // the page would start the mode again for a sender still connected
+	} else {
+		btreceiver_stop();
+	}
+}
+
 // The back chevron and the swipe both come through here. True means "handled,
 // stay put": leaving stops the audio, and that is worth one question.
 static bool back_guard(void) {

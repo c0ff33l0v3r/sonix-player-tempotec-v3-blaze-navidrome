@@ -510,6 +510,80 @@ void power_set_auto_off(bool enabled, uint32_t minutes) {
 	g_auto_off_ms = minutes * 60u * 1000u;
 }
 
+// ---------------------------------------------------------------------------
+// Closing a connection left on with nothing going through it
+//
+// DAC mode, the Bluetooth receiver and Wi-Fi Transfer each hold the device
+// awake for as long as they are on (player_is_busy), sound or no sound. One
+// left on by accident keeps the SoC and the radios up for hours, and the
+// device gets hot. So once one has had nothing through it and no key or touch
+// for the chosen time, it is closed the way leaving its page would close it,
+// and the usual standby takes over from there.
+// ---------------------------------------------------------------------------
+
+static uint32_t g_idle_link_ms = 10u * 60u * 1000u;
+static uint32_t g_link_active_boot_ms;
+
+void power_set_idle_link(uint32_t minutes) { g_idle_link_ms = minutes * 60u * 1000u; }
+
+// Wi-Fi Transfer is a separate thttpd that reports nothing back, so its
+// activity is read off the interface: more than WT_MOVING_BYTES in a
+// WT_SAMPLE_MS window is a transfer; the page's own polling and the network's
+// background chatter stay well under it.
+#define WT_SAMPLE_MS 30000u
+#define WT_MOVING_BYTES (64u * 1024u)
+
+static unsigned long long wlan_bytes(void) {
+	unsigned long long total = 0;
+	static const char *const FILES[] = {"/sys/class/net/wlan0/statistics/rx_bytes",
+										"/sys/class/net/wlan0/statistics/tx_bytes"};
+	for (int i = 0; i < 2; i++) {
+		unsigned long long n = 0;
+		FILE *f = fopen(FILES[i], "r");
+		if (f) {
+			if (fscanf(f, "%llu", &n) != 1) {
+				n = 0;
+			}
+			fclose(f);
+		}
+		total += n;
+	}
+	return total;
+}
+
+static bool wifitransfer_moving(uint32_t now) {
+	static unsigned long long bytes;
+	static uint32_t sampled_at;
+	static bool moving;
+	if (!sampled_at || now - sampled_at >= WT_SAMPLE_MS) {
+		unsigned long long n = wlan_bytes();
+		moving = sampled_at && n - bytes > WT_MOVING_BYTES;
+		bytes = n;
+		sampled_at = now ? now : 1;
+	}
+	return moving;
+}
+
+static uint32_t power_tick_ms(void);
+
+static void idle_links_tick(uint32_t input_idle) {
+	uint32_t now = boottime_ms();
+	bool dac = usbdac_is_active(), receiver = btreceiver_is_active(), transfer = wifitransfer_running();
+	if (!g_idle_link_ms || !(dac || receiver || transfer) || input_idle < power_tick_ms() * 4 ||
+		(dac && usbdac_is_audible()) || (receiver && btreceiver_is_audible()) ||
+		(transfer && wifitransfer_moving(now))) {
+		g_link_active_boot_ms = now;
+		return;
+	}
+	if (now - g_link_active_boot_ms < g_idle_link_ms) {
+		return;
+	}
+	printf("power: closing%s%s%s after %u min with nothing through it\n", dac ? " DAC mode" : "",
+		   receiver ? " the Bluetooth receiver" : "", transfer ? " Wi-Fi Transfer" : "", g_idle_link_ms / 60000u);
+	g_link_active_boot_ms = now;
+	gui_close_idle_links();
+}
+
 
 static bool g_double_tap_wake; // rearmed at every blank; see power_set_double_tap_wake
 
@@ -1969,6 +2043,7 @@ static void power_timer_cb(lv_timer_t *timer) {
 		g_last_active_boot_ms = boottime_ms();
 	}
 	uint32_t off_idle_wall = boottime_ms() - g_last_active_boot_ms;
+	idle_links_tick(input_idle);
 
 	// 4. auto screen-off after the configured input-idle timeout
 	if (g_screen_on && g_cfg.screen_off_enabled && !g_screen_on_hold && !g_screen_view_hold &&

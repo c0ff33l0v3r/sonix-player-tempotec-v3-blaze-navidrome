@@ -89,6 +89,24 @@ void popover_show(lv_obj_t *anchor, const popover_item_t *items, int count) {
 	memcpy(items_copy, items, (size_t)count * sizeof(items[0]));
 	items_count = count;
 
+	// As wide as the longest entry needs, up to POPOVER_WIDTH: short entries in
+	// a full-width card leave most of it empty over the page it is about.
+	// Past the limit the labels wrap, as they always have.
+	int width = 0;
+	for (int i = 0; i < count; i++) {
+		lv_point_t size;
+		lv_text_get_size(&size, tr(items[i].label), &font_ui_24, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+		int w = size.x + (items[i].checked ? icon_check.header.w + ui_px(14) : 0);
+		if (w > width) {
+			width = w;
+		}
+	}
+	width += 2 * ui_px(14) + 2 * ui_px(8); // the rows' padding, then the card's
+	if (width > POPOVER_WIDTH) {
+		width = POPOVER_WIDTH;
+	}
+	lv_obj_set_width(card, width);
+
 	// Rebuild the rows.
 	lv_obj_clean(card);
 	for (int i = 0; i < count; i++) {
@@ -152,12 +170,12 @@ void popover_show(lv_obj_t *anchor, const popover_item_t *items, int count) {
 	int screen_h = lv_obj_get_height(veil);
 	int card_h = lv_obj_get_height(card);
 
-	int x = a.x1 + (a.x2 - a.x1) / 2 - POPOVER_WIDTH / 2;
+	int x = a.x1 + (a.x2 - a.x1) / 2 - width / 2;
 	if (x < POPOVER_MARGIN) {
 		x = POPOVER_MARGIN;
 	}
-	if (x + POPOVER_WIDTH > screen_w - POPOVER_MARGIN) {
-		x = screen_w - POPOVER_MARGIN - POPOVER_WIDTH;
+	if (x + width > screen_w - POPOVER_MARGIN) {
+		x = screen_w - POPOVER_MARGIN - width;
 	}
 
 	int y = a.y2 + POPOVER_MARGIN; // preferred: right under the control

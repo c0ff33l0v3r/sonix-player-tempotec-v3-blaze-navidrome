@@ -17,4 +17,8 @@ extern lv_obj_t *btreceiverpage_screen;
 
 void btreceiverpage_init(gui_config_t *cfg);
 
+// Ends the mode and, when the page is open, leaves it, as the confirmed chevron
+// does: left open, the page would start the mode again for the sender.
+void btreceiverpage_close(void);
+
 #endif /* BTRECEIVERPAGE_H */

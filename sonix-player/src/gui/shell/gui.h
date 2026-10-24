@@ -103,6 +103,7 @@ typedef enum {
 	GUI_KEY_PLAY_PAUSE,
 	GUI_KEY_NEXT,
 	GUI_KEY_PREV,
+	GUI_KEY_GAIN, // a remapped button: the next gain level
 } gui_key_t;
 
 void gui_notify_key(gui_key_t key);
@@ -113,6 +114,10 @@ void gui_notify_volume(int percent);
 
 // The power key was held down.
 void gui_notify_power_menu(void);
+
+// Closes DAC mode, the Bluetooth receiver and Wi-Fi Transfer, whichever are on,
+// and says so: the idle-connection timer (power.c). UI thread only.
+void gui_close_idle_links(void);
 
 // Whether obj is still one of the objects on a display. It compares the pointer
 // against the live widget tree and never reads through it, so a pointer to an

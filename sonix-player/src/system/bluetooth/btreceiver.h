@@ -64,6 +64,11 @@ bool btreceiver_is_active(void);
 // silly.
 bool btreceiver_is_streaming(void);
 
+// True while what arrives has sound in it. Some phones go on sending frames of
+// digital silence after they are paused, so "streaming" stays true under them;
+// this one does not. The idle-connection timer (power.c) asks it.
+bool btreceiver_is_audible(void);
+
 void btreceiver_get_state(btreceiver_state_t *out);
 
 // Bumped on every change, so a page can redraw only when there is something

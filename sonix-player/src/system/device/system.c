@@ -1645,6 +1645,9 @@ static void run_mapped_action(keymap_button_t button) {
 	case KEYMAP_ACTION_VOLUME_DOWN:
 		apply_volume_step(KEY_VOLUMEDOWN);
 		break;
+	case KEYMAP_ACTION_GAIN:
+		gui_notify_key(GUI_KEY_GAIN);
+		break;
 	case KEYMAP_ACTION_NONE:
 	default:
 		break;

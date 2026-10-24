@@ -35,6 +35,16 @@ static const struct {
 };
 #define AUTO_OFF_COUNT ((int)(sizeof(AUTO_OFF) / sizeof(AUTO_OFF[0])))
 
+// How long DAC mode, the Bluetooth receiver or Wi-Fi Transfer may sit with
+// nothing going through it before power.c closes it. 0 is never.
+static const struct {
+	int minutes;
+	const char *label;
+} IDLE_LINK[] = {
+	{5, "power_5_minutes"}, {10, "power_10_minutes"}, {15, "power_15_minutes"}, {30, "power_30_minutes"}, {0, "power_never"},
+};
+#define IDLE_LINK_COUNT ((int)(sizeof(IDLE_LINK) / sizeof(IDLE_LINK[0])))
+
 // How long the screen stays dark before standby. Saved in seconds under
 // [power] standby_mem_seconds, which power.c reads at startup.
 static const struct {
@@ -52,6 +62,7 @@ static const struct {
 #define STANDBY_CLOSED_H ui_px(76)
 
 static lv_obj_t *charge_value, *charge_slider;
+static lv_obj_t *idle_link_value, *idle_link_slider;
 static lv_obj_t *auto_off_switch, *auto_off_value, *auto_off_slider, *auto_off_card;
 static lv_obj_t *led_on_switch, *led_off_switch, *led_off_card;
 static lv_obj_t *key_lock_switch;
@@ -186,6 +197,16 @@ static int auto_off_index(void) {
 	return 1; // the 30 minute default
 }
 
+static int idle_link_index(void) {
+	int minutes = (int)config_get_int("power", "idle_link_minutes", 10);
+	for (int i = 0; i < IDLE_LINK_COUNT; i++) {
+		if (IDLE_LINK[i].minutes == minutes) {
+			return i;
+		}
+	}
+	return 1; // the 10 minute default
+}
+
 // A wait saved by hand that is not one of these lands on the next one up,
 // or on the longest.
 static int standby_after_index(void) {
@@ -225,6 +246,7 @@ void powersettings_apply(void) {
 	}
 
 	power_set_auto_off(config_get_bool("power", "auto_off", false), (uint32_t)AUTO_OFF[auto_off_index()].minutes);
+	power_set_idle_link((uint32_t)IDLE_LINK[idle_link_index()].minutes);
 
 	// Suspend-to-RAM standby, on by default: saves battery by suspending the
 	// player shortly after the screen goes off.
@@ -267,6 +289,7 @@ static void refresh_labels(void) {
 		set_checked(axp_current_switch, config_get_bool("power", "charge_500ma", false));
 	}
 	lv_label_set_text(auto_off_value, tr(AUTO_OFF[auto_off_index()].label));
+	lv_label_set_text(idle_link_value, tr(IDLE_LINK[idle_link_index()].label));
 	lv_label_set_text(standby_value, tr(STANDBY_AFTER[standby_after_index()].label));
 
 	// The LED master switch, and the standby option that hangs off it: with the
@@ -347,6 +370,14 @@ static void auto_off_changed_cb(lv_event_t *e) {
 	(void)e;
 	int index = (int)lv_slider_get_value(auto_off_slider);
 	config_set_int("power", "auto_off_minutes", AUTO_OFF[index].minutes);
+	config_save();
+	powersettings_apply();
+	refresh_labels();
+}
+
+static void idle_link_changed_cb(lv_event_t *e) {
+	(void)e;
+	config_set_int("power", "idle_link_minutes", IDLE_LINK[lv_slider_get_value(idle_link_slider)].minutes);
 	config_save();
 	powersettings_apply();
 	refresh_labels();
@@ -474,6 +505,16 @@ void powersettings_init(gui_config_t *cfg) {
 											  &auto_off_switch, &auto_off_value, &auto_off_slider,
 											  auto_off_toggled_cb, auto_off_changed_cb);
 	lv_slider_set_value(auto_off_slider, auto_off_index(), LV_ANIM_OFF);
+
+	settingsrow_slider(container, "power_idle_link", IDLE_LINK_COUNT, &idle_link_value, &idle_link_slider,
+					   idle_link_changed_cb);
+	lv_slider_set_value(idle_link_slider, idle_link_index(), LV_ANIM_OFF);
+	lv_obj_t *idle_link_note = lv_label_create(container);
+	lv_label_set_long_mode(idle_link_note, LV_LABEL_LONG_WRAP);
+	lv_obj_set_width(idle_link_note, lv_pct(100));
+	lv_obj_add_style(idle_link_note, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(idle_link_note, &font_ui_22, 0);
+	lv_label_set_text(idle_link_note, tr("power_idle_link_note"));
 
 	// If the charger driver has no control node there is nothing to enforce
 	// the limit with, and saying so is better than a setting that silently

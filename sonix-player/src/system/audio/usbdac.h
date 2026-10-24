@@ -69,6 +69,10 @@ bool usbdac_start(void);
 void usbdac_stop(void);
 
 bool usbdac_is_active(void);
+// True while the host is sending sound, not just a stream: a computer often
+// keeps the stream open with nothing playing and sends digital silence. The
+// idle-connection timer (power.c) asks it.
+bool usbdac_is_audible(void);
 void usbdac_get_state(usbdac_state_t *out);
 
 // Bumped whenever the state changes, so a page can redraw only when there is

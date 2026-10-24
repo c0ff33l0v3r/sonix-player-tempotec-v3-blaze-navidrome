@@ -21,6 +21,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 // The gadget lives at the same path as the mass-storage one, and that is not a
@@ -101,6 +102,17 @@ static int frame_buffer_bytes(int rate) {
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static usbdac_state_t state;
+static uint32_t last_audible_ms; // under `lock`: the last read that was not digital silence
+
+// How long after the last read with sound in it the host still counts as
+// playing, for usbdac_is_audible(): the quiet between two tracks included.
+#define AUDIBLE_MS 5000
+
+static uint32_t now_ms(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint32_t)(ts.tv_sec * 1000u + (uint32_t)(ts.tv_nsec / 1000000));
+}
 static unsigned serial;
 
 static pthread_t audio_thread;
@@ -676,6 +688,15 @@ static void *audio_main(void *arg) {
 			continue;
 		}
 
+		// A host with nothing to play may keep the stream open and send digital
+		// silence -- every byte the same, zero or the DSD idle pattern. Only
+		// reads that are not count as sound.
+		if (got > 1 && memcmp(buffer, buffer + 1, (size_t)got - 1) != 0) {
+			pthread_mutex_lock(&lock);
+			last_audible_ms = now_ms();
+			pthread_mutex_unlock(&lock);
+		}
+
 		// A switch between PCM and DoP reopens the output with DOP_EN set to
 		// match; this buffer was read for the old mode and is dropped.
 		bool now_dop = !dsd && looks_like_dop((const unsigned char *)buffer, got);
@@ -849,6 +870,13 @@ bool usbdac_is_active(void) {
 	bool on = state.active;
 	pthread_mutex_unlock(&lock);
 	return on;
+}
+
+bool usbdac_is_audible(void) {
+	pthread_mutex_lock(&lock);
+	bool audible = state.active && last_audible_ms != 0 && (now_ms() - last_audible_ms) < AUDIBLE_MS;
+	pthread_mutex_unlock(&lock);
+	return audible;
 }
 
 void usbdac_get_state(usbdac_state_t *out) {

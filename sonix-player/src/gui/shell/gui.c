@@ -94,6 +94,7 @@
 
 #include "lvgl/lvgl.h"
 #include "lvgl/src/display/lv_display_private.h"
+#include "src/system/audio/alsa-controls.h"
 #include "src/system/core/lang.h"
 #include "src/gui/shell/uiscale.h"
 
@@ -517,6 +518,21 @@ static void modal_init(gui_config_t *cfg) {
 static void key_async_cb(void *user_data) {
 	gui_key_t key = (gui_key_t)(uintptr_t)user_data;
 
+	// Ahead of the transport checks below: the gain is the DAC's, and DAC mode
+	// is where it is wanted most.
+	if (key == GUI_KEY_GAIN) {
+		static const char *const NAMES[3] = {"musicsettings_gain_low", "musicsettings_gain_mid",
+											 "musicsettings_gain_high"};
+		musicsettings_gain_step();
+		// Two-level players have low and high, no mid.
+		int count = gain_level_count();
+		int name = count > 1 ? musicsettings_gain_level() * 2 / (count - 1) : 0;
+		char text[96];
+		snprintf(text, sizeof(text), "%s: %s", tr("musicsettings_gain"), tr(NAMES[name < 0 ? 0 : (name > 2 ? 2 : name)]));
+		popup_show_icon(text, NULL, lv_color_black());
+		return;
+	}
+
 	// The side keys act on the local transport, and there are states in which
 	// that transport is not what the device is doing. Pressing them then does
 	// not do nothing -- it starts a local track underneath whatever is actually
@@ -550,6 +566,8 @@ static void key_async_cb(void *user_data) {
 			return;
 		}
 		break;
+	case GUI_KEY_GAIN: // handled above
+		break;
 	}
 
 	switch (key) {
@@ -562,6 +580,8 @@ static void key_async_cb(void *user_data) {
 	case GUI_KEY_PREV:
 		player_key_prev();
 		break;
+	case GUI_KEY_GAIN:
+		break;
 	}
 }
 
@@ -571,6 +591,21 @@ static void key_async_cb(void *user_data) {
 // top of this file. The same list carries the player's progress timer, the one
 // that advances the queue when a track ends.
 void gui_notify_key(gui_key_t key) { gui_post(key_async_cb, (void *)(uintptr_t)key); }
+
+// From the power tick, already on this thread. Each closed the way its own page
+// closes it, so the page left on screen agrees with what happened.
+void gui_close_idle_links(void) {
+	if (usbdac_is_active()) {
+		usbdac_stop(); // the DAC page's switch follows the state
+	}
+	if (wifitransfer_get_enabled() || wifitransfer_running()) {
+		wifitransfer_page_stop();
+	}
+	if (btreceiver_is_active()) {
+		btreceiverpage_close();
+	}
+	gui_notify_popup("power_idle_link_closed");
+}
 
 static void volume_async_cb(void *user_data) {
 	int percent = (int)(intptr_t)user_data;

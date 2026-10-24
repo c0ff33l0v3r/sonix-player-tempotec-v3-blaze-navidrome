@@ -243,6 +243,10 @@ void power_set_charging_allowed(bool allowed);
 // Powers the device off after `minutes` with no input and nothing playing.
 void power_set_auto_off(bool enabled, uint32_t minutes);
 
+// Closes DAC mode, the Bluetooth receiver or Wi-Fi Transfer after `minutes`
+// with no sound or transfer through it and no input; 0 never does.
+void power_set_idle_link(uint32_t minutes);
+
 void power_set_screen_off_enabled(bool enabled);
 void power_set_screen_off_timeout(uint32_t ms);
 

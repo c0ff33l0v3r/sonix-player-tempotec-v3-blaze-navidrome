@@ -122,6 +122,13 @@ static const front_key_t BLAZE_FRONT_KEYS[] = {
 	{KEYMAP_BTN_PREV, 77, 366},
 };
 
+// The Blaze's buttons for the double-click dialog, in the order the case
+// names them. Only the button is read there.
+static const hit_t BLAZE_BUTTONS[] = {
+	{KEYMAP_BTN_PREV, 0, 0}, {KEYMAP_BTN_PLAY, 0, 0}, {KEYMAP_BTN_NEXT, 0, 0},
+	{KEYMAP_BTN_VOL_UP, 0, 0}, {KEYMAP_BTN_VOL_DOWN, 0, 0},
+};
+
 #define BLAZE_ROW_H ui_px(40)
 #define FRONT_HIT ui_px(44)	   // the touch square over a front button
 #define FRONT_ROW_GAP ui_px(6)	   // between the front buttons' rows, and above the first
@@ -150,7 +157,7 @@ static side_t vol_side = {.dark = PHOTO_VOL_DARK, .light = PHOTO_VOL_LIGHT};
 static lv_obj_t *value_labels[KEYMAP_BTN_COUNT];
 static lv_obj_t *rows[KEYMAP_BTN_COUNT];
 
-// The double click (keymap.h), on the R1 only: a row under the last button's,
+// The double click (keymap.h), on the R1 and the Blaze: a row under the last button's,
 // and the dialog it opens.
 static lv_obj_t *double_value;
 static lv_obj_t *double_veil;
@@ -533,7 +540,7 @@ static void open_chooser(keymap_button_t button) {
 
 	keymap_action_t current = keymap_get(button);
 
-	// Six entries, exactly as many as the popover shows: one per action these
+	// Seven entries, exactly as many as the popover shows: one per action these
 	// buttons can perform, plus "none", since a button pressed by accident in a
 	// pocket is reason enough to disable it.
 	static popover_item_t items[KEYMAP_ACTION_COUNT];
@@ -729,11 +736,15 @@ void remap_init(gui_config_t *cfg) {
 		play_side.y = settingsrow_content_top(cfg);
 		build_side(&play_side, cfg);
 		build_front_keys(&play_side, cfg);
-		// No double click: every action already has a button of its own here, unlike
-		// on the R1. One set on the old list page would act with nothing to undo it.
-		if (keymap_double_enabled()) {
-			keymap_set_double(KEYMAP_BTN_COUNT, KEYMAP_ACTION_NONE);
-		}
+		// Every action has a button of its own here except the gain, so the double
+		// click is how that one gets a button. Its row goes in the free space under
+		// the flank's rows: under the front ones the panel has ended.
+		const hit_t *last = &BLAZE_FLANK_HITS[sizeof(BLAZE_FLANK_HITS) / sizeof(BLAZE_FLANK_HITS[0]) - 1];
+		int col_x = play_side.x + play_side.w + LEADER_W;
+		int y = play_side.y + ui_px(last->y) + ui_px(last->h) / 2 + row_h / 2 + FRONT_ROW_GAP * 2;
+		build_double_row(cfg, col_x, y, cfg->screen_width - col_x - cfg->padding);
+		build_double_dialog(cfg, BLAZE_BUTTONS, (int)(sizeof(BLAZE_BUTTONS) / sizeof(BLAZE_BUTTONS[0])));
+		refresh_double();
 		refresh_values();
 		lv_obj_add_event_cb(remap_screen, screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 		lv_obj_add_event_cb(remap_screen, screen_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
