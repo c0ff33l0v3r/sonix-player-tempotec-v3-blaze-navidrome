@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "src/system/audio/audio.h"
+#include "src/system/device/batterystats.h"
 #include "src/system/device/clock.h"
 #include "src/system/core/config.h"
 #include "src/system/streaming/qobuzcache.h"
@@ -127,6 +128,8 @@ void firmware_update_start(void) {
 	// -- recovery reboots the device a second time when it is done, and the
 	// time would otherwise be whatever the RTC last knew.
 	clock_shutdown();
+	batterystats_tick(power_screen_is_on());
+	batterystats_save();
 
 	// The recovery kernel reads the update off the card: it finds it clean.
 	storage_release_for_shutdown();

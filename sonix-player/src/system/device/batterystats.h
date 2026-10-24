@@ -29,6 +29,7 @@ typedef enum {
 	BS_SCREEN,	// screen on
 	BS_STANDBY, // screen dark, SoC awake
 	BS_SLEEP,	// suspended to RAM
+	BS_BT_OUT,	// any of the sources above going out to Bluetooth headphones
 	BS_ITEM_COUNT
 } bs_item_t;
 
@@ -52,9 +53,13 @@ void batterystats_init(void);
 // thread, like everything else here.
 void batterystats_tick(bool screen_on);
 
-// Writes the counts out. The tick does it every ten minutes, and power.c on
-// the way to a shutdown. A suspend needs none: the time asleep is only known,
-// and counted, at the first tick after it.
+// Deletes the saved counts and writes nothing more: the factory reset, on its
+// way to the reboot.
+void batterystats_forget(void);
+
+// Writes the counts out. The tick does it every ten minutes, and the shutdown,
+// the restart and the firmware update on their way out. A suspend needs none:
+// the time asleep is only known, and counted, at the first tick after it.
 void batterystats_save(void);
 
 // The hour `ago` hours before the current one (0 .. BS_HOURS-1), or NULL if

@@ -6,6 +6,7 @@
 #include "src/system/audio/audio.h"
 #include "src/system/core/config.h"
 #include "src/system/library/audiobookdb.h"
+#include "src/system/device/batterystats.h"
 #include "src/system/device/clock.h"
 #include "src/system/library/library.h"
 #include "src/system/core/logging.h"
@@ -187,7 +188,9 @@ void factoryreset_run(void) {
 	// this line is what prevents it.
 	unmount_card();
 
-	// This player's configuration goes now, without waiting for the reboot.
+	// This player's configuration goes now, without waiting for the reboot,
+	// and the battery history with it.
+	batterystats_forget();
 	static const char *const OURS[] = {CONFIG_FILE, EBOOK_CONFIG_FILE};
 	for (size_t i = 0; i < sizeof(OURS) / sizeof(OURS[0]); i++) {
 		if (unlink(OURS[i]) == 0) {

@@ -27,7 +27,7 @@ static int fake_clock_gettime(clockid_t id, struct timespec *ts) {
 #include "src/system/device/batterystats.c"
 
 static int fake_source = -1, fake_level = 80;
-static bool fake_cable;
+static bool fake_cable, fake_bt_out;
 
 bool btreceiver_is_streaming(void) { return fake_source == BS_BT_RECEIVER; }
 void usbdac_get_state(usbdac_state_t *out) { memset(out, 0, sizeof(*out)); }
@@ -37,6 +37,7 @@ bool radio_is_playing(void) { return false; }
 void airplay_get_state(airplay_state_t *out) { memset(out, 0, sizeof(*out)); }
 audio_status_t audio_get_status(void) { return fake_source == BS_LOCAL ? AUDIO_STATUS_PLAYING : AUDIO_STATUS_STOPPED; }
 bool dlna_owns_playback(void) { return false; }
+bool audio_output_is_bluetooth(void) { return fake_bt_out; }
 void audio_get_current_file(char *out, size_t size) { snprintf(out, size, "/mnt/sd/a.flac"); }
 bool qobuzcache_owns(const char *path) { return (void)path, false; }
 bool tidalcache_owns(const char *path) { return (void)path, false; }
@@ -142,6 +143,14 @@ int main(void) {
 	fake_cable = false;
 	awake(1, true);
 	assert(s_ref_level == 90 && s_ref_fresh);
+
+	// A track from the card to Bluetooth headphones: both items count the time.
+	uint32_t local_before = batterystats_hour(0)->ms[BS_LOCAL];
+	fake_source = BS_LOCAL;
+	fake_bt_out = true;
+	awake(60, false);
+	assert(batterystats_hour(0)->ms[BS_BT_OUT] == 60 * 1000);
+	assert(batterystats_hour(0)->ms[BS_LOCAL] - local_before == 60 * 1000);
 
 	printf("batterystats selftest: ok\n");
 	return 0;

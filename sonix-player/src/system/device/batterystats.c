@@ -28,6 +28,7 @@
 #define RATE_AWAKE 2.5f	 // the SoC up and nothing playing, screen dark
 #define RATE_SCREEN 5.0f // the panel and the backlight, on top of that
 #define RATE_SLEEP 0.5f	 // suspended to RAM
+#define RATE_BT_OUT 2.0f // the radio sending to headphones, on top of the source
 static const float RATE_PLAY[BS_SOURCE_COUNT] = {
 	// On top of RATE_AWAKE: decoding, the DAC and the amplifier, and the
 	// radio the music comes in on.
@@ -38,7 +39,7 @@ static const float RATE_PLAY[BS_SOURCE_COUNT] = {
 
 // The short names of the log line, in bs_item_t order.
 static const char *const ITEM_NAMES[BS_ITEM_COUNT] = {
-	"local", "btrx", "usbdac", "radio", "qobuz", "tidal", "podcast", "airplay", "dlna", "screen", "standby", "sleep",
+	"local", "btrx", "usbdac", "radio", "qobuz", "tidal", "podcast", "airplay", "dlna", "screen", "standby", "sleep", "btout",
 };
 
 #define STATS_MAGIC 0x53425431u // "SBT1"
@@ -268,6 +269,10 @@ void batterystats_tick(bool screen_on) {
 	add_span(screen_on ? BS_SCREEN : BS_STANDBY, woke, wall, state_rate * scale);
 	if (source >= 0) {
 		add_span(source, woke, wall, (RATE_AWAKE + RATE_PLAY[source]) * scale);
+		// The receiver and DAC mode play through the DAC whatever the route says.
+		if (source != BS_BT_RECEIVER && source != BS_USB_DAC && audio_output_is_bluetooth()) {
+			add_span(BS_BT_OUT, woke, wall, RATE_BT_OUT * scale);
+		}
 	}
 
 	const char *text = read_battery_percent();
@@ -282,6 +287,13 @@ void batterystats_tick(bool screen_on) {
 	if (mono - s_saved_mono >= SAVE_EVERY_MS) {
 		batterystats_save();
 	}
+}
+
+void batterystats_forget(void) {
+	if (s_path && unlink(s_path) == 0) {
+		printf("batterystats: %s deleted\n", s_path);
+	}
+	s_path = NULL;
 }
 
 void batterystats_save(void) {

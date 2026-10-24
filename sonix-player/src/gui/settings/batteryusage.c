@@ -23,7 +23,7 @@ lv_obj_t *batteryusage_screen;
 static const char *const ITEM_LABELS[BS_ITEM_COUNT] = {
 	"battery_usage_local",	"btreceiver_title",		 "dac_mode",		  "radio", "Qobuz", "Tidal", "podcasts",
 	"AirPlay",				"DLNA",					 "battery_usage_screen", "battery_usage_standby",
-	"power_standby_mem",
+	"power_standby_mem",	"battery_usage_bt_out",
 };
 static const bs_item_t SEG_ITEMS[SEGS] = {BS_SCREEN, BS_STANDBY, BS_SLEEP};
 

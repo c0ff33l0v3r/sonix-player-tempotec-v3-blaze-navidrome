@@ -12,6 +12,7 @@
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/theme.h"
+#include "src/system/device/batterystats.h"
 #include "src/system/device/clock.h"
 #include "src/system/playback/device_state.h"
 #include "src/system/core/lang.h"
@@ -111,6 +112,8 @@ static void do_reboot(void) {
 	printf("power: rebooting\n");
 	device_state_remember_flush();
 	clock_shutdown();
+	batterystats_tick(power_screen_is_on());
+	batterystats_save();
 	radio_store_close();
 	qobuzcache_clear_on_exit();
 	tidalcache_clear_on_exit();
