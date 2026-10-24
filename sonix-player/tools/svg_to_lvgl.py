@@ -440,6 +440,7 @@ COLOR_ICONS = [
     ("qobuz.png", "menu_qobuz", SECTION_ICON_SIZE),
     ("radio.png", "menu_radio", SECTION_ICON_SIZE),
     ("podcast.png", "menu_podcast", SECTION_ICON_SIZE),
+    ("navidrome.png", "menu_navidrome", SECTION_ICON_SIZE),
     ("audiobooks.png", "menu_audiobooks", MAIN_MENU_ICON_SIZE),
     ("audiobook-library.png", "menu_audiobook_library", SECTION_ICON_SIZE),
     ("audiobook-series.png", "menu_audiobook_series", SECTION_ICON_SIZE),
