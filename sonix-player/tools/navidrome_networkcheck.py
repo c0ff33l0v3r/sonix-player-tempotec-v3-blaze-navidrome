@@ -91,7 +91,7 @@ def main():
         thread.start()
         cases = {
             'ok': 'ok', 'redirect': 'ok', 'auth': 'nd_auth_error', 'api': 'nd_api_error',
-            'html': 'nd_response_error', 'malformed': 'nd_response_error',
+            'html': 'nd_web_page', 'malformed': 'nd_response_error',
             'missing': 'nd_response_error', 'oversize': 'nd_response_error',
             'http401': 'nd_response_error',
             'http500': 'nd_api_error', 'empty': 'nd_response_error',
@@ -99,7 +99,7 @@ def main():
             'chunkcut': 'nd_response_error', 'chunkoversize': 'nd_response_error',
             'nolengthoversize': 'nd_response_error',
             'nulstatus': 'nd_response_error',
-            'full': 'ok', 'loginredirect': 'nd_response_error',
+            'full': 'ok', 'loginredirect': 'nd_web_page',
             'xml': 'nd_response_error', 'gzip': 'nd_response_error',
             'missingstatus': 'nd_response_error',
         }
@@ -127,12 +127,28 @@ def main():
             with tempfile.TemporaryDirectory(prefix='sonix-navidrome-log-') as folder:
                 log = Path(folder) / 'navidrome.log'
                 env['SONIX_LOG'] = str(log)
-                subprocess.run([binary, f'http://127.0.0.1:{server.server_port}/loginredirect', 'nd_response_error'],
+                subprocess.run([binary, f'http://127.0.0.1:{server.server_port}/loginredirect', 'nd_web_page'],
                                check=True, timeout=20, capture_output=True, env=env)
                 output = log.read_text()
-                assert 'protected redirect status=302' in output and 'reason=malformed_json' in output
+                assert 'protected redirect status=302' in output and 'reason=web_page' in output
                 assert 'content_type=html' in output and 'navidrome: ping response' in output
                 check_redaction(output)
+            for plain in (False, True):
+                with tempfile.TemporaryDirectory(prefix='sonix-nd-debug-redaction-') as folder:
+                    env.pop('SONIX_LOG', None)
+                    env['ND_DEBUG_CARD'] = folder
+                    if plain:
+                        env['ND_TEST_PLAIN'] = '1'
+                    else:
+                        env.pop('ND_TEST_PLAIN', None)
+                    subprocess.run([binary, f'http://127.0.0.1:{server.server_port}/loginredirect', 'nd_web_page'],
+                                   check=True, timeout=20, capture_output=True, env=env)
+                    files = list((Path(folder) / '.local').glob('navidrome-debug-*.log'))
+                    assert len(files) == 1
+                    output = files[0].read_text()
+                    assert output.count('http: protected response') == 2 and 'reason=web_page' in output
+                    check_redaction(output)
+                    env.pop('ND_DEBUG_CARD', None)
             subprocess.run([binary, f'http://127.0.0.1:{server.server_port}/legacy/rest/ping.view', 'legacy'], check=True, timeout=20, capture_output=True)
         finally:
             server.shutdown()

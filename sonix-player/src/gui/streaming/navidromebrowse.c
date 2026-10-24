@@ -4,6 +4,7 @@
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/nowplaying/coverflow.h"
 #include "src/gui/nowplaying/player.h"
+#include "src/gui/shell/azindex.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
@@ -21,7 +22,9 @@ typedef struct {
 	lv_obj_t *screen, *list, *extent, *title, *status;
 	lv_obj_t *rows[ND_WINDOW], *names[ND_WINDOW], *details[ND_WINDOW], *images[ND_WINDOW];
 	cover_image_t artwork[ND_WINDOW];
-	bool art_finished[ND_WINDOW], loading;
+	bool art_finished[ND_WINDOW], loading, map_ready, map_bound;
+	azindex_t *index;
+	int letters[ND_LETTER_BUCKETS], requested_first;
 	nd_row_t data[ND_WINDOW];
 	nd_query_t query;
 	nd_library_t library;
@@ -39,7 +42,8 @@ typedef struct {
 	nd_library_t library;
 	nd_query_t query;
 	nd_row_t rows[ND_WINDOW];
-	bool ok, filter_exists;
+	bool ok, filter_exists, need_map;
+	int letters[ND_LETTER_BUCKETS];
 } window_t;
 static pthread_mutex_t window_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t window_ready = PTHREAD_COND_INITIALIZER;
@@ -85,6 +89,15 @@ static void window_done(void *value) {
 	p->first = result->first;
 	p->count = result->count;
 	p->total = result->total;
+	if (result->need_map) {
+		memcpy(p->letters, result->letters, sizeof(p->letters));
+		p->map_ready = true;
+	}
+	if (!p->map_bound) {
+		bool alphabetical = !(p->query.kind == ND_TRACKS && *p->query.filter);
+		azindex_set_rows(p->index, alphabetical && p->map_ready ? p->letters : NULL, p->total, false);
+		p->map_bound = true;
+	}
 	memcpy(p->data, result->rows, sizeof(p->data));
 	if (p->total > INT_MAX / pitch) {
 		lv_label_set_text(p->status, tr("nd_cache_error"));
@@ -143,6 +156,8 @@ static void *read_windows(void *unused) {
 			result->filter_exists = nd_store_contains(&store, result->library.generation, result->query.filter_kind, result->query.filter);
 		if (result->ok)
 			result->ok = nd_store_query(&store, result->library.generation, &result->query, result->first, result->rows, &result->count, &result->total);
+		if (result->ok && result->need_map)
+			result->ok = nd_store_letters(&store, result->library.generation, &result->query, result->letters);
 		nd_store_close(&store);
 		if (leased)
 			navidrome_cache_end();
@@ -169,6 +184,12 @@ static void submit_window(browse_page_t *p) {
 	request.page = (int)(p - pages);
 	request.serial = p->serial;
 	request.first = first;
+	p->requested_first = first;
+	request.need_map = !p->map_ready || p->library.epoch != library.epoch || p->library.generation != library.generation;
+	if (request.need_map) {
+		p->map_bound = false;
+		azindex_set_rows(p->index, NULL, 0, false);
+	}
 	request.query = p->query;
 	request.library = library;
 	pending = true;
@@ -192,7 +213,8 @@ static void scrolling(lv_event_t *e) {
 	if (lv_screen_active() != p->screen || gesture())
 		return;
 	int first = lv_obj_get_scroll_y(p->list) / pitch;
-	if (!p->loading && (first < p->first || first + 10 > p->first + p->count))
+	azindex_flash(p->index);
+	if ((p->loading && first - 2 != p->requested_first && !(first < 2 && p->requested_first == 0)) || (!p->loading && (first < p->first || first + 10 > p->first + p->count)))
 		submit_window(p);
 }
 
@@ -212,6 +234,7 @@ static void row_clicked(lv_event_t *e) {
 			if (p->rows[i] != row)
 				continue;
 			browse_page_t *next = &pages[level + 1];
+			next->map_ready = next->map_bound = false;
 			memset(&next->query, 0, sizeof(next->query));
 			next->query.kind = p->query.kind == ND_ALBUMS ? ND_TRACKS : ND_ALBUMS;
 			next->query.filter_kind = p->query.kind;
@@ -239,6 +262,8 @@ static void unloaded(lv_event_t *e) {
 	browse_page_t *p = lv_event_get_user_data(e);
 	p->serial++;
 	p->loading = false;
+	p->map_bound = false;
+	azindex_set_rows(p->index, NULL, 0, false);
 	release_art(p);
 }
 
@@ -253,6 +278,10 @@ void navidromebrowse_refresh(void) {
 			release_art(p);
 			switch_screen_return_to(navidrome_screen);
 			return;
+		}
+		if (p->library.epoch != library.epoch) {
+			p->map_ready = p->map_bound = false;
+			azindex_set_rows(p->index, NULL, 0, false);
 		}
 		if (!p->loading && p->library.epoch != library.epoch) {
 			release_art(p);
@@ -288,6 +317,8 @@ static void tick(lv_timer_t *timer) {
 
 void navidromebrowse_open(nd_kind_t kind) {
 	browse_page_t *p = &pages[0];
+	p->map_ready = p->map_bound = false;
+	azindex_set_rows(p->index, NULL, 0, false);
 	memset(&p->query, 0, sizeof(p->query));
 	p->query.kind = kind;
 	lv_label_set_text(p->title, tr(captions[kind]));
@@ -301,6 +332,12 @@ void navidromebrowse_open(nd_kind_t kind) {
 		submit_window(p);
 	} else
 		switch_screen(p->screen);
+}
+
+static void letter_jump(void) {
+	for (int i = 0; i < 3; i++)
+		if (lv_screen_active() == pages[i].screen && !gesture())
+			submit_window(&pages[i]);
 }
 
 void navidromebrowse_init(gui_config_t *cfg) {
@@ -353,6 +390,8 @@ void navidromebrowse_init(gui_config_t *cfg) {
 			switcher_attach_back_gesture(p->rows[i]);
 			player_sheet_attach_drag(p->rows[i], true);
 		}
+		p->index = azindex_create(p->screen, cfg, p->list, pitch, letter_jump);
+		azindex_set_area(p->index, settingsrow_content_top(cfg) + ui_px(32), cfg->screen_height - settingsrow_content_top(cfg) - ui_px(32) - cfg->padding);
 		lv_obj_add_event_cb(p->list, scrolling, LV_EVENT_SCROLL, p);
 		lv_obj_add_event_cb(p->screen, loaded, LV_EVENT_SCREEN_LOADED, p);
 		lv_obj_add_event_cb(p->screen, unloaded, LV_EVENT_SCREEN_UNLOADED, p);

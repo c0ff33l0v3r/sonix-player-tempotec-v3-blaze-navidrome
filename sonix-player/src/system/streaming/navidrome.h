@@ -7,7 +7,7 @@
 typedef enum { ND_UNCONFIGURED, ND_LOCKED, ND_DISCONNECTED, ND_CONNECTING, ND_CONNECTED } navidrome_state_t;
 typedef struct {
 	char host[ND_HOST_MAX], user[ND_USER_MAX];
-	bool configured, unlocked, authenticated, invalid, busy;
+	bool configured, unlocked, authenticated, invalid, busy, encrypted;
 	navidrome_state_t state;
 	unsigned revision;
 	const char *error; // localization key; never a credential-bearing server response
@@ -28,6 +28,8 @@ bool navidrome_save(const char *host, const char *user, const char *password, co
 bool navidrome_update_password(const char *host, const char *user, const char *password);
 bool navidrome_unlock(const char *passphrase);
 bool navidrome_change_passphrase(const char *current, const char *replacement);
+bool navidrome_encrypt(const char *replacement);
+bool navidrome_unencrypt(const char *current); // NULL allowed only while already unlocked
 bool navidrome_reconnect(void);
 void navidrome_lock(void);
 bool navidrome_forget(void);

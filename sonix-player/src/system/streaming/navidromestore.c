@@ -1,4 +1,5 @@
 #include "navidromestore.h"
+#include "navidromedebug.h"
 #include "src/system/library/library.h"
 #include <limits.h>
 #include <stdio.h>
@@ -110,7 +111,7 @@ bool nd_store_begin(nd_store_t *s) {
 // Reject identity truncation and escaped NULs rather than collapsing entities.
 // Keys/reasons here are caller-owned constants, never metadata or server text.
 static bool field_error(const char *key, const char *reason) {
-	fprintf(stderr, "navidrome: sync field=%s reason=%s\n", key, reason);
+	nd_log("navidrome: sync field=%s reason=%s\n", key, reason);
 	return false;
 }
 
@@ -272,7 +273,7 @@ bool nd_store_import(nd_store_t *s, nd_kind_t kind, const nd_document_t *documen
 		int rc = sqlite3_step(st);
 		ok = rc == SQLITE_DONE && (kind == ND_ARTISTS || memberships(s, d, obj, album));
 		if (rc != SQLITE_DONE) {
-			fprintf(stderr, "navidrome: sync insert kind=%d item=%d reason=%s code=%d\n", kind, i, rc == SQLITE_CONSTRAINT ? "duplicate_entity" : "database_error", rc);
+			nd_log("navidrome: sync insert kind=%d item=%d reason=%s code=%d\n", kind, i, rc == SQLITE_CONSTRAINT ? "duplicate_entity" : "database_error", rc);
 			s->error = rc == SQLITE_CONSTRAINT ? "nd_sync_inconsistent" : "nd_cache_error";
 		}
 	}
@@ -297,9 +298,9 @@ bool nd_store_validate(nd_store_t *s) {
 	bool ok = rc == SQLITE_DONE;
 	if (rc == SQLITE_ROW) {
 		int reason = sqlite3_column_int(st, 0);
-		fprintf(stderr, "navidrome: sync validation reason=%s kind=%d\n", reason == 1 ? "missing_track_album" : reason == 2 ? "missing_relation_album" : "missing_relation_entity", sqlite3_column_int(st, 1));
+		nd_log("navidrome: sync validation reason=%s kind=%d\n", reason == 1 ? "missing_track_album" : reason == 2 ? "missing_relation_album" : "missing_relation_entity", sqlite3_column_int(st, 1));
 	} else if (!ok)
-		fprintf(stderr, "navidrome: sync validation reason=database_error code=%d\n", rc);
+		nd_log("navidrome: sync validation reason=database_error code=%d\n", rc);
 	sqlite3_finalize(st);
 	if (!ok)
 		s->error = rc == SQLITE_ROW ? "nd_sync_inconsistent" : "nd_cache_error";
@@ -349,6 +350,39 @@ bool nd_store_contains(nd_store_t *s, int64_t gen, nd_kind_t kind, const char *i
 	bool found = sqlite3_step(st) == SQLITE_ROW;
 	sqlite3_finalize(st);
 	return found;
+}
+
+bool nd_store_letters(nd_store_t *s, int64_t gen, const nd_query_t *q, int first[ND_LETTER_BUCKETS]) {
+	_Static_assert(ND_LETTER_BUCKETS == LIBRARY_INDEX_BUCKETS, "letter buckets must agree");
+	for (int i = 0; i < ND_LETTER_BUCKETS; i++)
+		first[i] = -1;
+	if (q->kind == ND_TRACKS && *q->filter)
+		return true;
+	const char *filter = !*q->filter ? "" : " AND EXISTS(SELECT 1 FROM rel r WHERE r.gen=e.gen AND r.album=e.id AND r.kind=?5 AND r.id=?4)";
+	char text[1024];
+	snprintf(text, sizeof(text), "SELECT e.sortkey FROM entity e JOIN snapshot s ON s.id=e.gen WHERE e.gen=?1 AND e.kind=?2 AND s.scope=?3 AND s.complete=1%s ORDER BY e.sortkey,e.id", filter);
+	sqlite3_stmt *st = NULL;
+	if (!prepare(s, &st, text))
+		return false;
+	sqlite3_bind_int64(st, 1, gen);
+	sqlite3_bind_int(st, 2, q->kind);
+	bind(st, 3, s->scope);
+	if (*q->filter) {
+		bind(st, 4, q->filter);
+		sqlite3_bind_int(st, 5, q->filter_kind);
+	}
+	int rc, position = 0;
+	while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+		const char *key = (const char *)sqlite3_column_text(st, 0);
+		int bucket = library_index_slot(library_index_letter_of_key(key));
+		if (first[bucket] < 0)
+			first[bucket] = position;
+		if (position == INT_MAX)
+			break;
+		position++;
+	}
+	sqlite3_finalize(st);
+	return rc == SQLITE_DONE;
 }
 
 bool nd_store_query(nd_store_t *s, int64_t gen, const nd_query_t *q, int offset, nd_row_t rows[ND_WINDOW], int *count, int *total) {

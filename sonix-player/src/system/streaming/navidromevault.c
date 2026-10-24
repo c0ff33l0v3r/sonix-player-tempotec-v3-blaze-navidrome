@@ -68,10 +68,11 @@ static bool string(const json_doc_t *doc, int root, const char *name, char *out,
 		}
 	}
 	char decoded[RECORD_MAX];
-	if (!json_str(doc, t, decoded, sizeof(decoded)) || strlen(decoded) >= size)
-		return false;
-	memcpy(out, decoded, strlen(decoded) + 1);
-	return true;
+	bool ok = json_str(doc, t, decoded, sizeof(decoded)) && strlen(decoded) < size;
+	if (ok)
+		memcpy(out, decoded, strlen(decoded) + 1);
+	nd_wipe(decoded, sizeof(decoded));
+	return ok;
 }
 
 static unsigned integer(const json_doc_t *doc, int root, const char *name) {
@@ -111,19 +112,34 @@ int nd_vault_load(const char *path, nd_record_t *r) {
 	text[n] = 0;
 	fclose(f);
 	json_doc_t doc;
-	if (!ok || !json_parse(text, &doc))
+	if (!ok || !json_parse(text, &doc)) {
+		nd_wipe(text, sizeof(text));
 		return -1;
+	}
 	int root = json_root(&doc);
 	unsigned count = integer(&doc, root, "iterations");
 	int history = json_get(&doc, root, "authenticated");
-	ok = root >= 0 && doc.toks[root].type == JSON_OBJECT && json_len(&doc, root) == 10 && integer(&doc, root, "version") == 1 && count >= ND_KDF_ITERATIONS && count <= ND_KDF_MAX_ITERATIONS && history >= 0 && doc.toks[history].type == JSON_BOOL && string(&doc, root, "kdf", value, sizeof(value)) && !strcmp(value, "pbkdf2-sha256") && string(&doc, root, "host", r->host, sizeof(r->host)) && r->host[0] && string(&doc, root, "username", r->user, sizeof(r->user)) && r->user[0] && string(&doc, root, "salt", value, sizeof(value)) && unhex(value, r->salt, sizeof(r->salt)) && string(&doc, root, "nonce", value, sizeof(value)) && unhex(value, r->nonce, sizeof(r->nonce)) && string(&doc, root, "tag", value, sizeof(value)) && unhex(value, r->tag, sizeof(r->tag)) && string(&doc, root, "ciphertext", value, sizeof(value));
+	r->version = integer(&doc, root, "version");
+	bool mode_ok = r->version == 1 || (r->version == 2 && string(&doc, root, "mode", value, sizeof(value)) && (!strcmp(value, "plain") || !strcmp(value, "encrypted")));
+	r->plain = r->version == 2 && mode_ok && !strcmp(value, "plain");
+	ok = root >= 0 && doc.toks[root].type == JSON_OBJECT && mode_ok && (r->version == 1 || r->version == 2) && json_len(&doc, root) == (r->plain ? 6 : r->version == 1 ? 10 : 11) && history >= 0 && doc.toks[history].type == JSON_BOOL && string(&doc, root, "host", r->host, sizeof(r->host)) && r->host[0] && string(&doc, root, "username", r->user, sizeof(r->user)) && r->user[0];
+	if (ok && r->plain) {
+		ok = string(&doc, root, "password", (char *)r->cipher, sizeof(r->cipher)) && r->cipher[0];
+		r->size = strlen((char *)r->cipher);
+	} else if (ok) {
+		ok = count >= ND_KDF_ITERATIONS && count <= ND_KDF_MAX_ITERATIONS && string(&doc, root, "kdf", value, sizeof(value)) && !strcmp(value, "pbkdf2-sha256") && string(&doc, root, "salt", value, sizeof(value)) && unhex(value, r->salt, sizeof(r->salt)) && string(&doc, root, "nonce", value, sizeof(value)) && unhex(value, r->nonce, sizeof(r->nonce)) && string(&doc, root, "tag", value, sizeof(value)) && unhex(value, r->tag, sizeof(r->tag)) && string(&doc, root, "ciphertext", value, sizeof(value));
+		if (ok) {
+			r->size = strlen(value) / 2;
+			ok = r->size > 0 && r->size < ND_SECRET_MAX && unhex(value, r->cipher, r->size);
+			r->iterations = count;
+		}
+	}
 	if (ok) {
-		r->size = strlen(value) / 2;
-		ok = r->size > 0 && r->size < ND_SECRET_MAX && unhex(value, r->cipher, r->size);
-		r->iterations = (unsigned)count;
 		r->authenticated = json_bool(&doc, history, false);
 	}
 	json_free(&doc);
+	nd_wipe(text, sizeof(text));
+	nd_wipe(value, sizeof(value));
 	if (!ok)
 		nd_wipe(r, sizeof(*r));
 	return ok ? 1 : -1;
@@ -140,6 +156,9 @@ bool nd_passphrase_valid(const char *text) {
 }
 
 bool nd_vault_prepare(nd_record_t *r, const char *passphrase, uint8_t key[32]) {
+	r->version = 2;
+	r->plain = false;
+	nd_wipe(r->cipher, sizeof(r->cipher));
 	r->iterations = ND_KDF_ITERATIONS;
 	return nd_passphrase_valid(passphrase) && nd_random(r->salt, sizeof(r->salt)) && nd_derive(passphrase, r->salt, r->iterations, key);
 }
@@ -147,11 +166,14 @@ bool nd_vault_prepare(nd_record_t *r, const char *passphrase, uint8_t key[32]) {
 static size_t associated(const nd_record_t *r, char *out, size_t size) {
 	char salt[33];
 	hex(r->salt, 16, salt);
-	int n = snprintf(out, size, "sonix-navidrome-v1|pbkdf2-sha256|%u|%s|%zu:%s|%zu:%s|%d", r->iterations, salt, strlen(r->host), r->host, strlen(r->user), r->user, r->authenticated);
+	const char *prefix = r->version == 1 ? "sonix-navidrome-v1" : "sonix-navidrome-v2|encrypted";
+	int n = snprintf(out, size, "%s|pbkdf2-sha256|%u|%s|%zu:%s|%zu:%s|%d", prefix, r->iterations, salt, strlen(r->host), r->host, strlen(r->user), r->user, r->authenticated);
 	return n > 0 && (size_t)n < size ? (size_t)n : 0;
 }
 
 bool nd_vault_seal(nd_record_t *r, const uint8_t key[32], const char *password) {
+	if (r->plain)
+		return nd_vault_plain(r, password);
 	if (!password || !*password || strlen(password) >= ND_SECRET_MAX)
 		return false;
 	char aad[ND_HOST_MAX + ND_USER_MAX + 160];
@@ -161,6 +183,13 @@ bool nd_vault_seal(nd_record_t *r, const uint8_t key[32], const char *password) 
 }
 
 bool nd_vault_open(const nd_record_t *r, const uint8_t key[32], char password[ND_SECRET_MAX]) {
+	if (r->plain) {
+		nd_wipe(password, ND_SECRET_MAX);
+		if (!r->size || r->size >= ND_SECRET_MAX || strnlen((const char *)r->cipher, sizeof(r->cipher)) != r->size)
+			return false;
+		memcpy(password, r->cipher, r->size);
+		return true;
+	}
 	char aad[ND_HOST_MAX + ND_USER_MAX + 160];
 	size_t n = associated(r, aad, sizeof(aad));
 	nd_wipe(password, ND_SECRET_MAX);
@@ -171,6 +200,21 @@ bool nd_vault_open(const nd_record_t *r, const uint8_t key[32], char password[ND
 		return false;
 	}
 	password[r->size] = 0;
+	return true;
+}
+
+bool nd_vault_plain(nd_record_t *r, const char *password) {
+	if (!password || !*password || strlen(password) >= ND_SECRET_MAX)
+		return false;
+	nd_wipe(r->salt, sizeof(r->salt));
+	nd_wipe(r->nonce, sizeof(r->nonce));
+	nd_wipe(r->tag, sizeof(r->tag));
+	nd_wipe(r->cipher, sizeof(r->cipher));
+	r->version = 2;
+	r->plain = true;
+	r->iterations = 0;
+	r->size = strlen(password);
+	memcpy(r->cipher, password, r->size);
 	return true;
 }
 
@@ -190,7 +234,7 @@ static void quoted(FILE *f, const char *s) {
 
 bool nd_vault_stage(const char *path, const nd_record_t *r) {
 	char tmp[1024], value[ND_SECRET_MAX * 2 + 1];
-	if (!r->size || r->size >= ND_SECRET_MAX || r->iterations < ND_KDF_ITERATIONS || r->iterations > ND_KDF_MAX_ITERATIONS || strnlen(r->host, sizeof(r->host)) >= sizeof(r->host) || strnlen(r->user, sizeof(r->user)) >= sizeof(r->user))
+	if (!r->size || r->size >= ND_SECRET_MAX || (r->version != 1 && r->version != 2) || (r->plain && (r->version != 2 || strnlen((const char *)r->cipher, sizeof(r->cipher)) != r->size)) || (!r->plain && (r->iterations < ND_KDF_ITERATIONS || r->iterations > ND_KDF_MAX_ITERATIONS)) || strnlen(r->host, sizeof(r->host)) >= sizeof(r->host) || strnlen(r->user, sizeof(r->user)) >= sizeof(r->user))
 		return 0;
 	if (!path || !*path || snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp))
 		return 0;
@@ -205,19 +249,30 @@ bool nd_vault_stage(const char *path, const nd_record_t *r) {
 		unlink(tmp);
 		return 0;
 	}
-	fputs("{\n\"version\":1,\n\"kdf\":\"pbkdf2-sha256\",\n\"host\":", f);
+	fprintf(f, "{\n\"version\":%u,", r->version);
+	if (r->version == 2)
+		fprintf(f, "\n\"mode\":\"%s\",", r->plain ? "plain" : "encrypted");
+	fputs("\n\"host\":", f);
 	quoted(f, r->host);
 	fputs(",\n\"username\":", f);
 	quoted(f, r->user);
-	fprintf(f, ",\n\"authenticated\":%s,\n\"iterations\":%u,", r->authenticated ? "true" : "false", r->iterations);
-	hex(r->salt, 16, value);
-	fprintf(f, "\n\"salt\":\"%s\",", value);
-	hex(r->nonce, 12, value);
-	fprintf(f, "\n\"nonce\":\"%s\",", value);
-	hex(r->tag, 16, value);
-	fprintf(f, "\n\"tag\":\"%s\",", value);
-	hex(r->cipher, r->size, value);
-	fprintf(f, "\n\"ciphertext\":\"%s\"\n}\n", value);
+	fprintf(f, ",\n\"authenticated\":%s,", r->authenticated ? "true" : "false");
+	if (r->plain) {
+		fputs("\n\"password\":", f);
+		quoted(f, (const char *)r->cipher);
+		fputs("\n}\n", f);
+	} else {
+		fprintf(f, "\n\"kdf\":\"pbkdf2-sha256\",\n\"iterations\":%u,", r->iterations);
+		hex(r->salt, 16, value);
+		fprintf(f, "\n\"salt\":\"%s\",", value);
+		hex(r->nonce, 12, value);
+		fprintf(f, "\n\"nonce\":\"%s\",", value);
+		hex(r->tag, 16, value);
+		fprintf(f, "\n\"tag\":\"%s\",", value);
+		hex(r->cipher, r->size, value);
+		fprintf(f, "\n\"ciphertext\":\"%s\"\n}\n", value);
+	}
+	nd_wipe(value, sizeof(value));
 	bool ok = !ferror(f) && fflush(f) == 0 && fsync(fd) == 0;
 	if (fclose(f))
 		ok = false;

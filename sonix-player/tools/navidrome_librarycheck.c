@@ -328,6 +328,14 @@ int main(int argc, char **argv) {
 	mode("normal");
 	full = sync_ok(17000, 1700);
 	puts("structured memberships override legacy fields; null optional arrays use legacy fallback: passed");
+	assert(navidrome_unencrypt(NULL));
+	s = idle();
+	assert(!s.encrypted && s.unlocked && library().ready);
+	assert(library().generation == full.generation && !strcmp(library().scope, full.scope));
+	assert(navidrome_encrypt("vault1"));
+	s = idle();
+	assert(s.encrypted && s.unlocked && library().ready && library().generation == full.generation);
+	puts("protection conversion preserves complete snapshot scope and availability: passed");
 
 	rejected("repeat", "nd_sync_inconsistent", full);
 	rejected("badref", "nd_sync_inconsistent", full);
@@ -338,6 +346,9 @@ int main(int argc, char **argv) {
 	rejected("scanchange", "nd_sync_inconsistent", full);
 	rejected("truncated", "nd_response_error", full);
 	rejected("oversingle", "nd_page_large", full);
+	rejected("tokensingle", "nd_page_large", full);
+	rejected("genreslarge", "nd_page_large", full);
+	rejected("depth", "nd_json_depth", full);
 	mode("slow");
 	assert(navidrome_sync());
 	for (int i = 0; i < 10000 && library().fetched < 50; i++)
@@ -391,6 +402,8 @@ int main(int argc, char **argv) {
 		usleep(1000);
 	mode("large");
 	sync_ok(700, 70); // Oversized pages reduce their count at the same offset.
+	mode("tokens");
+	sync_ok(700, 70); // Valid JSON below the byte cap exceeds the token cap at 50 entries.
 	mode("deleted");
 	nd_library_t smaller = sync_ok(16990, 1699);
 	assert(smaller.generation != full.generation);

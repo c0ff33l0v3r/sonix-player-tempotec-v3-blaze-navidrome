@@ -7,8 +7,8 @@
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
-#include "src/system/device/power.h"
 #include "src/gui/shell/uiscale.h"
+#include "src/system/device/power.h"
 
 // The track lists' numbers, so the two strips are one design.
 #define BUCKETS LIBRARY_INDEX_BUCKETS
@@ -78,6 +78,13 @@ void azindex_flash(azindex_t *ix) {
 	if (lv_obj_is_hidden(ix->bar)) {
 		show_bar(ix, true);
 	}
+}
+
+void azindex_set_area(azindex_t *ix, int top, int height) {
+	if (!ix)
+		return;
+	lv_obj_set_y(ix->bar, top);
+	lv_obj_set_height(ix->bar, height);
 }
 
 static void hint_show(azindex_t *ix, int slot) {

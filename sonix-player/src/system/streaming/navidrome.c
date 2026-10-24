@@ -1,5 +1,6 @@
 #include "navidrome.h"
 #include "navidromeapi.h"
+#include "navidromedebug.h"
 #include "navidromelibrary.h"
 #include "src/gui/shell/gui.h"
 #include "src/system/core/config.h"
@@ -18,11 +19,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-typedef enum { JOB_SAVE, JOB_UNLOCK, JOB_CHANGE, JOB_CONNECT, JOB_FORGET, JOB_CACHE, JOB_SYNC } job_kind_t;
+typedef enum { JOB_SAVE, JOB_UNLOCK, JOB_CHANGE, JOB_CONNECT, JOB_FORGET, JOB_CACHE, JOB_SYNC, JOB_ENCRYPT, JOB_PLAIN } job_kind_t;
 typedef struct {
 	job_kind_t kind;
 	unsigned generation, card_epoch, local_epoch;
-	bool offer;
+	bool offer, authenticate;
 	char root[1024];
 	char host[ND_HOST_MAX], user[ND_USER_MAX], password[ND_SECRET_MAX];
 	char passphrase[ND_SECRET_MAX], replacement[ND_SECRET_MAX];
@@ -138,7 +139,7 @@ static bool current(const job_t *job) { return !g.stop && g.generation == job->g
 // and in-memory adoption serialize with Lock/Forget and generation changes.
 static int commit(const job_t *job, const nd_record_t *r, const uint8_t key[32], const char *password) {
 	if (!nd_vault_stage(g.path, r)) {
-		fprintf(stderr, "navidrome: vault stage failed errno=%d\n", errno);
+		nd_log("navidrome: vault stage failed errno=%d\n", errno);
 		return 0;
 	}
 	pthread_mutex_lock(&lock);
@@ -158,12 +159,12 @@ static int commit(const job_t *job, const nd_record_t *r, const uint8_t key[32],
 	}
 	pthread_mutex_unlock(&lock);
 	if (!applied) {
-		fprintf(stderr, "navidrome: vault commit failed_or_cancelled generation=%u\n", job->generation);
+		nd_log("navidrome: vault commit failed_or_cancelled generation=%u\n", job->generation);
 		nd_vault_discard(g.path);
 		return 0;
 	}
 	bool synced = nd_vault_sync(g.path);
-	fprintf(stderr, "navidrome: vault committed generation=%u synced=%d\n", job->generation, synced);
+	nd_log("navidrome: vault committed generation=%u synced=%d\n", job->generation, synced);
 	return synced ? 1 : 2;
 }
 
@@ -211,7 +212,7 @@ static const char *scan_status(const nd_record_t *record, const char *password, 
 	if (obj < 0 || doc.doc.toks[obj].type != JSON_OBJECT)
 		error = "nd_response_error";
 	else if (json_obj_bool(&doc.doc, obj, "scanning", false)) {
-		fprintf(stderr, "navidrome: sync scan reason=server_scanning\n");
+		nd_log("navidrome: sync scan reason=server_scanning\n");
 		error = "nd_sync_inconsistent";
 	}
 	json_obj_str(&doc.doc, obj, "lastScan", marker, 128);
@@ -251,18 +252,21 @@ static void sync_run(const job_t *job, const nd_record_t *record, const char *pa
 	}
 	for (int kind = 0; !error && kind < 4; kind++) {
 		int offset = 0;
+		int amount = 50;
 		for (;;) {
 			if (!sync_current(job) || !nd_cache_card_same(job->root, card.st_dev, card.st_ino)) {
 				error = "nd_sync_cancelled";
 				break;
 			}
 			char query[256];
-			int amount = 50, count = 0;
+			int count = 0;
 			nd_document_t doc;
 			for (;;) {
 				if (kind != ND_GENRES)
 					snprintf(query, sizeof(query), "query=&songCount=%d&songOffset=%d&albumCount=%d&albumOffset=%d&artistCount=%d&artistOffset=%d", kind == ND_TRACKS ? amount : 0, offset, kind == ND_ALBUMS ? amount : 0, offset, kind == ND_ARTISTS ? amount : 0, offset);
 				error = nd_api_json(record->host, record->user, password, kind == ND_GENRES ? "getGenres" : "search3", kind == ND_GENRES ? NULL : query, ND_API_BYTES, &doc);
+				if (error)
+					nd_log("navidrome: sync request kind=%d offset=%d count=%d result=%s\n", kind, offset, amount, error);
 				if (!error || strcmp(error, "nd_page_large") || amount == 1 || kind == ND_GENRES || !sync_current(job))
 					break;
 				amount = (amount + 1) / 2;
@@ -286,11 +290,11 @@ static void sync_run(const job_t *job, const nd_record_t *record, const char *pa
 			}
 			nd_api_free(&doc);
 			if (error) {
-				fprintf(stderr, "navidrome: sync page kind=%d offset=%d limit=%d result=%s\n", kind, offset, amount, error);
+				nd_log("navidrome: sync page kind=%d offset=%d limit=%d result=%s\n", kind, offset, amount, error);
 				break;
 			}
 			if ((kind != ND_GENRES && count > amount) || offset > INT_MAX - count) {
-				fprintf(stderr, "navidrome: sync page kind=%d offset=%d count=%d limit=%d reason=invalid_count\n", kind, offset, count, amount);
+				nd_log("navidrome: sync page kind=%d offset=%d count=%d limit=%d reason=invalid_count\n", kind, offset, count, amount);
 				error = "nd_sync_inconsistent";
 				break;
 			}
@@ -303,7 +307,7 @@ static void sync_run(const job_t *job, const nd_record_t *record, const char *pa
 			pthread_mutex_unlock(&lock);
 			notify();
 			if (kind == ND_GENRES || count < amount) {
-				fprintf(stderr, "navidrome: sync stage kind=%d fetched=%d\n", kind, offset);
+				nd_log("navidrome: sync stage kind=%d fetched=%d\n", kind, offset);
 				break;
 			}
 		}
@@ -311,7 +315,7 @@ static void sync_run(const job_t *job, const nd_record_t *record, const char *pa
 	if (!error)
 		error = scan_status(record, password, after);
 	if (!error && strcmp(before, after)) {
-		fprintf(stderr, "navidrome: sync scan reason=marker_changed\n");
+		nd_log("navidrome: sync scan reason=marker_changed\n");
 		error = "nd_sync_inconsistent";
 	}
 	bool leased = navidrome_cache_begin(job->local_epoch, job->card_epoch);
@@ -360,7 +364,7 @@ static void sync_run(const job_t *job, const nd_record_t *record, const char *pa
 		g.busy = false;
 	}
 	pthread_mutex_unlock(&lock);
-	fprintf(stderr, "navidrome: sync finish published=%d result=%s\n", published, error ? error : "ok");
+	nd_log("navidrome: sync finish published=%d result=%s\n", published, error ? error : "ok");
 }
 
 static void *work(void *unused) {
@@ -407,14 +411,14 @@ static void *work(void *unused) {
 			notify();
 			continue;
 		}
-		static const char *operations[] = {"save", "unlock", "change_unlock_password", "reconnect", "forget"};
-		fprintf(stderr, "navidrome: operation start kind=%s generation=%u configured=%d\n", operations[job.kind], job.generation, configured);
+		static const char *operations[] = {"save", "unlock", "change_unlock_password", "reconnect", "forget", "cache", "sync", "encrypt", "unencrypt"};
+		nd_log("navidrome: operation start kind=%s generation=%u configured=%d\n", operations[job.kind], job.generation, configured);
 		const char *error = NULL;
 		bool check = job.kind == JOB_SAVE || job.kind == JOB_UNLOCK || job.kind == JOB_CONNECT;
-		if (job.kind == JOB_UNLOCK || job.kind == JOB_CHANGE) {
+		if (job.kind == JOB_UNLOCK || job.kind == JOB_CHANGE || job.authenticate) {
 			// Re-read before authenticating: startup metadata is only a public
 			// snapshot, and a file changed since startup must not bypass GCM.
-			if (nd_vault_load(g.path, &r) != 1)
+			if (nd_vault_load(g.path, &r) != 1 || r.plain)
 				error = "nd_vault_error";
 			else if (!nd_derive(job.passphrase, r.salt, r.iterations, key))
 				error = "nd_crypto_error";
@@ -428,14 +432,24 @@ static void *work(void *unused) {
 			snprintf(r.host, sizeof(r.host), "%s", job.host);
 			snprintf(r.user, sizeof(r.user), "%s", job.user);
 			snprintf(password, sizeof(password), "%s", job.password);
-			if (!configured && !nd_vault_prepare(&r, job.replacement, key))
-				error = "nd_crypto_error";
+			if (!configured) {
+				if (*job.replacement) {
+					if (!nd_vault_prepare(&r, job.replacement, key))
+						error = "nd_crypto_error";
+				} else
+					nd_vault_plain(&r, password);
+			}
 		}
-		if (!error && job.kind == JOB_CHANGE && !nd_vault_prepare(&r, job.replacement, key))
+		if (!error && (job.kind == JOB_CHANGE || job.kind == JOB_ENCRYPT) && !nd_vault_prepare(&r, job.replacement, key))
 			error = "nd_crypto_error";
+		if (!error && job.kind == JOB_PLAIN) {
+			nd_vault_plain(&r, password);
+			nd_wipe(key, sizeof(key));
+		}
 		nd_wipe(job.replacement, sizeof(job.replacement));
 		nd_wipe(job.password, sizeof(job.password));
-		if (!error && (job.kind == JOB_SAVE || job.kind == JOB_CHANGE)) {
+		if (!error && (job.kind == JOB_SAVE || job.kind == JOB_CHANGE || job.kind == JOB_ENCRYPT || job.kind == JOB_PLAIN)) {
+			r.version = 2;
 			if (!nd_vault_seal(&r, key, password))
 				error = "nd_crypto_error";
 			else {
@@ -472,6 +486,22 @@ static void *work(void *unused) {
 		pthread_mutex_unlock(&lock);
 		if (valid && !error && job.kind == JOB_FORGET && !nd_vault_sync(g.path))
 			error = "nd_remove_error";
+		// A failed removal must not leave plain mode asking for an unlock
+		// password it never had. Reload the surviving record on this worker.
+		if (valid && error && job.kind == JOB_FORGET && r.plain) {
+			nd_record_t surviving;
+			if (nd_vault_load(g.path, &surviving) == 1 && surviving.plain && nd_vault_open(&surviving, NULL, password)) {
+				pthread_mutex_lock(&lock);
+				if (current(&job)) {
+					g.record = surviving;
+					memcpy(g.password, password, sizeof(g.password));
+					g.unlocked = true;
+					g.revision++;
+				}
+				pthread_mutex_unlock(&lock);
+			}
+			nd_wipe(&surviving, sizeof(surviving));
+		}
 		if (valid && !error && job.kind == JOB_FORGET) {
 			if (!nd_cache_retire(job.root, g.path)) {
 				pthread_mutex_lock(&lock);
@@ -489,6 +519,7 @@ static void *work(void *unused) {
 				error = "nd_wifi_error";
 			if (!error && !r.authenticated) {
 				r.authenticated = true;
+				r.version = 2;
 				if (!nd_vault_seal(&r, key, password))
 					error = "nd_history_error";
 				else {
@@ -509,7 +540,7 @@ static void *work(void *unused) {
 			}
 		}
 		pthread_mutex_unlock(&lock);
-		fprintf(stderr, "navidrome: operation finish kind=%s generation=%u accepted=%d result=%s\n", operations[job.kind], job.generation, accepted, error ? error : "ok");
+		nd_log("navidrome: operation finish kind=%s generation=%u accepted=%d result=%s\n", operations[job.kind], job.generation, accepted, error ? error : "ok");
 		nd_wipe(&job, sizeof(job));
 		nd_wipe(&r, sizeof(r));
 		nd_wipe(key, sizeof(key));
@@ -529,10 +560,12 @@ void navidrome_init(void) {
 			int result = nd_vault_load(g.path, &g.record);
 			g.configured = result != 0;
 			g.invalid = result < 0;
+			if (result == 1 && g.record.plain)
+				g.unlocked = nd_vault_open(&g.record, NULL, g.password);
 			if (g.invalid)
 				g.error = "nd_vault_error";
 		}
-		fprintf(stderr, "navidrome: initialized storage_path_available=%d configured=%d invalid=%d result=%s\n", g.path[0] != 0, g.configured, g.invalid, g.error ? g.error : "ok");
+		nd_log("navidrome: initialized storage_path_available=%d configured=%d invalid=%d result=%s\n", g.path[0] != 0, g.configured, g.invalid, g.error ? g.error : "ok");
 	}
 	pthread_mutex_unlock(&lock);
 }
@@ -549,6 +582,7 @@ void navidrome_snapshot(navidrome_snapshot_t *out) {
 	snprintf(out->host, sizeof(out->host), "%s", g.record.host);
 	snprintf(out->user, sizeof(out->user), "%s", g.record.user);
 	out->configured = g.configured;
+	out->encrypted = g.configured && !g.record.plain;
 	out->unlocked = g.unlocked;
 	out->authenticated = g.unlocked && g.record.authenticated;
 	out->invalid = g.invalid;
@@ -597,7 +631,7 @@ static bool save(const char *host, const char *user, const char *password, const
 	job_t job = {.kind = JOB_SAVE, .offer = offer};
 	const char *error = navidrome_validate(host, user, password, job.host);
 	pthread_mutex_lock(&lock);
-	if (!error && ((!g.configured && !nd_passphrase_valid(passphrase)) || (g.configured && (!g.unlocked || g.invalid))))
+	if (!error && ((!g.configured && passphrase && !nd_passphrase_valid(passphrase)) || (g.configured && (!g.unlocked || g.invalid))))
 		error = g.configured ? "nd_unlock_required" : "nd_passphrase_short";
 	bool ok = false;
 	if (error)
@@ -622,7 +656,7 @@ bool navidrome_unlock(const char *passphrase) {
 	job_t job = {.kind = JOB_UNLOCK};
 	pthread_mutex_lock(&lock);
 	bool ok = false;
-	if (g.configured && !g.invalid && passphrase && *passphrase && strlen(passphrase) < ND_SECRET_MAX) {
+	if (g.configured && !g.record.plain && !g.invalid && passphrase && *passphrase && strlen(passphrase) < ND_SECRET_MAX) {
 		snprintf(job.passphrase, sizeof(job.passphrase), "%s", passphrase);
 		ok = submit(&job);
 	} else
@@ -637,13 +671,51 @@ bool navidrome_change_passphrase(const char *current_passphrase, const char *rep
 	job_t job = {.kind = JOB_CHANGE};
 	pthread_mutex_lock(&lock);
 	bool ok = false;
-	if (!g.unlocked)
+	if (!g.unlocked || g.record.plain)
 		g.error = "nd_unlock_required";
 	else if (!current_passphrase || !*current_passphrase || strlen(current_passphrase) >= ND_SECRET_MAX || !nd_passphrase_valid(replacement))
 		g.error = "nd_passphrase_short";
 	else {
 		snprintf(job.passphrase, sizeof(job.passphrase), "%s", current_passphrase);
 		snprintf(job.replacement, sizeof(job.replacement), "%s", replacement);
+		ok = submit(&job);
+	}
+	pthread_mutex_unlock(&lock);
+	nd_wipe(&job, sizeof(job));
+	notify();
+	return ok;
+}
+
+bool navidrome_encrypt(const char *replacement) {
+	job_t job = {.kind = JOB_ENCRYPT};
+	pthread_mutex_lock(&lock);
+	bool ok = false;
+	if (!g.configured || !g.unlocked || !g.record.plain || g.invalid)
+		g.error = "nd_unlock_required";
+	else if (!nd_passphrase_valid(replacement))
+		g.error = "nd_passphrase_short";
+	else {
+		snprintf(job.replacement, sizeof(job.replacement), "%s", replacement);
+		ok = submit(&job);
+	}
+	pthread_mutex_unlock(&lock);
+	nd_wipe(&job, sizeof(job));
+	notify();
+	return ok;
+}
+
+bool navidrome_unencrypt(const char *passphrase) {
+	job_t job = {.kind = JOB_PLAIN};
+	pthread_mutex_lock(&lock);
+	bool ok = false;
+	if (!g.configured || g.record.plain || g.invalid)
+		g.error = "nd_vault_error";
+	else if (!g.unlocked && (!passphrase || !*passphrase || strlen(passphrase) >= ND_SECRET_MAX))
+		g.error = "nd_unlock_required";
+	else {
+		job.authenticate = !g.unlocked;
+		if (job.authenticate)
+			snprintf(job.passphrase, sizeof(job.passphrase), "%s", passphrase);
 		ok = submit(&job);
 	}
 	pthread_mutex_unlock(&lock);
@@ -670,11 +742,17 @@ static void clear_secrets(void) {
 	nd_wipe(&g.job, sizeof(g.job));
 	nd_wipe(g.key, sizeof(g.key));
 	nd_wipe(g.password, sizeof(g.password));
+	if (g.record.plain)
+		nd_wipe(g.record.cipher, sizeof(g.record.cipher));
 	g.revision++;
 }
 
 void navidrome_lock(void) {
 	pthread_mutex_lock(&lock);
+	if (g.record.plain) {
+		pthread_mutex_unlock(&lock);
+		return;
+	}
 	clear_secrets();
 	g.error = NULL;
 	pthread_mutex_unlock(&lock);
@@ -736,6 +814,7 @@ void navidrome_shutdown(void) {
 	while (cache_users)
 		pthread_cond_wait(&io_drained, &lock);
 	pthread_mutex_unlock(&lock);
+	nd_debug_shutdown();
 }
 
 const char *navidrome_feedback(const navidrome_snapshot_t *s) {
@@ -755,6 +834,7 @@ const char *navidrome_feedback(const navidrome_snapshot_t *s) {
 }
 
 void navidrome_set_root(const char *root) {
+	nd_debug_card(root);
 	pthread_mutex_lock(&lock);
 	if (root && strlen(root) < sizeof(g.root))
 		snprintf(g.root, sizeof(g.root), "%s", root);

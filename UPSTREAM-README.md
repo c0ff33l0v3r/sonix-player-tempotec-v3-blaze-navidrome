@@ -142,6 +142,17 @@ mouse is the finger, and dragging scrolls.
 `SONIX_PANEL=480x800` opens the window at a given size whatever the file says.
 The rest of the model (buttons, DAC, update file) still follows the file.
 
+For this fork's TempoTec V3 Blaze, use matching build-time icons and runtime
+layout: `make host -j12 PANEL_WIDTH=320`, then `SONIX_PANEL=320x480` when launching.
+Changing `SONIX_PANEL` alone does not resize compiled icons. The generic host
+build defaults to 480-pixel-wide icons; a width mismatch is reported at startup.
+
+Set `SONIX_CONFIG` to a writable settings filename to retain setup answers and
+preferences across simulator restarts; direct launches without it use session-only
+ordinary settings. The Navidrome debug launcher defaults to an absolute
+`sonix-player/config.ini`, honors nonempty overrides, and runs the existing binary
+without building. See the fork README for its card and log defaults.
+
 The folder that stands in for the memory card is the **documents folder**,
 found from the desktop's own XDG setting. Point it elsewhere with:
 

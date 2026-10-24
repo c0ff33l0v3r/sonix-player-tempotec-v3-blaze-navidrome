@@ -18,3 +18,11 @@ void library_sort_key_ex(const char *name, char *out, size_t size, bool skip_art
 		out[i] = (char)tolower((unsigned char)name[i]);
 	out[i] = 0;
 }
+
+char library_index_letter_of_key(const char *key) {
+	if (!key || !*key)
+		return '#';
+	unsigned char c = (unsigned char)*key;
+	return c >= 'a' && c <= 'z' ? (char)(c - 'a' + 'A') : c >= 128 ? '~' : '#';
+}
+int library_index_slot(char c) { return c >= 'A' && c <= 'Z' ? c - 'A' + 1 : c == '~' ? 27 : 0; }

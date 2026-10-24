@@ -9,6 +9,7 @@
 #define ND_ID_MAX 256
 #define ND_TEXT_MAX 512
 #define ND_WINDOW 16
+#define ND_LETTER_BUCKETS 28
 typedef enum { ND_ALBUMS, ND_TRACKS, ND_ARTISTS, ND_GENRES } nd_kind_t;
 typedef struct {
 	char id[ND_ID_MAX], title[ND_TEXT_MAX], artist[ND_TEXT_MAX], cover[ND_ID_MAX];
@@ -46,6 +47,7 @@ bool nd_store_validate(nd_store_t *store);
 bool nd_store_publish(nd_store_t *store);
 void nd_store_cleanup(nd_store_t *store);
 bool nd_store_query(nd_store_t *store, int64_t generation, const nd_query_t *query, int offset, nd_row_t rows[ND_WINDOW], int *count, int *total);
+bool nd_store_letters(nd_store_t *store, int64_t generation, const nd_query_t *query, int first[ND_LETTER_BUCKETS]);
 bool nd_store_contains(nd_store_t *store, int64_t generation, nd_kind_t kind, const char *id);
 
 #endif

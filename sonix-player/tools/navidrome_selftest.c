@@ -263,6 +263,24 @@ static void vault_checks(const char *dir) {
 	assert(nd_vault_save(path, &r) == 2);
 	assert(nd_vault_load(path, &loaded) == 1 && !strcmp(loaded.user, r.user) && nd_vault_open(&loaded, key, decoded));
 	assert(nd_vault_remove(path));
+	// Legacy encrypted files keep the original associated-data contract.
+	r.version = 1;
+	assert(nd_vault_seal(&r, key, "legacy synthetic password"));
+	assert(nd_vault_save(path, &r) == 1);
+	assert(nd_vault_load(path, &loaded) == 1 && loaded.version == 1 && !loaded.plain);
+	assert(nd_vault_open(&loaded, key, decoded) && !strcmp(decoded, "legacy synthetic password"));
+	assert(nd_vault_plain(&r, " plain \\\"秘密\n"));
+	assert(nd_vault_save(path, &r) == 1);
+	assert(nd_vault_load(path, &loaded) == 1 && loaded.plain && loaded.version == 2);
+	assert(nd_vault_open(&loaded, NULL, decoded) && !strcmp(decoded, " plain \\\"秘密\n"));
+	assert(!stat(path, &st) && (st.st_mode & 0777) == 0600);
+	const char *invalid[] = {"{\"version\":2,\"mode\":\"other\",\"host\":\"x\",\"username\":\"u\",\"authenticated\":false,\"password\":\"p\"}", "{\"version\":2,\"mode\":\"plain\",\"host\":\"x\",\"username\":\"u\",\"authenticated\":false,\"ciphertext\":\"aa\"}", "{\"version\":2,\"mode\":\"plain\",\"host\":\"x\",\"username\":\"u\",\"authenticated\":false,\"password\":\"p\",\"ciphertext\":\"aa\"}"};
+	for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+		f = fopen(path, "w");
+		assert(f && fputs(invalid[i], f) >= 0 && !fclose(f));
+		assert(nd_vault_load(path, &loaded) == -1);
+	}
+	assert(nd_vault_remove(path));
 	nd_wipe(key, sizeof(key));
 	nd_wipe(wrong, sizeof(wrong));
 	nd_wipe(decoded, sizeof(decoded));
@@ -414,6 +432,61 @@ static void service_checks(const char *dir) {
 	assert(navidrome_save("http://fixture/base", "fixture user", server_password, "vault1"));
 	s = wait_idle();
 	assert(s.configured && s.state == ND_CONNECTED);
+	int before_conversion = atomic_load(&calls);
+	unsigned offer_before;
+	nd_library_t library;
+	navidrome_library_snapshot(&library);
+	offer_before = library.offer;
+	atomic_store(&fail_rename, 1);
+	assert(navidrome_unencrypt(NULL));
+	s = wait_idle();
+	assert(s.encrypted && s.unlocked && s.error && !strcmp(s.error, "nd_save_error"));
+	assert(navidrome_unencrypt(NULL));
+	s = wait_idle();
+	assert(!s.encrypted && s.unlocked && s.authenticated && s.state == ND_CONNECTED);
+	assert(atomic_load(&calls) == before_conversion);
+	navidrome_library_snapshot(&library);
+	assert(library.offer == offer_before);
+	child = fork();
+	assert(child >= 0);
+	if (!child) {
+		execl(executable, executable, "plain-restart", config_file, (char *)NULL);
+		_exit(127);
+	}
+	assert(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	atomic_store(&fail_rename, 1);
+	assert(navidrome_encrypt("vault1"));
+	s = wait_idle();
+	assert(!s.encrypted && s.unlocked && s.error);
+	assert(navidrome_encrypt("vault1"));
+	s = wait_idle();
+	assert(s.encrypted && s.unlocked && s.state == ND_CONNECTED && atomic_load(&calls) == before_conversion);
+	navidrome_lock();
+	assert(navidrome_unencrypt("wrong unlock password"));
+	s = wait_idle();
+	assert(s.encrypted && !s.unlocked && s.error && !strcmp(s.error, "nd_unlock_error"));
+	assert(navidrome_unencrypt("vault1"));
+	s = wait_idle();
+	assert(!s.encrypted && s.unlocked && s.state == ND_DISCONNECTED && atomic_load(&calls) == before_conversion);
+	assert(navidrome_password(secret) && !strcmp(secret, server_password));
+	atomic_store(&fail_remove, 1);
+	assert(navidrome_forget());
+	s = wait_idle();
+	assert(s.configured && !s.encrypted && s.unlocked && s.error && !strcmp(s.error, "nd_remove_error"));
+	atomic_store(&sync_blocked, 0);
+	atomic_store(&release_sync, 0);
+	atomic_store(&fail_sync, 3);
+	assert(navidrome_encrypt("vault1"));
+	for (int i = 0; i < 10000 && !atomic_load(&sync_blocked); i++)
+		usleep(1000);
+	assert(atomic_load(&sync_blocked));
+	assert(navidrome_forget());
+	atomic_store(&release_sync, 1);
+	s = wait_idle();
+	assert(!s.configured && !s.unlocked && access(path, F_OK));
+	assert(navidrome_save("http://fixture/base", "fixture user", server_password, NULL));
+	s = wait_idle();
+	assert(s.configured && !s.encrypted && s.unlocked && s.state == ND_CONNECTED);
 	navidrome_reset();
 	navidrome_snapshot(&s);
 	assert(!s.configured && !s.unlocked && access(path, F_OK));
@@ -424,6 +497,19 @@ static void service_checks(const char *dir) {
 int main(int argc, char **argv) {
 	alarm(60); // A serialization regression must fail rather than hang forever.
 	executable = argv[0];
+	if (argc == 3 && !strcmp(argv[1], "plain-restart")) {
+		snprintf(config_file, sizeof(config_file), "%s", argv[2]);
+		navidrome_init();
+		navidrome_snapshot_t s;
+		navidrome_snapshot(&s);
+		assert(s.configured && s.unlocked && !s.encrypted && s.authenticated && s.state == ND_DISCONNECTED);
+		assert(atomic_load(&calls) == 0);
+		char password[ND_SECRET_MAX];
+		assert(navidrome_password(password) && !strcmp(password, server_password));
+		nd_wipe(password, sizeof(password));
+		navidrome_shutdown();
+		return 0;
+	}
 	if (argc == 3 && (!strcmp(argv[1], "default-path") || !strcmp(argv[1], "default-restart"))) {
 		assert(!chdir(argv[2]));
 		assert(!config_path()); // A simulator launched without SONIX_CONFIG.

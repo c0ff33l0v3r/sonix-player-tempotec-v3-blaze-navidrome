@@ -36,5 +36,7 @@ void azindex_set_rows(azindex_t *ix, const int first[LIBRARY_INDEX_BUCKETS], int
 
 // The list moved: the strip shows, and goes again a moment after it stops.
 void azindex_flash(azindex_t *ix);
+// Optional content inset for lists with their own status row below the title.
+void azindex_set_area(azindex_t *ix, int top, int height);
 
 #endif /* AZINDEX_H */

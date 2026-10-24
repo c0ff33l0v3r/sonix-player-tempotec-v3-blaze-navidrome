@@ -1,3 +1,4 @@
+#include "src/system/streaming/navidrome.h"
 #include "usb.h"
 
 #include "src/system/device/adb.h"
@@ -732,6 +733,7 @@ static void storage_export(void) {
 	audio_stop();
 	library_close();
 	audiobookdb_close();
+	navidrome_set_root(NULL);
 	logging_suspend_for_usb();
 	btlog_card_release();
 
@@ -876,6 +878,7 @@ static void storage_restore(void) {
 	audiobookdb_open(db_path);
 	logging_resume_after_usb();
 	btlog_card_attach(sd_mount);
+	navidrome_set_root(sd_mount);
 
 	storage_active = false;
 

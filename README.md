@@ -54,8 +54,8 @@ upstream Sonix 1.2.0 with the first set of Blaze changes.
 
 **Hardware**
 
-- The interface is laid out at 480x720 and drawn 2/3 onto the 320x480 panel;
-  the touch panel is calibrated to match.
+- The interface uses the native 320x480 layout, with shared size/font helpers
+  and icons generated for the 320 px wide panel; touch coordinates match it.
 - AK4493SEQ audio board: three gain levels like the stock player (LDB, MDB,
   HDB), TempoTec's default DAC filter, the analogue output muted before
   power-off and reboot, the amplifier left off until the first track.
@@ -101,22 +101,72 @@ branch.
 
 ## Navidrome library browsing
 
-Open Streaming → Navidrome → Settings to save and connect to a server. Use
+Open Streaming → Navidrome → Settings → **Navidrome server** to edit Host,
+Username, and Password, save/connect, or Forget Server. Host is the complete
+API base URL; include a path such as `/navidrome` only if the server actually
+serves its API there. Editing Host or Username preserves your password draft;
+Back discards unsubmitted edits.
+
+**Encrypt Credentials** is optional and off for new profiles: the server password
+is then saved unencrypted in the restricted credential file on internal storage.
+Existing encrypted profiles stay encrypted. Enabling encryption uses a separate
+Unlock Password (at least six characters); encrypted profiles need unlocking after
+restart. Disabling encryption requires available credentials or the correct Unlock
+Password. Changing protection keeps the same library and does not contact the server.
+
+From the main Navidrome settings page, use
 **Sync Library** to copy track, album, artist, and genre metadata to the selected
 SD card. Successful Save & Connect and Reconnect operations also offer
-**Sync Now** or **Later**. A new sync needs writable card storage; cancelling or
+**Sync Now** or **Later** when main settings is next visible. A new sync needs writable card storage; cancelling or
 failing a refresh keeps the last successful library.
 
 After syncing, those four categories browse the local index, including offline
-once Navidrome is unlocked. Restart requires unlocking again. Settings shows
+once credentials are available (after unlock in encrypted mode). Settings shows
 connection status separately from the last sync time and library counts.
 Thumbnails download as they become visible and cached thumbnails remain
 available offline. The metadata and artwork cache lives under
-`.local/navidrome/` on the card; credentials remain in the separate encrypted
-vault on internal storage.
+`.local/navidrome/` on the card; credentials remain in the separate internal
+credential record in the selected protection mode. Name-sorted lists of at least
+30 entries show a letter strip while scrolling: tap or slide to jump, then it
+hides after inactivity. Album track lists retain disc/track order.
+
+**Debug mode** records redacted Navidrome diagnostics to
+`.local/navidrome-debug-YYYYMMDD-HHMMSS-NNN.log` on the selected card. Settings
+shows the path or unavailable-storage reason. Files rotate at 2 MiB with at most
+five retained; disabling stops recording and keeps the files. Passwords, usernames,
+tokens, full request URLs, and raw responses are excluded. It operates independently
+of the debug launcher's full-player `navidrome.log`.
 
 Track lists currently provide read-only browsing. Playback, playlist browsing
 and synchronization, and search results are deferred to later changes.
+
+### Blaze simulator
+
+Build from `sonix-player/` with matching icon dimensions:
+
+```sh
+make host -j12 PANEL_WIDTH=320
+```
+
+From the repository root, launch the existing binary with:
+
+```sh
+SONIX_PANEL=320x480 sh sonix-player/tools/run_navidrome_debug.sh
+```
+
+The launcher defaults to `sonix-player/config.ini` for persistent setup/settings,
+`sonix-player/sd_card/` for the simulated card, and `navidrome.log` there (the
+previous session becomes `.old`). It does not build. Nonempty `SONIX_CONFIG` and
+`SONIX_SD_ROOT` override those paths; absolute paths avoid working-directory ambiguity.
+Keep the same configuration directory to keep using its adjacent credential record.
+Direct binary launches without `SONIX_CONFIG` retain ordinary settings only for
+that session. `SONIX_PANEL` controls the runtime layout; it cannot resize icons
+baked into a binary built with a different `PANEL_WIDTH`.
+
+New credential writes use version 2, while existing version-1 encrypted records
+remain readable. Older player binaries cannot read version-2 credentials; a
+rollback requires a user-owned compatible backup or re-entering the server
+credentials. No plaintext backup is created automatically.
 
 ## Going back to stock and recovery
 

@@ -10,7 +10,7 @@ check_binary=$(mktemp /tmp/sonix-navidrome-networkcheck.XXXXXX)
 trap 'rm -f "$check_binary"' EXIT HUP INT TERM
 ${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -O1 -g ${NAVIDROME_CHECK_FLAGS:-} \
     -DHOST_BUILD -DLV_CONF_INCLUDE_SIMPLE -I. -Ilvgl \
-    tools/navidrome_networkcheck.c src/system/streaming/navidrome.c src/system/streaming/navidromeapi.c src/system/streaming/navidromestore.c src/system/streaming/navidromelibrary.c tools/navidrome_test_support.c \
+    tools/navidrome_networkcheck.c src/system/streaming/navidromedebug.c src/system/streaming/navidrome.c src/system/streaming/navidromeapi.c src/system/streaming/navidromestore.c src/system/streaming/navidromelibrary.c tools/navidrome_test_support.c \
     src/system/streaming/navidromecrypto.c src/system/streaming/navidromevault.c \
     src/system/core/json.c src/system/core/md5.c src/system/core/config.c src/system/core/logging.c \
     src/system/net/http.c src/system/net/tls.c "$check_sqlite" -lm -pthread -ldl -lresolv -o "$check_binary"

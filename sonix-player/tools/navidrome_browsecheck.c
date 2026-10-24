@@ -4,10 +4,11 @@
 #include "navidrome_selftest.c"
 #undef main
 #undef gui_post
+#include "src/gui/shell/azindex.c"
 #include "src/gui/streaming/navidromebrowse.c"
 
 int32_t ui_panel_width = 320;
-lv_font_t font_ui_14, font_ui_18, font_ui_20;
+lv_font_t font_ui_14, font_ui_18, font_ui_20, font_ui_64_bold;
 extern const lv_font_t lv_font_unscii_8;
 lv_style_t theme_style_icon;
 static const uint8_t fixture_pixel[4] = {255, 255, 255, 255};
@@ -67,6 +68,13 @@ void frameprof_event_ran(void *cb, unsigned us) {
 	(void)cb;
 	(void)us;
 }
+
+const theme_palette_t *theme(void) {
+	static theme_palette_t palette;
+	return &palette;
+}
+void theme_register_refresh(theme_refresh_cb_t cb) { (void)cb; }
+void power_pause_in_standby(lv_timer_t *timer) { (void)timer; }
 
 static pthread_mutex_t post_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct {
@@ -128,7 +136,10 @@ static void seed(const nd_library_t *library) {
 		for (int i = 0; i < total; i++) {
 			char id[64], title[64], album[64] = "";
 			snprintf(id, sizeof(id), kind == ND_TRACKS ? "song-%05d" : kind == ND_ALBUMS ? "album-%05d" : kind == ND_ARTISTS ? "artist-%05d" : "genre-%05d", i);
-			snprintf(title, sizeof(title), "%s %05d", kind == ND_TRACKS ? "Track" : kind == ND_ALBUMS ? "Album" : kind == ND_ARTISTS ? "Artist" : "Genre", i);
+			if (kind == ND_TRACKS)
+				snprintf(title, sizeof(title), "%c Track %05d", 'A' + i / 654, i);
+			else
+				snprintf(title, sizeof(title), "%s %05d", kind == ND_ALBUMS ? "Album" : kind == ND_ARTISTS ? "Artist" : "Genre", i);
 			if (kind == ND_TRACKS)
 				snprintf(album, sizeof(album), "album-%05d", i / 10);
 			sqlite3_reset(st);
@@ -139,7 +150,9 @@ static void seed(const nd_library_t *library) {
 			sqlite3_bind_text(st, 5, album, -1, SQLITE_TRANSIENT);
 			sqlite3_bind_int(st, 6, i % 2);
 			sqlite3_bind_int(st, 7, i % 10);
-			sqlite3_bind_text(st, 8, title, -1, SQLITE_TRANSIENT);
+			char key[LIBRARY_SORT_KEY_MAX];
+			library_sort_key_ex(title, key, sizeof(key), true);
+			sqlite3_bind_text(st, 8, key, -1, SQLITE_TRANSIENT);
 			assert(sqlite3_step(st) == SQLITE_DONE);
 		}
 	}
@@ -176,7 +189,7 @@ int main(void) {
 	}
 	assert(library.ready);
 	lv_init();
-	font_ui_14 = font_ui_18 = font_ui_20 = lv_font_unscii_8;
+	font_ui_14 = font_ui_18 = font_ui_20 = font_ui_64_bold = lv_font_unscii_8;
 	lv_display_t *display = lv_display_create(320, 480);
 	navidrome_screen = lv_obj_create(NULL);
 	gui_config_t cfg = {.screen_width = 320, .screen_height = 480, .padding = 8, .top_bar_height = 20};
@@ -190,8 +203,33 @@ int main(void) {
 	lv_obj_send_event(pages[0].list, LV_EVENT_SCROLL, NULL);
 	window_wait(0);
 	assert(pages[0].first > 16980 && pages[0].first + pages[0].count == 17000);
-	assert(!strcmp(pages[0].data[pages[0].count - 1].title, "Track 16999"));
+	assert(!strcmp(pages[0].data[pages[0].count - 1].title, "Z Track 16999"));
 	puts("real LVGL windowed scrolling reaches track 17000: passed");
+	assert(pages[0].index->enabled && pages[0].letters[26] == 25 * 654);
+	assert(pages[0].index->row[0] == 0 && pages[0].index->row[27] == 25 * 654);
+	int before_strip_gesture = lv_obj_get_scroll_y(pages[0].list);
+	dragging = true;
+	lv_obj_send_event(pages[0].index->bar, LV_EVENT_PRESSED, NULL);
+	lv_obj_send_event(pages[0].index->bar, LV_EVENT_PRESSING, NULL);
+	lv_obj_send_event(pages[0].index->bar, LV_EVENT_RELEASED, NULL);
+	assert(lv_obj_get_scroll_y(pages[0].list) == before_strip_gesture);
+	dragging = false;
+	go(pages[0].index, 2);
+	go(pages[0].index, 13);
+	go(pages[0].index, 26); // Newest jump supersedes any older in-flight window.
+	window_wait(0);
+	assert(pages[0].first <= 25 * 654 && pages[0].first + pages[0].count > 25 * 654);
+	azindex_flash(pages[0].index);
+	assert(!lv_obj_is_hidden(pages[0].index->bar));
+	lv_tick_inc(2600);
+	timer_cb(timer);
+	assert(lv_obj_is_hidden(pages[0].index->bar) && lv_obj_is_hidden(pages[0].index->hint));
+	azindex_set_rows(pages[0].index, pages[0].letters, 29, false);
+	assert(!pages[0].index->enabled);
+	azindex_set_rows(pages[0].index, pages[0].letters, 30, false);
+	assert(pages[0].index->enabled);
+	puts("real letter strip: full-library Z jump, rapid coalescing, 29/30 eligibility and inactivity hide: passed");
+
 	navidromebrowse_open(ND_ALBUMS);
 	window_wait(0);
 	lv_obj_scroll_to_y(pages[0].list, 100 * pitch, LV_ANIM_OFF);
@@ -205,7 +243,7 @@ int main(void) {
 	dragging = false;
 	lv_obj_send_event(pages[0].rows[0], LV_EVENT_CLICKED, NULL);
 	window_wait(1);
-	assert(pages[1].total == 10);
+	assert(pages[1].total == 10 && !pages[1].index->enabled);
 	switch_screen_return_to(pages[0].screen);
 	window_wait(0);
 	assert(lv_obj_get_scroll_y(pages[0].list) == saved_scroll);
@@ -214,10 +252,11 @@ int main(void) {
 		window_wait(0);
 		lv_obj_send_event(pages[0].rows[0], LV_EVENT_CLICKED, NULL);
 		window_wait(1);
-		assert(pages[1].total == 1700);
+		assert(pages[1].total == 1700 && pages[1].index->enabled);
+		assert(pages[1].letters[1] == 0); // The full matching artist/genre album query.
 		lv_obj_send_event(pages[1].rows[0], LV_EVENT_CLICKED, NULL);
 		window_wait(2);
-		assert(pages[2].total == 10);
+		assert(pages[2].total == 10 && !pages[2].index->enabled);
 	}
 	// Publishing a snapshot that removes the selected album walks back to a
 	// valid root rather than retaining a stale ID or mixed-generation rows.
@@ -257,7 +296,7 @@ int main(void) {
 	navidrome_lock();
 	navidromebrowse_refresh();
 	drain();
-	assert(lv_screen_active() == navidrome_screen);
+	assert(lv_screen_active() == navidrome_screen && !pages[0].index->enabled);
 	atomic_store(&mode, 6);
 	assert(navidrome_unlock("vault1"));
 	wait_idle();
@@ -266,7 +305,7 @@ int main(void) {
 	assert(pages[0].total == 17000);
 	navidrome_set_root(NULL);
 	navidromebrowse_refresh();
-	assert(lv_screen_active() == navidrome_screen);
+	assert(lv_screen_active() == navidrome_screen && !pages[0].index->enabled);
 	puts("real LVGL lock, offline unlock and card invalidation: passed");
 	navidrome_set_root(dir);
 	navidrome_reset();

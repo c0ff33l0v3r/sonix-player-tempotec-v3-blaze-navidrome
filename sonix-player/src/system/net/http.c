@@ -2,17 +2,17 @@
 
 #include "http.h"
 
-#include "src/system/net/tls.h"
 #include "src/system/core/lang.h"
+#include "src/system/net/tls.h"
 
 #include <stdarg.h>
 
 #include <errno.h>
 #include <netdb.h>
-#include <pthread.h>
-#include <resolv.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <pthread.h>
+#include <resolv.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -415,7 +415,19 @@ static bool header_value(const char *headers, const char *name, char *out, size_
 
 // Summarize protected API responses without copying arbitrary server headers
 // into diagnostics: headers and redirect URLs can themselves contain secrets.
-static void log_protected_response(const char *headers, int status, int lead_len) {
+static void protected_diagnostic(const http_req_t *req, const char *format, ...) __attribute__((format(printf, 2, 3)));
+static void protected_diagnostic(const http_req_t *req, const char *format, ...) {
+	char line[512];
+	va_list ap;
+	va_start(ap, format);
+	vsnprintf(line, sizeof(line), format, ap);
+	va_end(ap);
+	fputs(line, stderr);
+	if (req->diagnostic)
+		req->diagnostic(line);
+}
+
+static void log_protected_response(const http_req_t *req, const char *headers, int status, int lead_len) {
 	char type[64] = "", encoding[64] = "", transfer[64] = "", length[32] = "";
 	header_value(headers, "Content-Type", type, sizeof(type));
 	header_value(headers, "Content-Encoding", encoding, sizeof(encoding));
@@ -423,7 +435,7 @@ static void log_protected_response(const char *headers, int status, int lead_len
 	bool has_length = header_value(headers, "Content-Length", length, sizeof(length));
 	const char *format = !type[0] ? "missing" : !strncasecmp(type, "application/json", 16) ? "json" : !strncasecmp(type, "text/html", 9) ? "html" : !strncasecmp(type, "application/xml", 15) || !strncasecmp(type, "text/xml", 8) ? "xml" : "other";
 	const char *compression = !encoding[0] || !strcasecmp(encoding, "identity") ? "identity" : !strcasecmp(encoding, "gzip") ? "gzip" : !strcasecmp(encoding, "br") ? "brotli" : "other";
-	fprintf(stderr, "http: protected response status=%d content_type=%s encoding=%s framing=%s declared_bytes=%lu lead_bytes=%d\n", status, format, compression, strcasestr(transfer, "chunked") ? "chunked" : has_length ? "content_length" : "close", has_length ? strtoul(length, NULL, 10) : 0, lead_len);
+	protected_diagnostic(req, "http: protected response status=%d content_type=%s encoding=%s framing=%s declared_bytes=%lu lead_bytes=%d\n", status, format, compression, strcasestr(transfer, "chunked") ? "chunked" : has_length ? "content_length" : "close", has_length ? strtoul(length, NULL, 10) : 0, lead_len);
 }
 
 // ---------------------------------------------------------------------------
@@ -736,13 +748,13 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 	int status = read_headers(&conn, headers, sizeof(headers), lead, sizeof(lead), &lead_len);
 	*status_out = status;
 	if (req->sensitive_url)
-		log_protected_response(status >= 100 ? headers : "", status, lead_len);
+		log_protected_response(req, status >= 100 ? headers : "", status, lead_len);
 
 	if (status >= 300 && status < 400) {
 		location[0] = '\0';
 		header_value(headers, "Location", location, location_size);
 		if (req->sensitive_url)
-			fprintf(stderr, "http: protected redirect status=%d destination=%s\n", status, !location[0] ? "missing" : location[0] == '/' ? "relative" : "absolute");
+			protected_diagnostic(req, "http: protected redirect status=%d destination=%s\n", status, !location[0] ? "missing" : location[0] == '/' ? "relative" : "absolute");
 		conn_close(&conn);
 		return false; // the caller decides whether to follow
 	}
@@ -776,8 +788,10 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 			if (req->body_limit_out)
 				*req->body_limit_out = body.failure && !strcmp(body.failure, "body_limit");
 			if (req->sensitive_url)
-				fprintf(stderr, "http: protected body rejected reason=%s received_bytes=%zu limit=%zu\n", body.failure, body.used, body.limit);
+				protected_diagnostic(req, "http: protected body rejected reason=%s received_bytes=%zu limit=%zu\n", body.failure, body.used, body.limit);
 			conn_close(&conn);
+			if (req->received_out)
+				*req->received_out = body.used;
 			free(body.data);
 			return false;
 		}
@@ -792,8 +806,10 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 				// segment with a hole in it, accepted as good and cached.
 				fprintf(stderr, "http: %s%s -> body cut short\n", u->host, log_path);
 				if (req->sensitive_url)
-					fprintf(stderr, "http: protected body rejected reason=%s received_bytes=%zu limit=%zu\n", body.failure ? body.failure : "incomplete_body", body.used, body.limit);
+					protected_diagnostic(req, "http: protected body rejected reason=%s received_bytes=%zu limit=%zu\n", body.failure ? body.failure : "incomplete_body", body.used, body.limit);
 				conn_close(&conn);
+				if (req->received_out)
+					*req->received_out = body.used;
 				free(body.data);
 				return false;
 			}
@@ -807,7 +823,9 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 		if (req->body_limit_out)
 			*req->body_limit_out = body.failure && !strcmp(body.failure, "body_limit");
 		if (req->sensitive_url)
-			fprintf(stderr, "http: protected body rejected reason=%s received_bytes=%zu limit=%zu\n", body.failure ? body.failure : "incomplete_body", body.used, body.limit);
+			protected_diagnostic(req, "http: protected body rejected reason=%s received_bytes=%zu limit=%zu\n", body.failure ? body.failure : "incomplete_body", body.used, body.limit);
+		if (req->received_out)
+			*req->received_out = body.used;
 		free(body.data);
 		return false;
 	}
@@ -827,6 +845,8 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 			return false;
 		}
 	}
+	if (req->received_out)
+		*req->received_out = body.used;
 	body.data[body.used] = '\0';
 
 	*out = body.data;

@@ -66,6 +66,8 @@ class Fixture(BaseHTTPRequestHandler):
                 Fixture.scan_calls += 1
                 response['scanStatus'] = {'scanning': current == 'scanning', 'lastScan': str(Fixture.scan_calls) if current == 'scanchange' else 'fixed-marker'}
             elif method == 'getGenres.view':
+                if current == 'genreslarge':
+                    response['ignored'] = [0] * 17000
                 response['genres'] = {'genre': [] if current == 'empty' else [{'value': 'Jazz'}, {'value': 'Rock'}]}
             elif method == 'search3.view':
                 assert args['query'] == ['']
@@ -78,7 +80,7 @@ class Fixture(BaseHTTPRequestHandler):
                 Fixture.reduced |= count < 50
                 if current == 'empty':
                     total = 0
-                elif current in ('large', 'structured', 'nullable', 'longartist', 'longlabels', 'longlabels_raw'):
+                elif current in ('large', 'structured', 'nullable', 'longartist', 'longlabels', 'longlabels_raw', 'tokens'):
                     total = {'album': 70, 'song': 700, 'artist': 20}[kind]
                 elif current == 'deleted':
                     total = {'album': 1699, 'song': 16990, 'artist': 20}[kind]
@@ -113,7 +115,7 @@ class Fixture(BaseHTTPRequestHandler):
                         entry['name'] = {'unexpected': 'synthetic-server-password'}
                     elif current == 'longartist' and kind == 'song':
                         entry['artist'] = 'Artist; ' * 100
-                    elif current in ('longlabels', 'longlabels_raw'):
+                    elif current in ('longlabels', 'longlabels_raw', 'tokens'):
                         # Exercise both literal and escaped UTF-8 at truncation
                         # boundaries, as well as escaped text that fits decoded.
                         key = 'title' if kind == 'song' else 'name'
@@ -125,6 +127,13 @@ class Fixture(BaseHTTPRequestHandler):
                             entry['artist'] = labels[i % len(labels)]
                     elif current == 'longid' and kind == 'song' and i == 0:
                         entry['id'] = 'x' * 256
+                    if current in ('tokens', 'tokensingle') and kind == 'album':
+                        entry['ignored'] = [0] * (400 if current == 'tokens' else 17000)
+                    if current == 'depth' and kind == 'album':
+                        nested = 0
+                        for _ in range(70):
+                            nested = [nested]
+                        entry['ignored'] = nested
                     if current in ('large', 'oversingle') and kind == 'album':
                         entry['ignored'] = 'x' * (12000 if current == 'large' else 300000)
                     entries.append(entry)
@@ -161,7 +170,7 @@ def main():
         print(result.stdout, end='')
         assert result.returncode == 0, f'library check exited {result.returncode}'
         for reason in ('reason=server_scanning', 'reason=marker_changed', 'reason=missing_track_album',
-                       'reason=missing_relation_entity', 'reason=duplicate_entity', 'field=name reason=wrong_type'):
+                       'reason=missing_relation_entity', 'reason=duplicate_entity', 'field=name reason=wrong_type', 'reason=token_limit', 'reason=depth_limit'):
             assert reason in result.stderr, f'missing safe sync diagnostic: {reason}'
         assert not Fixture.failures and Fixture.reduced
         assert Fixture.art_requests.get('red') == 1 and Fixture.art_requests.get('bad') == 1

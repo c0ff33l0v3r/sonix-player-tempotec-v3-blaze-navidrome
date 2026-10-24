@@ -121,6 +121,10 @@ typedef struct {
 	bool require_complete_body;
 	// Optional fixed classification for bounded API page-size reduction.
 	bool *body_limit_out;
+	// Receives only fixed protected-response diagnostics; no raw headers/URLs.
+	void (*diagnostic)(const char *line);
+	// Bytes retained before rejection, or complete received bytes on success.
+	size_t *received_out;
 
 } http_req_t;
 

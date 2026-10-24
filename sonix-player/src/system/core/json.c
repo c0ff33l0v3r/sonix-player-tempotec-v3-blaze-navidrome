@@ -16,11 +16,14 @@ typedef struct {
 	int capacity;
 	int limit;
 	int depth;
+	json_parse_result_t error;
 } parser_t;
 
 static int tok_new(parser_t *p, json_type_t type, int start, int parent) {
-	if (p->doc->count >= p->limit)
+	if (p->doc->count >= p->limit) {
+		p->error = JSON_PARSE_TOKENS;
 		return -1;
+	}
 	if (p->doc->count == p->capacity) {
 		// Doubling, starting at 64: a Qobuz response runs to a few thousand
 		// tokens, and starting at one would mean a dozen reallocs per request.
@@ -29,6 +32,7 @@ static int tok_new(parser_t *p, json_type_t type, int start, int parent) {
 			wanted = p->limit;
 		json_tok_t *grown = realloc(p->doc->toks, (size_t)wanted * sizeof(*grown));
 		if (!grown) {
+			p->error = JSON_PARSE_MEMORY;
 			return -1;
 		}
 		p->doc->toks = grown;
@@ -157,6 +161,7 @@ static bool is_number_char(char c) {
 
 static bool parse_value(parser_t *p, int parent) {
 	if (p->depth >= JSON_MAX_DEPTH) {
+		p->error = JSON_PARSE_DEPTH;
 		return false;
 	}
 
@@ -227,18 +232,20 @@ static bool parse_value(parser_t *p, int parent) {
 
 bool json_parse(const char *text, json_doc_t *doc) { return json_parse_limited(text, doc, INT_MAX); }
 
-bool json_parse_limited(const char *text, json_doc_t *doc, int max_tokens) {
+bool json_parse_limited(const char *text, json_doc_t *doc, int max_tokens) { return json_parse_detailed(text, doc, max_tokens) == JSON_PARSE_OK; }
+
+json_parse_result_t json_parse_detailed(const char *text, json_doc_t *doc, int max_tokens) {
 	if (!text || !doc) {
-		return false;
+		return JSON_PARSE_SYNTAX;
 	}
 
 	memset(doc, 0, sizeof(*doc));
 	doc->text = text;
 
-	parser_t p = {.text = text, .pos = 0, .doc = doc, .capacity = 0, .limit = max_tokens, .depth = 0};
+	parser_t p = {.text = text, .pos = 0, .doc = doc, .capacity = 0, .limit = max_tokens, .depth = 0, .error = JSON_PARSE_SYNTAX};
 	if (!parse_value(&p, -1)) {
 		json_free(doc);
-		return false;
+		return p.error;
 	}
 
 	// Only whitespace may follow the root value. A second document appended
@@ -247,10 +254,10 @@ bool json_parse_limited(const char *text, json_doc_t *doc, int max_tokens) {
 	skip_space(&p);
 	if (text[p.pos] != '\0') {
 		json_free(doc);
-		return false;
+		return JSON_PARSE_SYNTAX;
 	}
 
-	return doc->count > 0;
+	return doc->count > 0 ? JSON_PARSE_OK : JSON_PARSE_SYNTAX;
 }
 
 void json_free(json_doc_t *doc) {

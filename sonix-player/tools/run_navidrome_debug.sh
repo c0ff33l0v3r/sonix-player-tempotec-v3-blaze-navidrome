@@ -2,6 +2,7 @@
 # Uses the existing timestamped/asynchronous logger. No build is run here.
 set -eu
 cd "$(dirname "$0")/.."
+export SONIX_CONFIG="${SONIX_CONFIG:-$PWD/config.ini}"
 navidrome_debug_card=${SONIX_SD_ROOT:-"$PWD/sd_card"}
 mkdir -p "$navidrome_debug_card"
 navidrome_debug_log="$navidrome_debug_card/navidrome.log"
