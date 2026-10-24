@@ -10,8 +10,19 @@ lv_font_t font_ui_14, font_ui_18, font_ui_20;
 extern const lv_font_t lv_font_unscii_8;
 lv_style_t theme_style_screen, theme_style_card, theme_style_card_pressed;
 lv_style_t theme_style_text, theme_style_text_dim, theme_style_icon;
+static unsigned prompt_count;
+static bool prompt_open, prompt_enabled, keyboard_visible_fixture;
+static void (*prompt_yes)(void *), (*prompt_no)(void *);
+static void *prompt_user;
+static void answer_later(void) {
+	void (*callback)(void *) = prompt_no;
+	void *user = prompt_user;
+	prompt_open = false;
+	assert(callback);
+	callback(user);
+}
 static const uint8_t pixel[4] = {255, 255, 255, 255};
-#define TEST_IMAGE { .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_ARGB8888, .w = 1, .h = 1, .stride = 4 }, .data_size = 4, .data = pixel }
+#define TEST_IMAGE {.header = {.magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_ARGB8888, .w = 1, .h = 1, .stride = 4}, .data_size = 4, .data = pixel}
 const lv_image_dsc_t icon_eye = TEST_IMAGE, icon_eye_off = TEST_IMAGE;
 const char *tr(const char *key) { return key; }
 void gui_notify_popup(const char *key) { (void)key; }
@@ -19,35 +30,70 @@ bool switcher_back_drag_active(void) { return false; }
 void switcher_attach_back_gesture(lv_obj_t *screen) { (void)screen; }
 void switch_screen(lv_obj_t *screen) { lv_screen_load(screen); }
 void switch_screen_return_to(lv_obj_t *screen) { lv_screen_load(screen); }
-int settingsrow_content_top(gui_config_t *cfg) { (void)cfg; return 65; }
+int settingsrow_content_top(gui_config_t *cfg) {
+	(void)cfg;
+	return 65;
+}
 lv_obj_t *settingsrow_title(lv_obj_t *screen, gui_config_t *cfg, const char *text) {
 	(void)cfg;
 	lv_obj_t *label = lv_label_create(screen);
 	lv_label_set_text(label, text);
 	return label;
 }
-void settingsrow_title_corner_slots(lv_obj_t *title, gui_config_t *cfg, int n) { (void)title; (void)cfg; (void)n; }
-void confirm_show(const char *title, const char *text, const char *ok, void (*cb)(void *), void *user) {
-	(void)title; (void)text; (void)ok; (void)cb; (void)user;
+void settingsrow_title_corner_slots(lv_obj_t *title, gui_config_t *cfg, int n) {
+	(void)title;
+	(void)cfg;
+	(void)n;
 }
-keyboard_t *keyboard_create(lv_obj_t *parent, int w, int h, lv_obj_t *field, const lv_image_dsc_t *icon,
-		const char *text, lv_event_cb_t cb, void *user) {
-	(void)parent; (void)w; (void)h; (void)field; (void)icon; (void)text; (void)cb; (void)user;
+void confirm_show(const char *title, const char *text, const char *ok, void (*cb)(void *), void *user) {
+	(void)title;
+	(void)text;
+	(void)ok;
+	(void)cb;
+	(void)user;
+}
+keyboard_t *keyboard_create(lv_obj_t *parent, int w, int h, lv_obj_t *field, const lv_image_dsc_t *icon, const char *text, lv_event_cb_t cb, void *user) {
+	(void)parent;
+	(void)w;
+	(void)h;
+	(void)field;
+	(void)icon;
+	(void)text;
+	(void)cb;
+	(void)user;
 	return NULL;
 }
-void keyboard_set_visible(keyboard_t *kb, bool show) { (void)kb; (void)show; }
-void keyboard_set_field(keyboard_t *kb, lv_obj_t *field) { (void)kb; (void)field; }
+void keyboard_set_visible(keyboard_t *kb, bool show) {
+	(void)kb;
+	(void)show;
+}
+void keyboard_set_field(keyboard_t *kb, lv_obj_t *field) {
+	(void)kb;
+	(void)field;
+}
 void keyboard_reset(keyboard_t *kb) { (void)kb; }
 void keyboard_style_caret(lv_obj_t *field) { (void)field; }
-void keyboard_show_caret(lv_obj_t *field, bool show) { (void)field; (void)show; }
-void keyboard_style_password(lv_obj_t *field, uint32_t ms) { (void)ms; lv_textarea_set_password_mode(field, true); }
+void keyboard_show_caret(lv_obj_t *field, bool show) {
+	(void)field;
+	(void)show;
+}
+void keyboard_style_password(lv_obj_t *field, uint32_t ms) {
+	(void)ms;
+	lv_textarea_set_password_mode(field, true);
+}
 void keyboard_refresh_password(lv_obj_t *field) { (void)field; }
 void frameprof_begin(const char *tag) { (void)tag; }
 void frameprof_end(const char *tag) { (void)tag; }
 bool frameprof_timing(void) { return false; }
 unsigned long long frameprof_now_us(void) { return 0; }
-void frameprof_timer_ran(void *cb, unsigned us) { (void)cb; (void)us; }
-void frameprof_event_ran(void *cb, unsigned us) { (void)cb; (void)us; }
+void frameprof_timer_ran(void *cb, unsigned us) {
+	(void)cb;
+	(void)us;
+}
+void frameprof_event_ran(void *cb, unsigned us) {
+	(void)cb;
+	(void)us;
+}
 
 static void enter_server(void) {
 	lv_textarea_set_text(main_form.fields[0], "http://fixture/base");
@@ -102,6 +148,15 @@ int main(void) {
 	assert(lv_textarea_get_password_mode(main_form.fields[2]));
 	assert_cleared();
 	puts("UI failed-save retry and masked saved fields: passed");
+	navidromesettings_refresh();
+	assert(prompt_count == 1 && prompt_open && !prompt_enabled);
+	navidromesettings_refresh();
+	assert(prompt_count == 1);
+	answer_later();
+	nd_library_t cache;
+	navidrome_library_snapshot(&cache);
+	assert(!cache.offer);
+	puts("UI one-shot setup offer and missing-storage eligibility: passed");
 
 	assert(navidrome_forget());
 	wait_idle();
@@ -132,7 +187,55 @@ int main(void) {
 	assert(s.state == ND_CONNECTED && lv_screen_active() == outside);
 	navidromesettings_open();
 	assert(!strcmp(lv_textarea_get_text(main_form.fields[2]), server_password));
-	puts("UI leaving during save and late completion: passed");
+	navidromesettings_refresh();
+	assert(prompt_count == 2 && prompt_open);
+	answer_later();
+	puts("UI leaving during save and deferred sync offer: passed");
+	assert(navidrome_update_password("http://fixture/base", "fixture user", server_password));
+	wait_idle();
+	navidromesettings_refresh();
+	assert(prompt_count == 2);
+	navidrome_lock();
+	navidromesettings_refresh();
+	assert(navidrome_unlock("vault1"));
+	wait_idle();
+	navidromesettings_refresh();
+	assert(prompt_count == 2);
+	atomic_store(&mode, 1);
+	assert(navidrome_reconnect());
+	wait_idle();
+	navidromesettings_refresh();
+	assert(prompt_count == 2);
+	atomic_store(&mode, 0);
+	keyboard_visible_fixture = true;
+	assert(navidrome_reconnect());
+	wait_idle();
+	navidromesettings_refresh();
+	assert(prompt_count == 2);
+	keyboard_visible_fixture = false;
+	lv_textarea_set_text(main_form.fields[2], "unsaved draft");
+	navidromesettings_refresh();
+	assert(prompt_count == 2);
+	lv_textarea_set_text(main_form.fields[2], server_password);
+	navidromesettings_refresh();
+	assert(prompt_count == 3 && prompt_open);
+	navidrome_lock();
+	navidromesettings_refresh();
+	assert(!prompt_open);
+	assert(navidrome_unlock("vault1"));
+	wait_idle();
+	navidromesettings_refresh();
+	lv_textarea_set_text(main_form.fields[2], "replacement-fixture-password");
+	save_cb(NULL); // The shared keyboard invokes this without an update-button target.
+	wait_idle();
+	navidromesettings_refresh();
+	assert(prompt_count == 3);
+	lv_textarea_set_text(main_form.fields[2], server_password);
+	save_cb(NULL);
+	wait_idle();
+	navidromesettings_refresh();
+	assert(prompt_count == 3);
+	puts("UI offer origin/failure/keyboard/draft/lock guards: passed");
 	assert(navidrome_forget());
 	wait_idle();
 	navidrome_shutdown();
@@ -140,4 +243,24 @@ int main(void) {
 	lv_deinit();
 	assert(!chdir("/") && !rmdir(dir));
 	return 0;
+}
+
+void confirm_close(void) { prompt_open = false; }
+bool confirm_visible(void) { return prompt_open; }
+bool gui_modal_visible(void) { return false; }
+bool keyboard_is_visible(keyboard_t *kb) {
+	(void)kb;
+	return keyboard_visible_fixture;
+}
+void confirm_show_choice(const char *title, const char *message, const char *yes, const char *no, bool enabled, void (*on_yes)(void *), void (*on_no)(void *), void *user) {
+	(void)title;
+	(void)message;
+	(void)yes;
+	(void)no;
+	prompt_count++;
+	prompt_open = true;
+	prompt_enabled = enabled;
+	prompt_yes = on_yes;
+	prompt_no = on_no;
+	prompt_user = user;
 }

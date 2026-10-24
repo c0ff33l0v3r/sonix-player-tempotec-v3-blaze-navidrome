@@ -119,6 +119,8 @@ typedef struct {
 	// Reject oversized/truncated/unfinished bodies rather than accepting a
 	// useful prefix (the latter remains the default for radio playlists).
 	bool require_complete_body;
+	// Optional fixed classification for bounded API page-size reduction.
+	bool *body_limit_out;
 
 } http_req_t;
 

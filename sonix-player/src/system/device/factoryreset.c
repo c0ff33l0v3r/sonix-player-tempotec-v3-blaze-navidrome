@@ -252,6 +252,7 @@ static const char *const KEEP[] = {
 	"ebook_config.ini.tmp",
 	"tidal_session.ini",
 	ND_VAULT_FILE,
+	ND_VAULT_FILE ".cache",
 	"lastfm.session",
 };
 

@@ -25,6 +25,9 @@ static lv_obj_t *cancel_btn;
 
 static void (*pending_action)(void *user);
 static void *pending_user;
+static void (*pending_cancel)(void *user);
+static void (*deferred_action)(void *user);
+static void *deferred_user;
 
 static void refresh_theme(void);
 
@@ -38,10 +41,10 @@ void confirm_close(void) {
 // another screen never does it from under the dialog it was opened by.
 static void run_pending_cb(void *unused) {
 	(void)unused;
-	void (*action)(void *) = pending_action;
-	void *user = pending_user;
-	pending_action = NULL;
-	pending_user = NULL;
+	void (*action)(void *) = deferred_action;
+	void *user = deferred_user;
+	deferred_action = NULL;
+	deferred_user = NULL;
 	if (action) {
 		action(user);
 	}
@@ -49,13 +52,22 @@ static void run_pending_cb(void *unused) {
 
 static void cancel_cb(lv_event_t *e) {
 	(void)e;
+	void (*cancel)(void *) = pending_cancel;
+	void *user = pending_user;
 	pending_action = NULL;
+	pending_cancel = NULL;
 	pending_user = NULL;
 	confirm_close();
+	if (cancel)
+		cancel(user);
 }
 
 static void ok_cb(lv_event_t *e) {
 	(void)e;
+	deferred_action = pending_action;
+	deferred_user = pending_user;
+	pending_action = pending_cancel = NULL;
+	pending_user = NULL;
 	confirm_close();
 	lv_async_call(run_pending_cb, NULL);
 }
@@ -114,7 +126,7 @@ void confirm_init(gui_config_t *cfg) {
 	lv_obj_add_event_cb(veil, veil_cb, LV_EVENT_CLICKED, NULL);
 
 	card = lv_obj_create(veil);
-	lv_obj_set_width(card, CARD_W < cfg->screen_width - ui_px(40) ? CARD_W : cfg->screen_width - ui_px(40));
+	lv_obj_set_width(card, CARD_W < (int32_t)cfg->screen_width - ui_px(40) ? CARD_W : (int32_t)cfg->screen_width - ui_px(40));
 	lv_obj_set_height(card, LV_SIZE_CONTENT);
 	lv_obj_center(card);
 	lv_obj_add_style(card, &theme_style_card, 0);
@@ -176,6 +188,9 @@ void confirm_show(const char *title, const char *message, const char *ok_text, v
 		return;
 	}
 
+	pending_cancel = NULL;
+	lv_label_set_text(cancel_label, tr("cancel"));
+	lv_obj_remove_state(ok_btn, LV_STATE_DISABLED);
 	pending_action = on_ok;
 	pending_user = user;
 
@@ -207,4 +222,17 @@ void confirm_notice(const char *title, const char *message) {
 	if (cancel_btn) {
 		lv_obj_set_hidden(cancel_btn, true);
 	}
+}
+
+bool confirm_visible(void) { return veil && !lv_obj_is_hidden(veil); }
+
+void confirm_show_choice(const char *title, const char *message, const char *yes, const char *no, bool enabled, void (*on_yes)(void *), void (*on_no)(void *), void *user) {
+	confirm_show(title, message, yes, on_yes, user);
+	if (!veil)
+		return;
+	pending_cancel = on_no;
+	lv_label_set_text(cancel_label, tr(no));
+	lv_obj_set_style_opa(ok_btn, LV_OPA_40, LV_STATE_DISABLED);
+	if (!enabled)
+		lv_obj_add_state(ok_btn, LV_STATE_DISABLED);
 }

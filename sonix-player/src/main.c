@@ -2809,6 +2809,7 @@ int main(int argc, char **argv) {
 	const char *card_root = storage_sd_root();
 	qobuzcache_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
 	tidalcache_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
+	navidrome_set_root(gui_cfg.sd_root_path);
 	podcastcache_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
 	podcastsubs_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
 	podcaststate_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);

@@ -1,5 +1,6 @@
 #include "json.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,14 +14,19 @@ typedef struct {
 	int pos;
 	json_doc_t *doc;
 	int capacity;
+	int limit;
 	int depth;
 } parser_t;
 
 static int tok_new(parser_t *p, json_type_t type, int start, int parent) {
+	if (p->doc->count >= p->limit)
+		return -1;
 	if (p->doc->count == p->capacity) {
 		// Doubling, starting at 64: a Qobuz response runs to a few thousand
 		// tokens, and starting at one would mean a dozen reallocs per request.
-		int wanted = p->capacity ? p->capacity * 2 : 64;
+		int wanted = p->capacity > p->limit / 2 ? p->limit : p->capacity ? p->capacity * 2 : 64;
+		if (wanted > p->limit)
+			wanted = p->limit;
 		json_tok_t *grown = realloc(p->doc->toks, (size_t)wanted * sizeof(*grown));
 		if (!grown) {
 			return -1;
@@ -219,7 +225,9 @@ static bool parse_value(parser_t *p, int parent) {
 	return false;
 }
 
-bool json_parse(const char *text, json_doc_t *doc) {
+bool json_parse(const char *text, json_doc_t *doc) { return json_parse_limited(text, doc, INT_MAX); }
+
+bool json_parse_limited(const char *text, json_doc_t *doc, int max_tokens) {
 	if (!text || !doc) {
 		return false;
 	}
@@ -227,7 +235,7 @@ bool json_parse(const char *text, json_doc_t *doc) {
 	memset(doc, 0, sizeof(*doc));
 	doc->text = text;
 
-	parser_t p = {.text = text, .pos = 0, .doc = doc, .capacity = 0, .depth = 0};
+	parser_t p = {.text = text, .pos = 0, .doc = doc, .capacity = 0, .limit = max_tokens, .depth = 0};
 	if (!parse_value(&p, -1)) {
 		json_free(doc);
 		return false;

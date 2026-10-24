@@ -1,4 +1,6 @@
 #include "navidrome.h"
+#include "navidromeapi.h"
+#include "navidromelibrary.h"
 #include "src/gui/shell/gui.h"
 #include "src/system/core/config.h"
 #include "src/system/core/json.h"
@@ -8,26 +10,35 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
-typedef enum { JOB_SAVE, JOB_UNLOCK, JOB_CHANGE, JOB_CONNECT, JOB_FORGET } job_kind_t;
+typedef enum { JOB_SAVE, JOB_UNLOCK, JOB_CHANGE, JOB_CONNECT, JOB_FORGET, JOB_CACHE, JOB_SYNC } job_kind_t;
 typedef struct {
 	job_kind_t kind;
-	unsigned generation;
+	unsigned generation, card_epoch, local_epoch;
+	bool offer;
+	char root[1024];
 	char host[ND_HOST_MAX], user[ND_USER_MAX], password[ND_SECRET_MAX];
 	char passphrase[ND_SECRET_MAX], replacement[ND_SECRET_MAX];
 } job_t;
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t ready = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t io_drained = PTHREAD_COND_INITIALIZER;
+static unsigned cache_users;
 static pthread_t worker;
 static struct {
 	bool initialized, started, stop, pending, busy, configured, invalid, unlocked, checking, connected;
-	unsigned generation, revision;
+	unsigned generation, revision, local_epoch, card_epoch, offer;
+	bool cache_pending, sync_cancel;
+	char root[1024];
+	nd_library_t library;
 	char path[1024], password[ND_SECRET_MAX];
 	uint8_t key[32];
 	nd_record_t record;
@@ -114,87 +125,10 @@ const char *navidrome_validate(const char *host, const char *user, const char *p
 }
 
 const char *navidrome_ping(const char *host, const char *user, const char *password) {
-	char base[ND_HOST_MAX];
-	const char *error = navidrome_validate(host, user, password, base);
-	if (error)
-		return error;
-	uint8_t random[16];
-	char salt[33], token[MD5_HEX_LEN], signed_text[ND_SECRET_MAX + 33], encoded[ND_USER_MAX * 3 + 1], url[1536];
-	if (!nd_random(random, sizeof(random)))
-		return "nd_crypto_error";
-	for (size_t i = 0; i < sizeof(random); i++)
-		snprintf(salt + 2 * i, 3, "%02x", random[i]);
-	snprintf(signed_text, sizeof(signed_text), "%s%s", password, salt);
-	md5_hex(signed_text, strlen(signed_text), token);
-	nd_wipe(signed_text, sizeof(signed_text));
-	http_url_encode(user, encoded, sizeof(encoded));
-	int n = snprintf(url, sizeof(url), "%s/rest/ping.view?u=%s&t=%s&s=%s&v=1.16.1&c=SonixPlayer&f=json", base, encoded, token, salt);
-	nd_wipe(token, sizeof(token));
-	if (n < 0 || (size_t)n >= sizeof(url))
-		return "nd_input_long";
-	char *body = NULL;
-	size_t size = 0;
-	int status = 0;
-	http_req_t request = {.want_error_body = true, .sensitive_url = true, .require_complete_body = true};
-	fprintf(stderr, "navidrome: ping start scheme=%s timeout_seconds=8 body_limit=16384\n", !strncmp(base, "https://", 8) ? "https" : "http");
-	bool ok = http_request(url, &request, &body, &size, 16384, 8, &status);
-	bool diagnostic_error = http_last_error() != NULL;
-	fprintf(stderr, "navidrome: ping response http_ok=%d status=%d bytes=%zu transport_diagnostic=%d\n", ok, status, size, diagnostic_error);
-	http_clear_request_metadata();
-	nd_wipe(url, sizeof(url));
-	if (!ok) {
-		if (body)
-			nd_wipe(body, size);
-		free(body);
-		fprintf(stderr, "navidrome: ping rejected reason=%s\n", status >= 200 && status < 300 ? "incomplete_or_oversized_http_body" : "http_request_failed");
-		if (status >= 200 && status < 300)
-			return "nd_response_error";
-		if (status >= 400)
-			return "nd_api_error";
-		return diagnostic_error && !strncmp(base, "https://", 8) ? "nd_tls_error" : "nd_network_error";
-	}
-	error = "nd_response_error";
-	// Only classify response bytes. Never log server text, which may echo
-	// credentials, query parameters, cookies, or a login form's hidden inputs.
-	size_t first = 0;
-	while (first < size && isspace((unsigned char)body[first]))
-		first++;
-	const char *kind = first == size ? "empty" : body[first] == '{' || body[first] == '[' ? "json" : body[first] == '<' ? "markup" : size - first >= 2 && (unsigned char)body[first] == 0x1f && (unsigned char)body[first + 1] == 0x8b ? "gzip" : "other";
-	fprintf(stderr, "navidrome: ping body kind=%s\n", kind);
-	const char *reason = !size ? "empty_body" : size >= 16384 ? "body_limit" : memchr(body, 0, size) ? "embedded_nul" : "malformed_json";
-	json_doc_t doc;
-	if (size && size < 16384 && !memchr(body, 0, size) && json_parse(body, &doc)) {
-		int response = json_get(&doc, json_root(&doc), "subsonic-response");
-		char result[32];
-		int status_token = json_get(&doc, response, "status");
-		bool valid_status = json_str(&doc, status_token, result, sizeof(result));
-		reason = response < 0 ? "missing_subsonic_wrapper" : !valid_status ? "missing_or_invalid_status" : "unknown_status";
-		if (valid_status) {
-			// C strings cannot represent an embedded JSON NUL. In particular,
-			// "ok\u0000..." must not authenticate as the exact status "ok".
-			for (int i = doc.toks[status_token].start; i + 6 <= doc.toks[status_token].end; i++)
-				if (!memcmp(doc.text + i, "\\u0000", 6))
-					valid_status = false;
-			if (!valid_status)
-				reason = "status_contains_nul";
-		}
-		if (valid_status) {
-			if (status >= 200 && status < 300 && !strcmp(result, "ok")) {
-				error = NULL;
-				reason = "subsonic_ok";
-			} else if (!strcmp(result, "failed")) {
-				int failure = json_get(&doc, response, "error");
-				long code = json_obj_long(&doc, failure, "code", 0);
-				error = code == 40 ? "nd_auth_error" : "nd_api_error";
-				reason = "subsonic_failed";
-				fprintf(stderr, "navidrome: ping API error_code=%ld\n", code);
-			}
-		}
-		json_free(&doc);
-	}
-	fprintf(stderr, "navidrome: ping result=%s reason=%s\n", error ? error : "connected", reason);
-	nd_wipe(body, size);
-	free(body);
+	nd_document_t doc;
+	const char *error = nd_api_json(host, user, password, "ping", NULL, 16384, &doc);
+	if (!error)
+		nd_api_free(&doc);
 	return error;
 }
 
@@ -210,6 +144,11 @@ static int commit(const job_t *job, const nd_record_t *r, const uint8_t key[32],
 	pthread_mutex_lock(&lock);
 	bool applied = current(job) && nd_vault_commit(g.path);
 	if (applied) {
+		if (strcmp(g.record.host, r->host) || strcmp(g.record.user, r->user)) {
+			g.local_epoch++;
+			g.offer = 0;
+			memset(&g.library, 0, sizeof(g.library));
+		}
 		g.record = *r;
 		memcpy(g.key, key, 32);
 		snprintf(g.password, sizeof(g.password), "%s", password);
@@ -228,6 +167,202 @@ static int commit(const job_t *job, const nd_record_t *r, const uint8_t key[32],
 	return synced ? 1 : 2;
 }
 
+static void cache_refresh(const job_t *job, const nd_record_t *record) {
+	pthread_mutex_lock(&lock);
+	bool allowed = current(job) && g.unlocked && job->card_epoch == g.card_epoch;
+	unsigned epoch = g.local_epoch;
+	pthread_mutex_unlock(&lock);
+	if (!allowed) {
+		pthread_mutex_lock(&lock);
+		if (job->card_epoch == g.card_epoch)
+			g.library.loading = false;
+		pthread_mutex_unlock(&lock);
+		return;
+	}
+	nd_library_t result;
+	if (!navidrome_cache_begin(epoch, job->card_epoch))
+		return;
+	nd_cache_load(job->root, g.path, record->host, record->user, &result);
+	navidrome_cache_end();
+	pthread_mutex_lock(&lock);
+	if (current(job) && g.unlocked && job->card_epoch == g.card_epoch) {
+		if (g.library.generation != result.generation || strcmp(g.library.scope, result.scope) || strcmp(g.library.path, result.path))
+			g.local_epoch++;
+		g.library = result;
+	}
+	pthread_mutex_unlock(&lock);
+	notify();
+}
+
+static bool sync_current(const job_t *job) {
+	navidrome_poll_network();
+	pthread_mutex_lock(&lock);
+	bool valid = current(job) && g.unlocked && g.connected && job->card_epoch == g.card_epoch && !g.sync_cancel;
+	pthread_mutex_unlock(&lock);
+	return valid;
+}
+
+static const char *scan_status(const nd_record_t *record, const char *password, char marker[128]) {
+	nd_document_t doc;
+	const char *error = nd_api_json(record->host, record->user, password, "getScanStatus", NULL, 16384, &doc);
+	if (error)
+		return error;
+	int obj = json_get(&doc.doc, doc.response, "scanStatus");
+	if (obj < 0 || doc.doc.toks[obj].type != JSON_OBJECT)
+		error = "nd_response_error";
+	else if (json_obj_bool(&doc.doc, obj, "scanning", false)) {
+		fprintf(stderr, "navidrome: sync scan reason=server_scanning\n");
+		error = "nd_sync_inconsistent";
+	}
+	json_obj_str(&doc.doc, obj, "lastScan", marker, 128);
+	// Some versions supply a numeric scan marker instead of an ISO timestamp.
+	if (!*marker) {
+		long long value = json_llong(&doc.doc, json_get(&doc.doc, obj, "lastScan"), 0);
+		if (value)
+			snprintf(marker, 128, "%lld", value);
+	}
+	nd_api_free(&doc);
+	return error;
+}
+
+static void sync_run(const job_t *job, const nd_record_t *record, const char *password) {
+	pthread_mutex_lock(&lock);
+	nd_library_t result = g.library;
+	pthread_mutex_unlock(&lock);
+	struct stat card = {0};
+	const char *error = stat(job->root, &card) == 0 ? NULL : "nd_cache_storage";
+	nd_store_t store = {0};
+	char before[128] = "", after[128] = "";
+	if (!error && !sync_current(job))
+		error = "nd_sync_cancelled";
+	if (!error)
+		error = scan_status(record, password, before);
+	int64_t candidate = 0;
+	if (!error) {
+		if (!navidrome_cache_begin(job->local_epoch, job->card_epoch))
+			error = "nd_sync_cancelled";
+		else {
+			if (!nd_cache_open_sync(&result, &store) || !nd_store_begin(&store))
+				error = "nd_cache_error";
+			candidate = store.generation;
+			nd_store_close(&store);
+			navidrome_cache_end();
+		}
+	}
+	for (int kind = 0; !error && kind < 4; kind++) {
+		int offset = 0;
+		for (;;) {
+			if (!sync_current(job) || !nd_cache_card_same(job->root, card.st_dev, card.st_ino)) {
+				error = "nd_sync_cancelled";
+				break;
+			}
+			char query[256];
+			int amount = 50, count = 0;
+			nd_document_t doc;
+			for (;;) {
+				if (kind != ND_GENRES)
+					snprintf(query, sizeof(query), "query=&songCount=%d&songOffset=%d&albumCount=%d&albumOffset=%d&artistCount=%d&artistOffset=%d", kind == ND_TRACKS ? amount : 0, offset, kind == ND_ALBUMS ? amount : 0, offset, kind == ND_ARTISTS ? amount : 0, offset);
+				error = nd_api_json(record->host, record->user, password, kind == ND_GENRES ? "getGenres" : "search3", kind == ND_GENRES ? NULL : query, ND_API_BYTES, &doc);
+				if (!error || strcmp(error, "nd_page_large") || amount == 1 || kind == ND_GENRES || !sync_current(job))
+					break;
+				amount = (amount + 1) / 2;
+			}
+			if (error)
+				break;
+			if (!sync_current(job))
+				error = "nd_sync_cancelled";
+			else if (!navidrome_cache_begin(job->local_epoch, job->card_epoch))
+				error = "nd_sync_cancelled";
+			else {
+				if (!nd_store_open(&store, result.path, result.scope, true, false))
+					error = "nd_cache_error";
+				else {
+					store.generation = candidate;
+					if (!nd_store_import(&store, kind, &doc, &count))
+						error = store.error ? store.error : "nd_response_error";
+				}
+				nd_store_close(&store);
+				navidrome_cache_end();
+			}
+			nd_api_free(&doc);
+			if (error) {
+				fprintf(stderr, "navidrome: sync page kind=%d offset=%d limit=%d result=%s\n", kind, offset, amount, error);
+				break;
+			}
+			if ((kind != ND_GENRES && count > amount) || offset > INT_MAX - count) {
+				fprintf(stderr, "navidrome: sync page kind=%d offset=%d count=%d limit=%d reason=invalid_count\n", kind, offset, count, amount);
+				error = "nd_sync_inconsistent";
+				break;
+			}
+			offset += count;
+			pthread_mutex_lock(&lock);
+			if (current(job)) {
+				g.library.stage = kind;
+				g.library.fetched = offset;
+			}
+			pthread_mutex_unlock(&lock);
+			notify();
+			if (kind == ND_GENRES || count < amount) {
+				fprintf(stderr, "navidrome: sync stage kind=%d fetched=%d\n", kind, offset);
+				break;
+			}
+		}
+	}
+	if (!error)
+		error = scan_status(record, password, after);
+	if (!error && strcmp(before, after)) {
+		fprintf(stderr, "navidrome: sync scan reason=marker_changed\n");
+		error = "nd_sync_inconsistent";
+	}
+	bool leased = navidrome_cache_begin(job->local_epoch, job->card_epoch);
+	if (!leased && !error)
+		error = "nd_sync_cancelled";
+	if (leased) {
+		if (!nd_store_open(&store, result.path, result.scope, true, false)) {
+			if (!error)
+				error = "nd_cache_error";
+		} else {
+			store.generation = candidate;
+			if (!error && !nd_store_validate(&store))
+				error = store.error ? store.error : "nd_sync_inconsistent";
+		}
+	}
+	bool valid = sync_current(job) && nd_cache_card_same(job->root, card.st_dev, card.st_ino);
+	pthread_mutex_lock(&lock);
+	valid = valid && current(job) && job->card_epoch == g.card_epoch && !g.sync_cancel;
+	if (!error && !valid)
+		error = "nd_sync_cancelled";
+	// The small final transaction is serialized with invalidation. Network,
+	// enumeration, relationship checks and page writes never hold this mutex.
+	bool published = !error && nd_store_publish(&store);
+	if (!error && !published)
+		error = "nd_cache_error";
+	if (published)
+		g.local_epoch++;
+	pthread_mutex_unlock(&lock);
+	if (published && !nd_store_status(&store, &result))
+		error = "nd_cache_error";
+	if (store.db)
+		nd_store_cleanup(&store);
+	nd_store_close(&store);
+	if (leased)
+		navidrome_cache_end();
+	pthread_mutex_lock(&lock);
+	if (current(job)) {
+		if (published && job->card_epoch == g.card_epoch)
+			g.library = result;
+		g.library.syncing = false;
+		g.library.error = error;
+		if (error && (!strcmp(error, "nd_auth_error") || !strcmp(error, "nd_network_error") || !strcmp(error, "nd_tls_error"))) {
+			g.connected = false;
+			g.error = error;
+		}
+		g.busy = false;
+	}
+	pthread_mutex_unlock(&lock);
+	fprintf(stderr, "navidrome: sync finish published=%d result=%s\n", published, error ? error : "ok");
+}
+
 static void *work(void *unused) {
 	(void)unused;
 	for (;;) {
@@ -236,13 +371,23 @@ static void *work(void *unused) {
 		uint8_t key[32];
 		char password[ND_SECRET_MAX];
 		pthread_mutex_lock(&lock);
-		while (!g.pending && !g.stop)
+		while (!g.pending && !g.cache_pending && !g.stop)
 			pthread_cond_wait(&ready, &lock);
 		if (g.stop) {
 			pthread_mutex_unlock(&lock);
 			break;
 		}
-		job = g.job;
+		if (g.pending)
+			job = g.job;
+		else {
+			memset(&job, 0, sizeof(job));
+			job.kind = JOB_CACHE;
+			job.generation = g.generation;
+		}
+		job.card_epoch = g.card_epoch;
+		job.local_epoch = g.local_epoch;
+		snprintf(job.root, sizeof(job.root), "%s", g.root);
+		g.cache_pending = false;
 		nd_wipe(&g.job, sizeof(g.job));
 		g.pending = false;
 		r = g.record;
@@ -250,6 +395,18 @@ static void *work(void *unused) {
 		memcpy(password, g.password, sizeof(password));
 		bool configured = g.configured;
 		pthread_mutex_unlock(&lock);
+		if (job.kind == JOB_CACHE || job.kind == JOB_SYNC) {
+			if (job.kind == JOB_CACHE)
+				cache_refresh(&job, &r);
+			else
+				sync_run(&job, &r, password);
+			nd_wipe(&job, sizeof(job));
+			nd_wipe(&r, sizeof(r));
+			nd_wipe(key, sizeof(key));
+			nd_wipe(password, sizeof(password));
+			notify();
+			continue;
+		}
 		static const char *operations[] = {"save", "unlock", "change_unlock_password", "reconnect", "forget"};
 		fprintf(stderr, "navidrome: operation start kind=%s generation=%u configured=%d\n", operations[job.kind], job.generation, configured);
 		const char *error = NULL;
@@ -287,6 +444,8 @@ static void *work(void *unused) {
 					error = result == 2 ? "nd_durability_error" : "nd_save_error";
 			}
 		}
+		if (!error && job.kind == JOB_FORGET && !nd_cache_retire_scope(g.path))
+			error = "nd_remove_error";
 		pthread_mutex_lock(&lock);
 		bool valid = current(&job);
 		if (valid && !error && job.kind == JOB_FORGET) {
@@ -313,6 +472,15 @@ static void *work(void *unused) {
 		pthread_mutex_unlock(&lock);
 		if (valid && !error && job.kind == JOB_FORGET && !nd_vault_sync(g.path))
 			error = "nd_remove_error";
+		if (valid && !error && job.kind == JOB_FORGET) {
+			if (!nd_cache_retire(job.root, g.path)) {
+				pthread_mutex_lock(&lock);
+				g.library.error = "nd_cache_error";
+				pthread_mutex_unlock(&lock);
+			}
+		}
+		if (valid && !error && job.kind != JOB_FORGET)
+			cache_refresh(&job, &r);
 		if (valid && !error && check) {
 			notify();
 			error = online() ? navidrome_ping(r.host, r.user, password) : "nd_wifi_error";
@@ -334,8 +502,11 @@ static void *work(void *unused) {
 		if (accepted) {
 			g.error = error;
 			g.busy = g.checking = false;
-			if (check)
+			if (check) {
 				g.connected = !error || !strcmp(error, "nd_history_error");
+				if (g.connected && job.offer)
+					g.offer = job.generation;
+			}
 		}
 		pthread_mutex_unlock(&lock);
 		fprintf(stderr, "navidrome: operation finish kind=%s generation=%u accepted=%d result=%s\n", operations[job.kind], job.generation, accepted, error ? error : "ok");
@@ -411,6 +582,8 @@ static bool submit(job_t *job) {
 	}
 	g.busy = true;
 	g.error = NULL;
+	if (job->kind == JOB_SAVE || job->kind == JOB_CONNECT || job->kind == JOB_UNLOCK)
+		g.offer = 0;
 	job->generation = ++g.generation;
 	g.job = *job;
 	g.pending = true;
@@ -420,8 +593,8 @@ static bool submit(job_t *job) {
 	return true;
 }
 
-bool navidrome_save(const char *host, const char *user, const char *password, const char *passphrase) {
-	job_t job = {.kind = JOB_SAVE};
+static bool save(const char *host, const char *user, const char *password, const char *passphrase, bool offer) {
+	job_t job = {.kind = JOB_SAVE, .offer = offer};
 	const char *error = navidrome_validate(host, user, password, job.host);
 	pthread_mutex_lock(&lock);
 	if (!error && ((!g.configured && !nd_passphrase_valid(passphrase)) || (g.configured && (!g.unlocked || g.invalid))))
@@ -441,6 +614,9 @@ bool navidrome_save(const char *host, const char *user, const char *password, co
 	notify();
 	return ok;
 }
+
+bool navidrome_save(const char *host, const char *user, const char *password, const char *passphrase) { return save(host, user, password, passphrase, true); }
+bool navidrome_update_password(const char *host, const char *user, const char *password) { return save(host, user, password, NULL, false); }
 
 bool navidrome_unlock(const char *passphrase) {
 	job_t job = {.kind = JOB_UNLOCK};
@@ -477,7 +653,7 @@ bool navidrome_change_passphrase(const char *current_passphrase, const char *rep
 }
 
 bool navidrome_reconnect(void) {
-	job_t job = {.kind = JOB_CONNECT};
+	job_t job = {.kind = JOB_CONNECT, .offer = true};
 	pthread_mutex_lock(&lock);
 	bool ok = g.unlocked && !g.invalid && submit(&job);
 	pthread_mutex_unlock(&lock);
@@ -487,6 +663,9 @@ bool navidrome_reconnect(void) {
 
 static void clear_secrets(void) {
 	g.generation++;
+	g.local_epoch++;
+	g.offer = 0;
+	g.library.syncing = false;
 	g.unlocked = g.connected = g.checking = g.busy = g.pending = false;
 	nd_wipe(&g.job, sizeof(g.job));
 	nd_wipe(g.key, sizeof(g.key));
@@ -519,6 +698,7 @@ void navidrome_poll_network(void) {
 	if (g.connected || g.checking) {
 		g.generation++;
 		g.connected = g.checking = g.busy = false;
+		g.library.syncing = false;
 		g.error = "nd_wifi_error";
 	}
 	pthread_mutex_unlock(&lock);
@@ -532,6 +712,7 @@ void navidrome_reset(void) {
 	clear_secrets();
 	if (nd_vault_remove(g.path)) {
 		nd_vault_sync(g.path);
+		nd_cache_retire(g.root, g.path);
 		nd_wipe(&g.record, sizeof(g.record));
 		g.configured = g.invalid = false;
 		g.error = NULL;
@@ -551,6 +732,10 @@ void navidrome_shutdown(void) {
 	pthread_mutex_unlock(&lock);
 	if (join)
 		pthread_join(worker, NULL);
+	pthread_mutex_lock(&lock);
+	while (cache_users)
+		pthread_cond_wait(&io_drained, &lock);
+	pthread_mutex_unlock(&lock);
 }
 
 const char *navidrome_feedback(const navidrome_snapshot_t *s) {
@@ -567,4 +752,127 @@ const char *navidrome_feedback(const navidrome_snapshot_t *s) {
 	if (s->error)
 		return s->error;
 	return s->state == ND_CONNECTED ? "nd_connected" : "nd_reconnect_required";
+}
+
+void navidrome_set_root(const char *root) {
+	pthread_mutex_lock(&lock);
+	if (root && strlen(root) < sizeof(g.root))
+		snprintf(g.root, sizeof(g.root), "%s", root);
+	else
+		g.root[0] = 0;
+	g.card_epoch++;
+	g.local_epoch++;
+	// Card events run on the storage worker. Leases only cover local file I/O,
+	// never network waits, and no new old-card lease can enter after this epoch.
+	while (cache_users)
+		pthread_cond_wait(&io_drained, &lock);
+	memset(&g.library, 0, sizeof(g.library));
+	g.cache_pending = true;
+	g.library.loading = true;
+	if (!g.started && g.initialized && !g.stop) {
+		if (pthread_create(&worker, NULL, work, NULL) == 0)
+			g.started = true;
+		else {
+			g.cache_pending = false;
+			g.library.loading = false;
+			g.library.error = "nd_worker_error";
+		}
+	}
+	pthread_cond_signal(&ready);
+	pthread_mutex_unlock(&lock);
+	notify();
+}
+
+void navidrome_library_snapshot(nd_library_t *out) {
+	pthread_mutex_lock(&lock);
+	*out = g.library;
+	out->epoch = g.local_epoch;
+	out->card_epoch = g.card_epoch;
+	out->offer = g.offer;
+	if (!g.unlocked) {
+		out->ready = false;
+		out->offer = 0;
+		out->scope[0] = out->path[0] = 0;
+		memset(out->counts, 0, sizeof(out->counts));
+		out->finished = 0;
+	}
+	pthread_mutex_unlock(&lock);
+}
+
+bool navidrome_sync(void) {
+	navidrome_poll_network();
+	job_t job = {.kind = JOB_SYNC};
+	pthread_mutex_lock(&lock);
+	bool ok = g.unlocked && g.connected && g.library.writable && *g.library.path && *g.library.scope && submit(&job);
+	if (ok) {
+		g.offer = 0;
+		g.sync_cancel = false;
+		g.library.syncing = true;
+		g.library.stage = g.library.fetched = 0;
+		g.library.error = NULL;
+	}
+	pthread_mutex_unlock(&lock);
+	notify();
+	return ok;
+}
+
+void navidrome_sync_cancel(void) {
+	pthread_mutex_lock(&lock);
+	g.sync_cancel = true;
+	pthread_mutex_unlock(&lock);
+	notify();
+}
+
+void navidrome_sync_offer_consume(unsigned offer) {
+	pthread_mutex_lock(&lock);
+	if (g.offer == offer)
+		g.offer = 0;
+	pthread_mutex_unlock(&lock);
+}
+
+bool navidrome_context(nd_context_t *out, bool network) {
+	memset(out, 0, sizeof(*out));
+	pthread_mutex_lock(&lock);
+	bool ok = g.unlocked && !g.invalid && (!network || g.connected);
+	if (ok) {
+		snprintf(out->host, sizeof(out->host), "%s", g.record.host);
+		snprintf(out->user, sizeof(out->user), "%s", g.record.user);
+		memcpy(out->password, g.password, sizeof(out->password));
+		out->epoch = g.local_epoch;
+		out->card_epoch = g.card_epoch;
+		out->network_epoch = g.generation;
+	}
+	pthread_mutex_unlock(&lock);
+	return ok;
+}
+
+bool navidrome_context_current(const nd_context_t *context, bool network) {
+	pthread_mutex_lock(&lock);
+	bool ok = g.unlocked && context->epoch == g.local_epoch && context->card_epoch == g.card_epoch && (!network || (g.connected && context->network_epoch == g.generation));
+	pthread_mutex_unlock(&lock);
+	return ok;
+}
+
+bool navidrome_context_publish(const nd_context_t *context, const char *temp, const char *path) {
+	pthread_mutex_lock(&lock);
+	bool ok = g.unlocked && g.connected && context->epoch == g.local_epoch && context->card_epoch == g.card_epoch && context->network_epoch == g.generation && rename(temp, path) == 0;
+	pthread_mutex_unlock(&lock);
+	return ok;
+}
+
+bool navidrome_cache_begin(unsigned epoch, unsigned card_epoch) {
+	pthread_mutex_lock(&lock);
+	bool ok = g.unlocked && !g.stop && epoch == g.local_epoch && card_epoch == g.card_epoch;
+	if (ok)
+		cache_users++;
+	pthread_mutex_unlock(&lock);
+	return ok;
+}
+
+void navidrome_cache_end(void) {
+	pthread_mutex_lock(&lock);
+	if (cache_users)
+		cache_users--;
+	pthread_cond_broadcast(&io_drained);
+	pthread_mutex_unlock(&lock);
 }

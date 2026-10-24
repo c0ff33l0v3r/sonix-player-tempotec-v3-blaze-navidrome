@@ -678,8 +678,8 @@ bool library_skip_articles(void) { return skip_articles; }
 
 // Skips a leading article so "The Beatles" files under B. Only English and
 // Italian, which is what a tag on this device is most likely to be in.
-static int skip_article(const char *text, int length) {
-	if (!skip_articles) {
+static int skip_article_ex(const char *text, int length, bool skip) {
+	if (!skip) {
 		return 0;
 	}
 	static const char *const ARTICLES[] = {"the ", "a ",  "an ", "il ",  "lo ", "la ", "i ",
@@ -693,6 +693,8 @@ static int skip_article(const char *text, int length) {
 	}
 	return 0;
 }
+
+static int skip_article(const char *text, int length) { return skip_article_ex(text, length, skip_articles); }
 
 // The collation the schema names. Compares group first, then folded code
 // points, then length -- so the result is a total order and SQLite is happy.
@@ -757,7 +759,9 @@ int library_collate_listorder(void *unused, int len_a, const void *a, int len_b,
 // it has to sort the entire table into a temporary b-tree before drawing a row.
 //
 // The key holds no zero byte and is never empty, so it stores as TEXT.
-void library_sort_key(const char *text, char *out, size_t out_size) {
+void library_sort_key(const char *text, char *out, size_t out_size) { library_sort_key_ex(text, out, out_size, skip_articles); }
+
+void library_sort_key_ex(const char *text, char *out, size_t out_size, bool skip) {
 	if (!out || out_size < 2) {
 		return;
 	}
@@ -766,7 +770,7 @@ void library_sort_key(const char *text, char *out, size_t out_size) {
 	}
 
 	int length = (int)strlen(text);
-	int pos = skip_article(text, length);
+	int pos = skip_article_ex(text, length, skip);
 
 	// The group of the first character, unfolded -- the collation looks at it
 	// before it folds anything. The enum's numbering is the order the groups

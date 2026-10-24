@@ -773,6 +773,8 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 		read_chunked(&src, &body);
 	} else {
 		if (lead_len > 0 && !body_append(&body, lead, (size_t)lead_len)) {
+			if (req->body_limit_out)
+				*req->body_limit_out = body.failure && !strcmp(body.failure, "body_limit");
 			if (req->sensitive_url)
 				fprintf(stderr, "http: protected body rejected reason=%s received_bytes=%zu limit=%zu\n", body.failure, body.used, body.limit);
 			conn_close(&conn);
@@ -783,6 +785,8 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 		char length_text[32];
 		if (header_value(headers, "Content-Length", length_text, sizeof(length_text))) {
 			if (!read_length(&conn, &body, (size_t)strtoul(length_text, NULL, 10))) {
+				if (req->body_limit_out)
+					*req->body_limit_out = body.failure && !strcmp(body.failure, "body_limit");
 				// Less than promised: the response is broken, not short.
 				// Delivering it anyway means half a JPEG or, worse, an audio
 				// segment with a hole in it, accepted as good and cached.
@@ -800,6 +804,8 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 
 	conn_close(&conn);
 	if (body.strict && body.failed) {
+		if (req->body_limit_out)
+			*req->body_limit_out = body.failure && !strcmp(body.failure, "body_limit");
 		if (req->sensitive_url)
 			fprintf(stderr, "http: protected body rejected reason=%s received_bytes=%zu limit=%zu\n", body.failure ? body.failure : "incomplete_body", body.used, body.limit);
 		free(body.data);
@@ -846,6 +852,8 @@ bool http_request(const char *url, const http_req_t *req, char **out, size_t *ou
 	if (!req) {
 		req = &plain_get;
 	}
+	if (req->body_limit_out)
+		*req->body_limit_out = false;
 	if (!url || !out) {
 		return false;
 	}

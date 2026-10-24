@@ -1,4 +1,5 @@
 #include "navidromepage.h"
+#include "navidromebrowse.h"
 #include "navidromesettings.h"
 #include <string.h>
 
@@ -50,10 +51,25 @@ static void tile_action(const char *label) {
 	gui_notify_popup(message);
 }
 
-static void albums_action(void) { tile_action("albums"); }
-static void tracks_action(void) { tile_action("navidrome_tracks"); }
-static void artists_action(void) { tile_action("artists"); }
-static void genres_action(void) { tile_action("music_genres"); }
+static void category_action(nd_kind_t kind) {
+	navidrome_snapshot_t s;
+	nd_library_t library;
+	navidrome_snapshot(&s);
+	navidrome_library_snapshot(&library);
+	if (!s.unlocked) {
+		gui_notify_popup(navidrome_feedback(&s));
+		return;
+	}
+	if (!library.ready) {
+		gui_notify_popup(library.error ? library.error : "nd_not_synced");
+		return;
+	}
+	navidromebrowse_open(kind);
+}
+static void albums_action(void) { category_action(ND_ALBUMS); }
+static void tracks_action(void) { category_action(ND_TRACKS); }
+static void artists_action(void) { category_action(ND_ARTISTS); }
+static void genres_action(void) { category_action(ND_GENRES); }
 static void playlists_action(void) { tile_action("playlists"); }
 
 static void settings_cb(lv_event_t *e) {
@@ -66,10 +82,13 @@ static void refresh(void) {
 	navidrome_snapshot_t snapshot;
 	navidrome_snapshot(&snapshot);
 	bool dim = snapshot.state != ND_CONNECTED;
+	nd_library_t library;
+	navidrome_library_snapshot(&library);
 	for (int i = 0; i < 5; i++)
-		gridpage_set_dimmed(category_grid, i, dim);
+		gridpage_set_dimmed(category_grid, i, i == 4 ? dim : !library.ready);
 	lv_obj_set_style_opa(search_icon, dim ? LV_OPA_40 : LV_OPA_COVER, 0);
 	navidromesettings_refresh();
+	navidromebrowse_refresh();
 }
 
 #ifndef HOST_BUILD
@@ -136,6 +155,7 @@ void navidromepage_init(gui_config_t *cfg) {
 	corner_button(cfg, 0, &icon_music_settings, "settings");
 	corner_button(cfg, 1, &icon_search, "navidrome_search");
 	navidromesettings_init(cfg);
+	navidromebrowse_init(cfg);
 	navidrome_set_listener(refresh);
 	lv_obj_add_event_cb(navidrome_screen, menu_loaded, LV_EVENT_SCREEN_LOADED, NULL);
 	lv_obj_add_event_cb(navidrome_screen, menu_unloaded, LV_EVENT_SCREEN_UNLOADED, NULL);

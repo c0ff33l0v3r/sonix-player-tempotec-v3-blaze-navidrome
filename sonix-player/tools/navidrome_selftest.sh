@@ -1,12 +1,17 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
+# Reuse the bundled SQLite object when available; otherwise compile only its wrapper.
+check_sqlite=src/system/db/sqlite3_impl.c
+if [ -f build_host/system/db/sqlite3_impl.o ]; then
+    check_sqlite=build_host/system/db/sqlite3_impl.o
+fi
 check_binary=$(mktemp /tmp/sonix-navidrome-selftest.XXXXXX)
 trap 'rm -f "$check_binary"' EXIT HUP INT TERM
 ${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -O1 -g ${NAVIDROME_CHECK_FLAGS:-} \
     -DHOST_BUILD -DNAVIDROME_TEST -DLV_CONF_INCLUDE_SIMPLE -I. -Ilvgl \
-    tools/navidrome_selftest.c src/system/streaming/navidrome.c \
+    tools/navidrome_selftest.c src/system/streaming/navidrome.c src/system/streaming/navidromeapi.c src/system/streaming/navidromestore.c src/system/streaming/navidromelibrary.c tools/navidrome_test_support.c \
     src/system/streaming/navidromecrypto.c src/system/streaming/navidromevault.c \
-    src/system/core/json.c src/system/core/md5.c -pthread -ldl \
+    src/system/core/json.c src/system/core/md5.c "$check_sqlite" -lm -pthread -ldl \
     -Wl,--wrap=rename,--wrap=fsync,--wrap=unlink -o "$check_binary"
 "$check_binary"

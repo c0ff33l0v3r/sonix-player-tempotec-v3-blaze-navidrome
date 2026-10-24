@@ -99,6 +99,25 @@ The full list is the commit history of the
 [`blaze-port`](https://github.com/carmine-bin/sonix-player-tempotec-v3-blaze/commits/blaze-port)
 branch.
 
+## Navidrome library browsing
+
+Open Streaming → Navidrome → Settings to save and connect to a server. Use
+**Sync Library** to copy track, album, artist, and genre metadata to the selected
+SD card. Successful Save & Connect and Reconnect operations also offer
+**Sync Now** or **Later**. A new sync needs writable card storage; cancelling or
+failing a refresh keeps the last successful library.
+
+After syncing, those four categories browse the local index, including offline
+once Navidrome is unlocked. Restart requires unlocking again. Settings shows
+connection status separately from the last sync time and library counts.
+Thumbnails download as they become visible and cached thumbnails remain
+available offline. The metadata and artwork cache lives under
+`.local/navidrome/` on the card; credentials remain in the separate encrypted
+vault on internal storage.
+
+Track lists currently provide read-only browsing. Playback, playlist browsing
+and synchronization, and search results are deferred to later changes.
+
 ## Going back to stock and recovery
 
 **Back to stock:** put the official firmware in the card root as

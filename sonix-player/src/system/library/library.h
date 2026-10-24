@@ -516,6 +516,8 @@ char library_index_letter(const char *name);
 // stop sorting too.
 #define LIBRARY_SORT_KEY_MAX 512
 void library_sort_key(const char *name, char *out, size_t out_size);
+// Stable policy for independent persisted indexes; does not read Music preferences.
+void library_sort_key_ex(const char *name, char *out, size_t out_size, bool skip_articles);
 
 // The letter of the strip a key stands for: library_index_letter() answered
 // from the key instead of the name, which the key already carries.

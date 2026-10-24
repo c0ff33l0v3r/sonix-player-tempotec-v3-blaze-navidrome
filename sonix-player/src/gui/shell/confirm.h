@@ -22,6 +22,9 @@ void confirm_show(const char *title, const char *message, const char *ok_label, 
 // Dismissing it does nothing beyond closing it.
 void confirm_notice(const char *title, const char *message);
 
+// Optional labels/eligibility for a two-choice prompt; existing callers keep defaults.
+void confirm_show_choice(const char *title, const char *message, const char *yes, const char *no, bool enabled, void (*on_yes)(void *), void (*on_no)(void *), void *user);
+bool confirm_visible(void);
 void confirm_close(void);
 
 #endif /* CONFIRM_H */

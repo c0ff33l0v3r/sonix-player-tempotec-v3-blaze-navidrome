@@ -58,6 +58,8 @@ typedef struct {
 // Parses `text`. False on malformed JSON, out of memory, or nesting past the
 // limit. On success the caller must call json_free().
 bool json_parse(const char *text, json_doc_t *doc);
+// Opt-in allocation ceiling; existing callers retain their parser behavior.
+bool json_parse_limited(const char *text, json_doc_t *doc, int max_tokens);
 void json_free(json_doc_t *doc);
 
 // The root token, or -1 when the document is empty.
