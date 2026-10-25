@@ -18,5 +18,6 @@ const char *nd_api_json(const char *host, const char *user, const char *password
 const char *nd_api_artwork(const char *host, const char *user, const char *password, const char *id, int pixels, char **body, size_t *size);
 void nd_api_free(nd_document_t *doc);
 const char *nd_api_stream(const char *host, const char *user, const char *password, const char *id, http_stream_t *stream);
+const char *nd_api_control(const char *host, const char *user, const char *password, bool (*current)(void *), void *arg, nd_document_t *out);
 
 #endif

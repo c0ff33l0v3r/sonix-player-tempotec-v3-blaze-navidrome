@@ -11,6 +11,12 @@ int library_collate_listorder(void *unused, int na, const void *a, int nb, const
 #include <ctype.h>
 #include <stdbool.h>
 #include <stddef.h>
+__attribute__((weak)) const char *tr(const char *key) { return key; }
+__attribute__((weak)) const char *config_get(const char *section, const char *key, const char *fallback) {
+	(void)section;
+	(void)key;
+	return fallback;
+}
 void library_sort_key_ex(const char *name, char *out, size_t size, bool skip_articles) {
 	(void)skip_articles;
 	size_t i;

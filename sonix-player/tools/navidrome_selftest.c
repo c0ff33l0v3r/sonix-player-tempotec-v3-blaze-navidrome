@@ -69,16 +69,16 @@ int __wrap_unlink(const char *path) {
 	return __real_unlink(path);
 }
 
-const char *http_last_error(void) { return atomic_load(&mode) == 7 ? "synthetic TLS failure" : NULL; }
-void http_clear_request_metadata(void) {}
-bool http_file_open(http_stream_t *stream, const char *url, int timeout) {
+const char *__wrap_http_last_error(void) { return atomic_load(&mode) == 7 ? "synthetic TLS failure" : NULL; }
+void __wrap_http_clear_request_metadata(void) {}
+bool __wrap_http_file_open(http_stream_t *stream, const char *url, int timeout) {
 	(void)stream;
 	(void)url;
 	(void)timeout;
 	assert(!"service self-test must not request audio");
 	return false;
 }
-char *http_url_encode(const char *in, char *out, size_t size) {
+char *__wrap_http_url_encode(const char *in, char *out, size_t size) {
 	static const char h[] = "0123456789ABCDEF";
 	size_t n = 0;
 	for (const unsigned char *p = (const unsigned char *)in; *p; p++) {
@@ -96,7 +96,7 @@ char *http_url_encode(const char *in, char *out, size_t size) {
 	return out;
 }
 
-bool http_request(const char *url, const http_req_t *req, char **out, size_t *size, size_t limit, int timeout, int *status) {
+bool __wrap_http_request(const char *url, const http_req_t *req, char **out, size_t *size, size_t limit, int timeout, int *status) {
 	assert(req->extra_headers == NULL && req->want_error_body && req->sensitive_url && req->require_complete_body && limit == 16384 && timeout > 0);
 	assert(strstr(url, "/base/rest/ping.view?u=fixture%20user&"));
 	assert(strstr(url, "&v=1.16.1&c=SonixPlayer&f=json"));

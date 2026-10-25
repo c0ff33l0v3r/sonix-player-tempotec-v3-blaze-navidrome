@@ -76,7 +76,7 @@ class Fixture(BaseHTTPRequestHandler):
                 assert len(enabled) == 1
                 kind, count_key, offset_key, total = enabled[0]
                 count, offset = int(args[count_key][0]), int(args[offset_key][0])
-                assert 0 < count <= 50
+                assert 0 < count <= 1000
                 Fixture.reduced |= count < 50
                 if current == 'empty':
                     total = 0

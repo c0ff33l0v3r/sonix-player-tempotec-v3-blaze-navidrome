@@ -63,6 +63,8 @@ bool json_parse_limited(const char *text, json_doc_t *doc, int max_tokens);
 typedef enum { JSON_PARSE_OK, JSON_PARSE_SYNTAX, JSON_PARSE_TOKENS, JSON_PARSE_DEPTH, JSON_PARSE_MEMORY } json_parse_result_t;
 // Detailed opt-in diagnostics; existing boolean callers retain their contract.
 json_parse_result_t json_parse_detailed(const char *text, json_doc_t *doc, int max_tokens);
+// Optional conservative allocation high-water, including realloc overlap.
+json_parse_result_t json_parse_detailed_peak(const char *text, json_doc_t *doc, int max_tokens, size_t *peak_bytes);
 void json_free(json_doc_t *doc);
 
 // The root token, or -1 when the document is empty.

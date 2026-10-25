@@ -217,6 +217,47 @@ Questions, bug reports and ideas go in the Telegram group:
 [V3 Blaze Discussion](https://t.me/V3_Blaze_Discussion). When you report a bug,
 say which version you run and what you did before it happened.
 
+## Navidrome sync performance
+
+Sync Library still enumerates the full accessible metadata library on explicit
+request. It starts with 1,000 items per page, uses up to two ordered page slots,
+reuses eligible HTTP/TLS connections, and accepts gzip or identity responses.
+A short page ends enumeration; prefetch can issue one extra end-of-list request.
+Scan timestamps detect observed server changes during sync; they do not skip
+sync or provide a reliable modified-items/deletion feed.
+
+JSON is validated incrementally. Each page has an 8 MiB encoded/16 MiB decoded
+response ceiling, a 256 KiB/16,384-token per-entity ceiling, depth 64, and a 1 MiB
+arena of extracted metadata. The two slots together cap owned page/parser/HTTP
+buffers at 4 MiB; TLS, stacks, SQLite, and the rest of the player use additional
+memory. Resource-heavy pages reduce their requested count finitely at the same
+offset. A rejected response imports nothing, and failures preserve the previous
+complete library. Requests have an eight-second idle timeout and a 30-second
+whole-request deadline; Cancel, Lock, Forget, and card export retire pending work.
+
+Focused checks use synthetic credentials and loopback fixtures, without building
+or launching the full player:
+
+```sh
+sh sonix-player/tools/navidrome_synccheck.sh
+NAVIDROME_CHECK_FLAGS=-DHTTP_FINITE_DEADLINE_MS=200 sh sonix-player/tools/navidrome_synccheck.sh --deadline-check
+sh sonix-player/tools/navidrome_synccheck.sh --benchmark --baseline --output /tmp/sonix-sync-baseline.json
+sh sonix-player/tools/navidrome_synccheck.sh --benchmark --baseline-report /tmp/sonix-sync-baseline.json --output /tmp/sonix-sync-optimized.json
+```
+
+The baseline option reads pre-optimization sources from committed revision
+`dc74802` into a temporary directory; it does not revert the worktree. Benchmark
+mode reports five-run medians and whether the synthetic 3x target is met when a
+baseline report is supplied through the commands above. Ordinary checks gate
+correctness and resource/request bounds, not noisy wall-clock results. These
+host measurements do not establish real-server or Blaze timing. Debug mode adds
+redacted phase timings, encoded/decoded bytes, connection reuse, and conservative
+buffer allocation high-water diagnostics without collecting server payloads.
+Reports keep SQLite allocations, configured worker/resolver stacks, and process
+RSS separate; TLS library allocations are identified as uninstrumented. Failed
+requests are not replayed automatically; only classified page-resource limits
+permit finite count reduction. Existing feedback strings remain unchanged.
+
 ## Building
 
 Sonix builds as described in [UPSTREAM-README.md](UPSTREAM-README.md)

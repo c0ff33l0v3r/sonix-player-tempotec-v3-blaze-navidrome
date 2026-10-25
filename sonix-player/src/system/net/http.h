@@ -225,4 +225,19 @@ const char *http_last_error(void);
 // value. Returns out.
 char *http_url_encode(const char *in, char *out, size_t out_size);
 
+// Opt-in job-scoped finite GET reader. Cancellation/deadlines never affect legacy callers.
+typedef struct http_session http_session_t;
+typedef struct {
+	size_t encoded, decoded, opens, reuses;
+	double connect_seconds, transfer_seconds;
+} http_session_stats_t;
+http_session_t *http_session_new(bool (*current)(void *), void *user);
+void http_session_free(http_session_t *session);
+bool http_session_get(http_session_t *session, const char *url, bool gzip, bool reuse);
+int http_session_read(http_session_t *session, void *out, size_t size);
+const char *http_session_error(const http_session_t *session); // fixed reason only
+int http_session_status(const http_session_t *session);
+void http_session_stats(const http_session_t *session, http_session_stats_t *out);
+size_t http_session_bytes(void);
+
 #endif /* HTTP_H */

@@ -1,4 +1,5 @@
 #include "navidromestore.h"
+#include "navidromebatch.h"
 #include "navidromedebug.h"
 #include "src/system/library/library.h"
 #include <limits.h>
@@ -64,6 +65,12 @@ bool nd_store_open(nd_store_t *s, const char *path, const char *scope, bool writ
 }
 
 void nd_store_close(nd_store_t *s) {
+	sqlite3_finalize(s->insert);
+	s->insert = NULL;
+	sqlite3_finalize(s->relationship);
+	s->relationship = NULL;
+	sqlite3_finalize(s->genre);
+	s->genre = NULL;
 	if (s->db)
 		sqlite3_close(s->db);
 	s->db = NULL;
@@ -153,15 +160,18 @@ static bool label(const json_doc_t *d, int obj, const char *key, char out[ND_TEX
 static bool relation(nd_store_t *s, const char *album, nd_kind_t kind, const char *id) {
 	if (!*album || !*id)
 		return true;
-	sqlite3_stmt *st = NULL;
-	if (!prepare(s, &st, "INSERT OR IGNORE INTO rel VALUES(?,?,?,?)"))
+	if (!s->relationship && !prepare(s, &s->relationship, "INSERT OR IGNORE INTO rel VALUES(?,?,?,?)"))
 		return false;
+	sqlite3_stmt *st = s->relationship;
+	sqlite3_reset(st);
+	sqlite3_clear_bindings(st);
 	sqlite3_bind_int64(st, 1, s->generation);
 	bind(st, 2, album);
 	sqlite3_bind_int(st, 3, kind);
 	bind(st, 4, id);
 	bool ok = sqlite3_step(st) == SQLITE_DONE;
-	sqlite3_finalize(st);
+	sqlite3_reset(st);
+	sqlite3_clear_bindings(st);
 	return ok;
 }
 
@@ -170,9 +180,11 @@ static bool genre(nd_store_t *s, const char *album, const char *name) {
 		return true;
 	if (strlen(name) >= ND_ID_MAX)
 		return false;
-	sqlite3_stmt *st = NULL;
-	if (!prepare(s, &st, "INSERT OR IGNORE INTO entity(gen,kind,id,title,artist,album,cover,duration,disc,track,sortkey) VALUES(?,3,?,?,'','','',0,0,0,?)"))
+	if (!s->genre && !prepare(s, &s->genre, "INSERT OR IGNORE INTO entity(gen,kind,id,title,artist,album,cover,duration,disc,track,sortkey) VALUES(?,3,?,?,'','','',0,0,0,?)"))
 		return false;
+	sqlite3_stmt *st = s->genre;
+	sqlite3_reset(st);
+	sqlite3_clear_bindings(st);
 	sqlite3_bind_int64(st, 1, s->generation);
 	bind(st, 2, name);
 	bind(st, 3, name);
@@ -180,7 +192,8 @@ static bool genre(nd_store_t *s, const char *album, const char *name) {
 	library_sort_key_ex(name, key, sizeof(key), true);
 	bind(st, 4, key);
 	bool ok = sqlite3_step(st) == SQLITE_DONE;
-	sqlite3_finalize(st);
+	sqlite3_reset(st);
+	sqlite3_clear_bindings(st);
 	return ok && relation(s, album, ND_GENRES, name);
 }
 
@@ -578,4 +591,194 @@ bool nd_store_play_row(nd_store_t *s, int64_t gen, int64_t handle, nd_playrow_t 
 	}
 	sqlite3_finalize(st);
 	return ok;
+}
+
+// Packed extracted metadata, not response bodies. Offsets survive ownership transfer.
+bool nd_batch_init(nd_batch_t *b, nd_kind_t kind) {
+	memset(b, 0, sizeof(*b));
+	b->kind = kind;
+	b->used = 4;
+	b->arena = calloc(1, ND_BATCH_ARENA);
+	if (!b->arena)
+		b->error = "nd_json_memory";
+	return b->arena != NULL;
+}
+void nd_batch_free(nd_batch_t *b) {
+	free(b->arena);
+	memset(b, 0, sizeof(*b));
+}
+static uint32_t batch_alloc(nd_batch_t *b, size_t size) {
+	size_t at = (b->used + 3) & ~(size_t)3;
+	if (at > ND_BATCH_ARENA || size > ND_BATCH_ARENA - at) {
+		b->error = "nd_page_large";
+		return 0;
+	}
+	b->used = at + size;
+	return at;
+}
+static uint32_t batch_string(nd_batch_t *b, const char *text) {
+	if (!*text)
+		return 0;
+	size_t size = strlen(text) + 1;
+	uint32_t at = batch_alloc(b, size);
+	if (at)
+		memcpy(b->arena + at, text, size);
+	return at;
+}
+static bool batch_unique(const json_doc_t *d, int obj, const char *name) {
+	int found = 0;
+	for (int i = obj + 1; i < d->count && d->toks[i].start < d->toks[obj].end; i++) {
+		if (d->toks[i].parent != obj)
+			continue;
+		char key[64];
+		if (json_str(d, i, key, sizeof(key)) && !strcmp(key, name) && ++found > 1)
+			return false;
+	}
+	return true;
+}
+static bool batch_relation(nd_batch_t *b, nd_batch_row_t *row, int kind, const char *id) {
+	if (!*id)
+		return true;
+	uint32_t at = batch_alloc(b, sizeof(nd_batch_relation_t));
+	if (!at)
+		return false;
+	nd_batch_relation_t *r = (void *)(b->arena + at);
+	r->next = row->relations;
+	r->kind = kind;
+	r->id = batch_string(b, id);
+	row->relations = at;
+	return !b->error;
+}
+bool nd_batch_add(nd_batch_t *b, const json_doc_t *d, int obj) {
+	if (obj < 0 || d->toks[obj].type != JSON_OBJECT)
+		return false;
+	static const char *unique[] = {"id", "albumId", "artistId", "artists", "albumArtists", "genres", "genre", "title", "name", "value", "artist", "coverArt", "duration", "discNumber", "track"};
+	for (size_t i = 0; i < sizeof(unique) / sizeof(*unique); i++)
+		if (!batch_unique(d, obj, unique[i]))
+			return false;
+	nd_row_t row = {0};
+	char album[ND_ID_MAX] = "";
+	bool ok;
+	if (b->kind == ND_GENRES) {
+		ok = field(d, obj, "value", row.id, sizeof(row.id), true);
+		snprintf(row.title, sizeof(row.title), "%s", row.id);
+	} else {
+		ok = field(d, obj, "id", row.id, sizeof(row.id), true) && label(d, obj, b->kind == ND_TRACKS ? "title" : "name", row.title) && label(d, obj, "artist", row.artist) && field(d, obj, "coverArt", row.cover, sizeof(row.cover), false);
+		if (b->kind == ND_TRACKS)
+			ok = ok && field(d, obj, "albumId", album, sizeof(album), true);
+		else if (b->kind == ND_ALBUMS)
+			snprintf(album, sizeof(album), "%s", row.id);
+	}
+	if (!ok)
+		return false;
+	if (!*row.title)
+		snprintf(row.title, sizeof(row.title), "%s", row.id);
+	long duration = json_obj_long(d, obj, "duration", 0), disc = json_obj_long(d, obj, "discNumber", 0), track = json_obj_long(d, obj, "track", 0);
+	if (duration < 0 || duration > INT_MAX || disc < 0 || disc > INT_MAX || track < 0 || track > INT_MAX)
+		return false;
+	uint32_t at = batch_alloc(b, sizeof(nd_batch_row_t));
+	if (!at)
+		return false;
+	nd_batch_row_t *r = (void *)(b->arena + at);
+	memset(r, 0, sizeof(*r));
+	r->id = batch_string(b, row.id);
+	r->title = batch_string(b, row.title);
+	r->artist = batch_string(b, row.artist);
+	r->album = batch_string(b, album);
+	r->cover = batch_string(b, row.cover);
+	r->duration = duration;
+	r->disc = disc;
+	r->track = track;
+	if (b->error)
+		return false;
+	if (b->kind != ND_ARTISTS && b->kind != ND_GENRES) {
+		bool structured_artists = false, structured_genres = false;
+		const char *keys[] = {"artists", "albumArtists", "genres"};
+		for (int a = 0; a < 3; a++) {
+			int arr = json_get(d, obj, keys[a]);
+			if (arr < 0 || d->toks[arr].type == JSON_NULL)
+				continue;
+			if (d->toks[arr].type != JSON_ARRAY)
+				return false;
+			if (!a)
+				structured_artists = json_len(d, arr) > 0;
+			if (a == 2)
+				structured_genres = json_len(d, arr) > 0;
+			// Direct-child iteration is linear even for metadata-heavy arrays.
+			for (int t = arr + 1; t < d->count && d->toks[t].start < d->toks[arr].end; t++) {
+				if (d->toks[t].parent != arr)
+					continue;
+				char id[ND_ID_MAX];
+				const char *key = a == 2 ? "name" : "id";
+				if (d->toks[t].type != JSON_OBJECT || !batch_unique(d, t, key) || !field(d, t, key, id, sizeof(id), true) || !batch_relation(b, r, a == 2 ? ND_GENRES : ND_ARTISTS, id))
+					return false;
+			}
+		}
+		char value[ND_ID_MAX];
+		if (!structured_artists && (!field(d, obj, "artistId", value, sizeof(value), false) || !batch_relation(b, r, ND_ARTISTS, value)))
+			return false;
+		if (!structured_genres && (!field(d, obj, "genre", value, sizeof(value), false) || !batch_relation(b, r, ND_GENRES, value)))
+			return false;
+	}
+	if (b->last)
+		((nd_batch_row_t *)(void *)(b->arena + b->last))->next = at;
+	else
+		b->first = at;
+	b->last = at;
+	b->count++;
+	return !b->error;
+}
+bool nd_store_import_batch(nd_store_t *s, const nd_batch_t *b) {
+	if (!s->insert && !prepare(s, &s->insert, "INSERT INTO entity VALUES(?,?,?,?,?,?,?,?,?,?,?)"))
+		return false;
+	if (!sql(s, "BEGIN"))
+		return false;
+	bool ok = true;
+	int item = 0;
+	for (uint32_t at = b->first; at && ok; item++) {
+		const nd_batch_row_t *r = (const void *)(b->arena + at);
+		const char *id = (const char *)b->arena + r->id;
+		const char *album = (const char *)b->arena + r->album;
+		if (b->kind == ND_GENRES)
+			ok = genre(s, "", id);
+		else {
+			sqlite3_stmt *st = s->insert;
+			sqlite3_reset(st);
+			sqlite3_clear_bindings(st);
+			sqlite3_bind_int64(st, 1, s->generation);
+			sqlite3_bind_int(st, 2, b->kind);
+			bind(st, 3, id);
+			bind(st, 4, (const char *)b->arena + r->title);
+			bind(st, 5, (const char *)b->arena + r->artist);
+			bind(st, 6, album);
+			bind(st, 7, (const char *)b->arena + r->cover);
+			sqlite3_bind_int(st, 8, r->duration);
+			sqlite3_bind_int(st, 9, r->disc);
+			sqlite3_bind_int(st, 10, r->track);
+			char key[LIBRARY_SORT_KEY_MAX];
+			library_sort_key_ex((const char *)b->arena + r->title, key, sizeof(key), true);
+			bind(st, 11, key);
+			int rc = sqlite3_step(st);
+			ok = rc == SQLITE_DONE;
+			sqlite3_reset(st);
+			sqlite3_clear_bindings(st);
+			if (!ok) {
+				nd_log("navidrome: sync insert kind=%d item=%d reason=%s code=%d\n", b->kind, item, rc == SQLITE_CONSTRAINT ? "duplicate_entity" : "database_error", rc);
+				s->error = rc == SQLITE_CONSTRAINT ? "nd_sync_inconsistent" : "nd_cache_error";
+			}
+			for (uint32_t rel = r->relations; rel && ok;) {
+				const nd_batch_relation_t *v = (const void *)(b->arena + rel);
+				const char *name = (const char *)b->arena + v->id;
+				ok = v->kind == ND_GENRES ? genre(s, album, name) : relation(s, album, v->kind, name);
+				rel = v->next;
+			}
+		}
+		at = r->next;
+	}
+	if (ok && sql(s, "COMMIT"))
+		return true;
+	sql(s, "ROLLBACK");
+	if (!s->error)
+		s->error = "nd_cache_error";
+	return false;
 }

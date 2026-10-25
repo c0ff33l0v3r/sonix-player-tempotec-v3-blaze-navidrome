@@ -366,7 +366,7 @@ static void explain_failure(SSL *ssl, int ret, char *err, size_t err_size) {
 	}
 }
 
-tls_conn_t *tls_client(int fd, const char *hostname, char *err, size_t err_size) {
+tls_conn_t *tls_client_wait(int fd, const char *hostname, bool (*wait)(void *, bool), void *user, char *err, size_t err_size) {
 	if (err && err_size) {
 		err[0] = '\0';
 	}
@@ -411,6 +411,12 @@ tls_conn_t *tls_client(int fd, const char *hostname, char *err, size_t err_size)
 	}
 
 	int ret = api.SSL_connect(ssl);
+	while (ret != 1 && wait) {
+		int code = api.SSL_get_error(ssl, ret);
+		if ((code != SSL_ERROR_WANT_READ && code != SSL_ERROR_WANT_WRITE) || !wait(user, code == SSL_ERROR_WANT_WRITE))
+			break;
+		ret = api.SSL_connect(ssl);
+	}
 	if (ret != 1) {
 		if (err) {
 			explain_failure(ssl, ret, err, err_size);
@@ -427,6 +433,21 @@ tls_conn_t *tls_client(int fd, const char *hostname, char *err, size_t err_size)
 	c->ssl = ssl;
 	return c;
 }
+
+tls_conn_t *tls_client(int fd, const char *hostname, char *err, size_t err_size) { return tls_client_wait(fd, hostname, NULL, NULL, err, err_size); }
+
+static int ready_result(tls_conn_t *c, int n) {
+	if (n > 0)
+		return n;
+	int code = api.SSL_get_error(c->ssl, n);
+	if (code == SSL_ERROR_WANT_READ)
+		return -2;
+	if (code == SSL_ERROR_WANT_WRITE)
+		return -3;
+	return code == SSL_ERROR_ZERO_RETURN ? 0 : -1;
+}
+int tls_read_ready(tls_conn_t *c, void *buf, int len) { return ready_result(c, api.SSL_read(c->ssl, buf, len)); }
+int tls_write_ready(tls_conn_t *c, const void *buf, int len) { return ready_result(c, api.SSL_write(c->ssl, buf, len)); }
 
 int tls_read(tls_conn_t *c, void *buf, int len) {
 	if (!c || !c->ssl || len <= 0) {

@@ -1,22 +1,22 @@
 // See miniz.h for what this file stands in for.
 
 #include "miniz.h"
+#include <pthread.h>
+
+static unsigned long crc_table[256];
+static pthread_once_t crc_once = PTHREAD_ONCE_INIT;
+static void crc_init(void) {
+	for (unsigned i = 0; i < 256; i++) {
+		unsigned long c = i;
+		for (int k = 0; k < 8; k++)
+			c = (c & 1) ? (0xEDB88320UL ^ (c >> 1)) : (c >> 1);
+		crc_table[i] = c;
+	}
+}
 
 // The zlib CRC32, polynomial 0xEDB88320. The table is built on first use.
 mz_ulong mz_crc32(mz_ulong crc, const unsigned char *ptr, size_t buf_len) {
-	static unsigned long table[256];
-	static int built;
-
-	if (!built) {
-		for (unsigned i = 0; i < 256; i++) {
-			unsigned long c = i;
-			for (int k = 0; k < 8; k++) {
-				c = (c & 1) ? (0xEDB88320UL ^ (c >> 1)) : (c >> 1);
-			}
-			table[i] = c;
-		}
-		built = 1;
-	}
+	pthread_once(&crc_once, crc_init);
 
 	if (!ptr) {
 		return 0;
@@ -24,7 +24,7 @@ mz_ulong mz_crc32(mz_ulong crc, const unsigned char *ptr, size_t buf_len) {
 
 	unsigned long c = (unsigned long)crc ^ 0xFFFFFFFFUL;
 	for (size_t i = 0; i < buf_len; i++) {
-		c = table[(c ^ ptr[i]) & 0xFF] ^ (c >> 8);
+		c = crc_table[(c ^ ptr[i]) & 0xFF] ^ (c >> 8);
 	}
 	return (mz_ulong)((c ^ 0xFFFFFFFFUL) & 0xFFFFFFFFUL);
 }

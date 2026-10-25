@@ -1364,3 +1364,552 @@ void http_stream_close(http_stream_t *st) {
 		st->fd = -1;
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Opt-in finite sessions. Legacy requests above deliberately retain their defaults.
+#include "gzip.h"
+#include <fcntl.h>
+#include <poll.h>
+#include <stdint.h>
+#include <time.h>
+
+#ifndef HTTP_FINITE_DEADLINE_MS
+#define HTTP_FINITE_DEADLINE_MS 30000
+#endif
+#define FINITE_WIRE (8u * 1024u * 1024u)
+#define FINITE_DECODED (16u * 1024u * 1024u)
+struct http_session {
+	conn_t conn;
+	url_t origin;
+	bool (*current)(void *);
+	void *user;
+	const char *error;
+	bool chunked, closing, complete, chunk_crlf;
+	int status;
+	size_t remaining, chunk, pos, end;
+	unsigned char buffer[8192];
+	gzip_reader_t *gzip;
+	double deadline, idle;
+	http_session_stats_t stats;
+};
+static double finite_now(void) {
+	struct timespec t;
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	return t.tv_sec + t.tv_nsec / 1e9;
+}
+static bool finite_current(http_session_t *s) {
+	if (s->current && !s->current(s->user)) {
+		s->error = "cancelled";
+		return false;
+	}
+	if (finite_now() >= s->deadline) {
+		s->error = "deadline";
+		return false;
+	}
+	return true;
+}
+static bool finite_wait(void *arg, bool write) {
+	http_session_t *s = arg;
+	while (finite_current(s)) {
+		double remaining = s->idle - finite_now();
+		if (remaining <= 0) {
+			s->error = "idle_timeout";
+			return false;
+		}
+		struct pollfd p = {.fd = s->conn.fd, .events = write ? POLLOUT : POLLIN};
+		int ms = remaining < .1 ? (int)(remaining * 1000) + 1 : 100;
+		int n = poll(&p, 1, ms);
+		if (n > 0)
+			return true;
+		if (n < 0 && errno != EINTR) {
+			s->error = "network";
+			return false;
+		}
+	}
+	return false;
+}
+// Resolver jobs own only a hostname and result, never credentials or request URLs.
+// At most two unresolved jobs may exist, even when libc name resolution stalls.
+static pthread_mutex_t resolve_lock = PTHREAD_MUTEX_INITIALIZER;
+static unsigned resolve_jobs;
+typedef struct {
+	pthread_mutex_t lock;
+	bool done, abandoned;
+	char host[256], port[16];
+	struct addrinfo *result;
+} finite_resolve_t;
+static void resolve_free(finite_resolve_t *r) {
+	if (r->result)
+		freeaddrinfo(r->result);
+	pthread_mutex_destroy(&r->lock);
+	free(r);
+}
+static void *finite_resolver(void *arg) {
+	finite_resolve_t *r = arg;
+	struct addrinfo hints = {.ai_family = AF_INET, .ai_socktype = SOCK_STREAM};
+	dns_follow_resolv_conf();
+	getaddrinfo(r->host, r->port, &hints, &r->result);
+	pthread_mutex_lock(&resolve_lock);
+	resolve_jobs--;
+	pthread_mutex_unlock(&resolve_lock);
+	pthread_mutex_lock(&r->lock);
+	r->done = true;
+	bool abandoned = r->abandoned;
+	pthread_mutex_unlock(&r->lock);
+	if (abandoned)
+		resolve_free(r);
+	return NULL;
+}
+static struct addrinfo *finite_resolve(http_session_t *s, const url_t *u) {
+	finite_resolve_t *r = calloc(1, sizeof(*r));
+	if (!r) {
+		s->error = "allocation_failed";
+		return NULL;
+	}
+	if (pthread_mutex_init(&r->lock, NULL)) {
+		free(r);
+		s->error = "resolver_unavailable";
+		return NULL;
+	}
+	snprintf(r->host, sizeof(r->host), "%s", u->host);
+	snprintf(r->port, sizeof(r->port), "%d", u->port);
+	pthread_mutex_lock(&resolve_lock);
+	bool available = resolve_jobs < 2;
+	if (available)
+		resolve_jobs++;
+	pthread_mutex_unlock(&resolve_lock);
+	pthread_t thread;
+	pthread_attr_t attr;
+	int rc = pthread_attr_init(&attr);
+	bool attr_ready = !rc;
+	if (!rc)
+		rc = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+	if (!rc)
+		rc = pthread_attr_setstacksize(&attr, 256 * 1024);
+	if (!rc)
+		rc = available ? pthread_create(&thread, &attr, finite_resolver, r) : -1;
+	if (attr_ready)
+		pthread_attr_destroy(&attr);
+	if (rc) {
+		if (available) {
+			pthread_mutex_lock(&resolve_lock);
+			resolve_jobs--;
+			pthread_mutex_unlock(&resolve_lock);
+		}
+		resolve_free(r);
+		s->error = "resolver_unavailable";
+		return NULL;
+	}
+	for (;;) {
+		pthread_mutex_lock(&r->lock);
+		if (r->done) {
+			struct addrinfo *result = r->result;
+			r->result = NULL;
+			pthread_mutex_unlock(&r->lock);
+			resolve_free(r);
+			if (!result)
+				s->error = "dns";
+			return result;
+		}
+		if (!finite_current(s)) {
+			r->abandoned = true;
+			pthread_mutex_unlock(&r->lock);
+			return NULL;
+		}
+		pthread_mutex_unlock(&r->lock);
+		struct timespec pause = {.tv_nsec = 1000000};
+		nanosleep(&pause, NULL);
+	}
+}
+static void finite_close(http_session_t *s) {
+	conn_close(&s->conn);
+	s->pos = s->end = 0;
+}
+static bool finite_open(http_session_t *s, const url_t *u) {
+	double start = finite_now();
+	struct addrinfo *list = finite_resolve(s, u);
+	if (!list)
+		return false;
+	for (struct addrinfo *a = list; a && finite_current(s); a = a->ai_next) {
+		s->conn.fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+		if (s->conn.fd < 0)
+			continue;
+		int flags = fcntl(s->conn.fd, F_GETFL, 0);
+		if (flags < 0 || fcntl(s->conn.fd, F_SETFL, flags | O_NONBLOCK)) {
+			finite_close(s);
+			continue;
+		}
+		s->idle = finite_now() + 8;
+		int rc = connect(s->conn.fd, a->ai_addr, a->ai_addrlen);
+		if (rc && errno == EINPROGRESS && finite_wait(s, true)) {
+			int error = 0;
+			socklen_t size = sizeof(error);
+			rc = getsockopt(s->conn.fd, SOL_SOCKET, SO_ERROR, &error, &size) || error;
+		}
+		if (!rc)
+			break;
+		finite_close(s);
+	}
+	freeaddrinfo(list);
+	if (s->conn.fd < 0) {
+		if (!s->error)
+			s->error = "connect";
+		return false;
+	}
+	int yes = 1;
+	setsockopt(s->conn.fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+	if (u->secure) {
+		char ignored[192];
+		s->conn.tls = tls_client_wait(s->conn.fd, u->host, finite_wait, s, ignored, sizeof(ignored));
+		memset(ignored, 0, sizeof(ignored));
+		if (!s->conn.tls) {
+			if (!s->error)
+				s->error = "tls";
+			finite_close(s);
+			return false;
+		}
+	}
+	s->origin = *u;
+	memset(s->origin.path, 0, sizeof(s->origin.path));
+	s->stats.opens++;
+	s->stats.connect_seconds += finite_now() - start;
+	return true;
+}
+static int finite_io(http_session_t *s, void *buf, size_t size, bool write) {
+	while (finite_current(s)) {
+		int n;
+		if (s->conn.tls)
+			n = write ? tls_write_ready(s->conn.tls, buf, size) : tls_read_ready(s->conn.tls, buf, size);
+		else {
+			n = write ? send(s->conn.fd, buf, size, MSG_NOSIGNAL) : recv(s->conn.fd, buf, size, 0);
+			if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
+				n = write ? -3 : -2;
+		}
+		if (n >= 0) {
+			if (n)
+				s->idle = finite_now() + 8;
+			return n;
+		}
+		if ((n != -2 && n != -3) || !finite_wait(s, n == -3))
+			break;
+	}
+	if (!s->error)
+		s->error = "network";
+	return -1;
+}
+static int finite_byte(http_session_t *s) {
+	if (s->pos == s->end) {
+		int n = finite_io(s, s->buffer, sizeof(s->buffer), false);
+		if (n <= 0)
+			return -1;
+		s->pos = 0;
+		s->end = n;
+	}
+	return s->buffer[s->pos++];
+}
+static bool finite_line(http_session_t *s, char *line, size_t cap) {
+	size_t n = 0;
+	while (n + 1 < cap) {
+		int c = finite_byte(s);
+		if (c < 0 || c == 0)
+			break;
+		if (c == '\r') {
+			if (finite_byte(s) != '\n')
+				break;
+			line[n] = 0;
+			return true;
+		}
+		if (c == '\n')
+			break;
+		line[n++] = c;
+	}
+	if (!s->error)
+		s->error = "framing";
+	return false;
+}
+static bool finite_number(const char *text, unsigned base, size_t *out) {
+	if (!*text)
+		return false;
+	size_t n = 0;
+	for (; *text; text++) {
+		unsigned digit = *text >= '0' && *text <= '9' ? (unsigned)(*text - '0') : base == 16 && *text >= 'a' && *text <= 'f' ? (unsigned)(*text - 'a' + 10) : base == 16 && *text >= 'A' && *text <= 'F' ? (unsigned)(*text - 'A' + 10) : base;
+		if (digit >= base || n > (SIZE_MAX - digit) / base)
+			return false;
+		n = n * base + digit;
+	}
+	*out = n;
+	return true;
+}
+static int finite_encoded(void *arg, void *out, size_t size) {
+	http_session_t *s = arg;
+	if (!finite_current(s))
+		return -1;
+	if (s->complete)
+		return 0;
+	if (s->chunked && !s->chunk) {
+		char line[1024];
+		if (s->chunk_crlf && (finite_byte(s) != '\r' || finite_byte(s) != '\n'))
+			goto bad;
+		if (!finite_line(s, line, sizeof(line)))
+			return -1;
+		char *extension = strchr(line, ';');
+		if (extension)
+			*extension = 0;
+		if (!finite_number(line, 16, &s->chunk))
+			goto bad;
+		if (!s->chunk) {
+			size_t trailers = 0;
+			do {
+				if (!finite_line(s, line, sizeof(line)))
+					return -1;
+				trailers += strlen(line) + 2;
+				if (trailers > 8192 || (*line && (!strchr(line, ':') || !strncasecmp(line, "Content-Length:", 15) || !strncasecmp(line, "Transfer-Encoding:", 18))))
+					goto bad;
+			} while (*line);
+			s->complete = true;
+			return 0;
+		}
+		s->chunk_crlf = true;
+	}
+	if (!s->chunked && !s->closing && !s->remaining) {
+		s->complete = true;
+		return 0;
+	}
+	size_t n = size;
+	if (s->chunked && n > s->chunk)
+		n = s->chunk;
+	if (!s->chunked && !s->closing && n > s->remaining)
+		n = s->remaining;
+	if (s->pos < s->end) {
+		if (n > s->end - s->pos)
+			n = s->end - s->pos;
+		memcpy(out, s->buffer + s->pos, n);
+		s->pos += n;
+	} else {
+		int got = finite_io(s, out, n, false);
+		if (got < 0)
+			return -1;
+		if (!got) {
+			if (s->closing) {
+				s->complete = true;
+				return 0;
+			}
+			goto bad;
+		}
+		n = got;
+	}
+	if (n > FINITE_WIRE - s->stats.encoded) {
+		s->error = "body_limit";
+		return -1;
+	}
+	s->stats.encoded += n;
+	if (s->chunked)
+		s->chunk -= n;
+	else if (!s->closing)
+		s->remaining -= n;
+	return n;
+bad:
+	if (!s->error)
+		s->error = "framing";
+	return -1;
+}
+http_session_t *http_session_new(bool (*current)(void *), void *user) {
+	http_session_t *s = calloc(1, sizeof(*s));
+	if (s) {
+		s->conn.fd = -1;
+		s->current = current;
+		s->user = user;
+	}
+	return s;
+}
+void http_session_free(http_session_t *s) {
+	if (!s)
+		return;
+	finite_close(s);
+	gzip_reader_free(s->gzip);
+	memset(s, 0, sizeof(*s));
+	free(s);
+}
+size_t http_session_bytes(void) { return sizeof(http_session_t) + gzip_reader_bytes(); }
+const char *http_session_error(const http_session_t *s) { return s->error; }
+int http_session_status(const http_session_t *s) { return s->status; }
+void http_session_stats(const http_session_t *s, http_session_stats_t *out) { *out = s->stats; }
+int http_session_read(http_session_t *s, void *out, size_t size) {
+	if (s->error || !finite_current(s))
+		return -1;
+	double start = finite_now();
+	int n = s->gzip ? gzip_reader_read(s->gzip, out, size) : finite_encoded(s, out, size);
+	s->stats.transfer_seconds += finite_now() - start;
+	if (n < 0) {
+		if (!s->error)
+			s->error = "encoding_corrupt";
+		finite_close(s);
+		return -1;
+	}
+	if ((size_t)n > FINITE_DECODED - s->stats.decoded) {
+		s->error = "decoded_limit";
+		finite_close(s);
+		return -1;
+	}
+	s->stats.decoded += n;
+	if (!n && (s->closing || s->pos != s->end))
+		finite_close(s);
+	return n;
+}
+bool http_session_get(http_session_t *s, const char *url, bool gzip, bool reuse) {
+	if (!s->complete && s->conn.fd >= 0)
+		finite_close(s);
+	gzip_reader_free(s->gzip);
+	s->gzip = NULL;
+	memset(&s->stats, 0, sizeof(s->stats));
+	s->error = NULL;
+	s->deadline = finite_now() + HTTP_FINITE_DEADLINE_MS / 1000.0;
+	s->idle = finite_now() + 8;
+	char current[2600];
+	if (snprintf(current, sizeof(current), "%s", url) >= (int)sizeof(current)) {
+		s->error = "address";
+		return false;
+	}
+	for (int hop = 0; hop <= HTTP_MAX_REDIRECTS; hop++) {
+		url_t u;
+		if (!url_parse(current, &u)) {
+			s->error = "address";
+			break;
+		}
+		bool same = s->conn.fd >= 0 && reuse && u.port == s->origin.port && u.secure == s->origin.secure && !strcmp(u.host, s->origin.host);
+		if (same) {
+			struct pollfd p = {.fd = s->conn.fd, .events = POLLIN};
+			if (poll(&p, 1, 0) != 0)
+				same = false;
+		}
+		if (!same) {
+			finite_close(s);
+			if (!finite_open(s, &u))
+				break;
+		} else
+			s->stats.reuses++;
+		s->complete = false;
+		s->chunked = s->closing = s->chunk_crlf = false;
+		s->remaining = s->chunk = 0;
+		s->status = 0;
+		char request[3000], host[300];
+		host_header_value(&u, host, sizeof(host));
+		int length = snprintf(request, sizeof(request), "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: " HTTP_USER_AGENT "\r\nAccept: application/json\r\nAccept-Encoding: %s\r\nConnection: %s\r\n\r\n", u.path, host, gzip ? "gzip, identity" : "identity", reuse ? "keep-alive" : "close");
+		if (length < 0 || length >= (int)sizeof(request)) {
+			s->error = "address";
+			break;
+		}
+		int sent = 0;
+		while (sent < length) {
+			int n = finite_io(s, request + sent, length - sent, true);
+			if (n <= 0)
+				break;
+			sent += n;
+		}
+		memset(request, 0, sizeof(request));
+		if (sent != length)
+			break;
+		char line[2048], location[2048] = "";
+		size_t headers = 0;
+		if (!finite_line(s, line, sizeof(line)) || (strncmp(line, "HTTP/1.1 ", 9) && strncmp(line, "HTTP/1.0 ", 9)) || strlen(line) < 12) {
+			if (!s->error)
+				s->error = "framing";
+			break;
+		}
+		bool close = !strncmp(line, "HTTP/1.0 ", 9) || !reuse;
+		if (line[9] < '1' || line[9] > '5' || line[10] < '0' || line[10] > '9' || line[11] < '0' || line[11] > '9' || (line[12] && line[12] != ' ')) {
+			s->error = "framing";
+			break;
+		}
+		s->status = (line[9] - '0') * 100 + (line[10] - '0') * 10 + line[11] - '0';
+		bool has_length = false, has_encoding = false, compressed = false, has_transfer = false;
+		for (;;) {
+			if (!finite_line(s, line, sizeof(line)))
+				break;
+			headers += strlen(line) + 2;
+			if (headers > HTTP_HEADER_BUFFER) {
+				s->error = "framing";
+				break;
+			}
+			if (!*line)
+				break;
+			char *value = strchr(line, ':');
+			if (!value || value == line || line[0] == ' ' || line[0] == '\t') {
+				s->error = "framing";
+				break;
+			}
+			*value++ = 0;
+			while (*value == ' ' || *value == '\t')
+				value++;
+			size_t len = strlen(value);
+			while (len && (value[len - 1] == ' ' || value[len - 1] == '\t'))
+				value[--len] = 0;
+			if (!strcasecmp(line, "Content-Length")) {
+				if (has_length || !finite_number(value, 10, &s->remaining)) {
+					s->error = "framing";
+					break;
+				}
+				has_length = true;
+			} else if (!strcasecmp(line, "Transfer-Encoding")) {
+				if (has_transfer || strcasecmp(value, "chunked")) {
+					s->error = "framing";
+					break;
+				}
+				has_transfer = s->chunked = true;
+			} else if (!strcasecmp(line, "Content-Encoding")) {
+				if (has_encoding || (strcasecmp(value, "identity") && strcasecmp(value, "gzip"))) {
+					s->error = "encoding_unsupported";
+					break;
+				}
+				has_encoding = true;
+				compressed = !strcasecmp(value, "gzip");
+			} else if (!strcasecmp(line, "Connection")) {
+				if (strcasestr(value, "close"))
+					close = true;
+			} else if (!strcasecmp(line, "Location")) {
+				if (*location) {
+					s->error = "framing";
+					break;
+				}
+				snprintf(location, sizeof(location), "%s", value);
+			}
+		}
+		if (s->error)
+			break;
+		if (has_transfer && has_length) {
+			s->error = "framing";
+			break;
+		}
+		if (s->status >= 300 && s->status < 400 && *location) {
+			finite_close(s);
+			int n = location[0] == '/' ? snprintf(current, sizeof(current), "%s://%s:%d%s", u.secure ? "https" : "http", u.host, u.port, location) : snprintf(current, sizeof(current), "%s", location);
+			if (n >= (int)sizeof(current)) {
+				s->error = "address";
+				break;
+			}
+			continue;
+		}
+		s->closing = !has_transfer && !has_length;
+		// Close after fully draining a length-delimited Connection: close response too.
+		if (close && !s->closing)
+			s->origin.port = 0;
+		if (has_length && s->remaining > FINITE_WIRE) {
+			s->error = "body_limit";
+			break;
+		}
+		if (compressed) {
+			s->gzip = gzip_reader_new(finite_encoded, s);
+			if (!s->gzip) {
+				s->error = "allocation_failed";
+				break;
+			}
+		}
+		memset(current, 0, sizeof(current));
+		return true;
+	}
+	if (!s->error)
+		s->error = "redirect_or_request";
+	memset(current, 0, sizeof(current));
+	finite_close(s);
+	return false;
+}

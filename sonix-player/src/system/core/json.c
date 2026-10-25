@@ -14,6 +14,7 @@ typedef struct {
 	int pos;
 	json_doc_t *doc;
 	int capacity;
+	size_t *peak_bytes;
 	int limit;
 	int depth;
 	json_parse_result_t error;
@@ -30,6 +31,11 @@ static int tok_new(parser_t *p, json_type_t type, int start, int parent) {
 		int wanted = p->capacity > p->limit / 2 ? p->limit : p->capacity ? p->capacity * 2 : 64;
 		if (wanted > p->limit)
 			wanted = p->limit;
+		if (p->peak_bytes) {
+			size_t peak = ((size_t)p->capacity + (size_t)wanted) * sizeof(json_tok_t);
+			if (peak > *p->peak_bytes)
+				*p->peak_bytes = peak;
+		}
 		json_tok_t *grown = realloc(p->doc->toks, (size_t)wanted * sizeof(*grown));
 		if (!grown) {
 			p->error = JSON_PARSE_MEMORY;
@@ -234,7 +240,11 @@ bool json_parse(const char *text, json_doc_t *doc) { return json_parse_limited(t
 
 bool json_parse_limited(const char *text, json_doc_t *doc, int max_tokens) { return json_parse_detailed(text, doc, max_tokens) == JSON_PARSE_OK; }
 
-json_parse_result_t json_parse_detailed(const char *text, json_doc_t *doc, int max_tokens) {
+json_parse_result_t json_parse_detailed(const char *text, json_doc_t *doc, int max_tokens) { return json_parse_detailed_peak(text, doc, max_tokens, NULL); }
+
+json_parse_result_t json_parse_detailed_peak(const char *text, json_doc_t *doc, int max_tokens, size_t *peak_bytes) {
+	if (peak_bytes)
+		*peak_bytes = 0;
 	if (!text || !doc) {
 		return JSON_PARSE_SYNTAX;
 	}
@@ -242,7 +252,7 @@ json_parse_result_t json_parse_detailed(const char *text, json_doc_t *doc, int m
 	memset(doc, 0, sizeof(*doc));
 	doc->text = text;
 
-	parser_t p = {.text = text, .pos = 0, .doc = doc, .capacity = 0, .limit = max_tokens, .depth = 0, .error = JSON_PARSE_SYNTAX};
+	parser_t p = {.text = text, .pos = 0, .doc = doc, .capacity = 0, .peak_bytes = peak_bytes, .limit = max_tokens, .depth = 0, .error = JSON_PARSE_SYNTAX};
 	if (!parse_value(&p, -1)) {
 		json_free(doc);
 		return p.error;

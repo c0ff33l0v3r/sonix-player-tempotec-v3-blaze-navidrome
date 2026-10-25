@@ -1,5 +1,6 @@
 #include "navidrome.h"
 #include "navidromeapi.h"
+#include "navidromebatch.h"
 #include "navidromedebug.h"
 #include "navidromelibrary.h"
 #include "src/gui/shell/gui.h"
@@ -8,6 +9,8 @@
 #include "src/system/core/md5.h"
 #include "src/system/net/http.h"
 #include "src/system/net/wifi.h"
+#include <stdatomic.h>
+#include <time.h>
 
 #include <ctype.h>
 #include <errno.h>
@@ -32,7 +35,7 @@ typedef struct {
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t ready = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t io_drained = PTHREAD_COND_INITIALIZER;
-static unsigned cache_users;
+static unsigned cache_users, sync_owners;
 static pthread_t worker;
 static struct {
 	bool initialized, started, stop, pending, busy, configured, invalid, unlocked, checking, connected;
@@ -211,9 +214,11 @@ static bool sync_current(const job_t *job) {
 	return valid;
 }
 
-static const char *scan_status(const nd_record_t *record, const char *password, char marker[128]) {
+static bool sync_control_current(void *arg) { return sync_current(arg); }
+
+static const char *scan_status(const job_t *job, const nd_record_t *record, const char *password, char marker[128]) {
 	nd_document_t doc;
-	const char *error = nd_api_json(record->host, record->user, password, "getScanStatus", NULL, 16384, &doc);
+	const char *error = nd_api_control(record->host, record->user, password, sync_control_current, (void *)job, &doc);
 	if (error)
 		return error;
 	int obj = json_get(&doc.doc, doc.response, "scanStatus");
@@ -234,9 +239,190 @@ static const char *scan_status(const nd_record_t *record, const char *password, 
 	return error;
 }
 
+// Fixed slots own every fetching/ready/importing batch; no full-library queue.
+typedef struct sync_pool sync_pool_t;
+typedef struct {
+	sync_pool_t *pool;
+	pthread_t thread;
+	http_session_t *session;
+	int state, offset, amount;
+	nd_kind_t kind;
+	unsigned serial;
+	nd_batch_t batch;
+	const char *error;
+} sync_slot_t;
+struct sync_pool {
+	pthread_mutex_t mutex;
+	pthread_cond_t ready;
+	atomic_bool stop;
+	atomic_uint serial;
+	int workers;
+	sync_slot_t slots[2];
+	const job_t *job;
+	const nd_record_t *record;
+	const char *password;
+	bool gzip, reuse;
+	size_t requests, reductions, discarded, encoded, decoded, opens, reuses, buffer_peak, commits;
+	size_t accepted_pages[4], accepted_rows;
+	double import_seconds, wait_seconds, parse_seconds, transfer_seconds, connect_seconds;
+};
+static double sync_now(void) {
+	struct timespec t;
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	return t.tv_sec + t.tv_nsec / 1e9;
+}
+static bool sync_slot_current(void *arg) {
+	sync_slot_t *slot = arg;
+	return !atomic_load(&slot->pool->stop) && slot->serial == atomic_load(&slot->pool->serial) && sync_current(slot->pool->job);
+}
+static void *sync_fetch(void *arg) {
+	sync_slot_t *slot = arg;
+	sync_pool_t *p = slot->pool;
+	pthread_mutex_lock(&p->mutex);
+	for (;;) {
+		while (!atomic_load(&p->stop) && slot->state != 1)
+			pthread_cond_wait(&p->ready, &p->mutex);
+		if (atomic_load(&p->stop))
+			break;
+		pthread_mutex_unlock(&p->mutex);
+		slot->error = nd_batch_init(&slot->batch, slot->kind) ? nd_api_page(slot->session, p->record->host, p->record->user, p->password, slot->kind, slot->offset, slot->amount, p->gzip, p->reuse, &slot->batch) : "nd_json_memory";
+		pthread_mutex_lock(&p->mutex);
+		slot->state = 2;
+		pthread_cond_broadcast(&p->ready);
+	}
+	pthread_mutex_unlock(&p->mutex);
+	return NULL;
+}
+static bool sync_pool_start(sync_pool_t *p, const job_t *job, const nd_record_t *record, const char *password) {
+	memset(p, 0, sizeof(*p));
+	p->job = job;
+	p->record = record;
+	p->password = password;
+	p->gzip = p->reuse = true;
+	pthread_mutex_init(&p->mutex, NULL);
+	pthread_condattr_t cond;
+	pthread_condattr_init(&cond);
+	pthread_condattr_setclock(&cond, CLOCK_MONOTONIC);
+	pthread_cond_init(&p->ready, &cond);
+	pthread_condattr_destroy(&cond);
+	atomic_init(&p->stop, false);
+	atomic_init(&p->serial, 1);
+	int wanted = 2;
+#ifdef NAVIDROME_TEST
+	const char *setting = getenv("SONIX_SYNC_SLOTS");
+	if (setting && !strcmp(setting, "1"))
+		wanted = 1;
+	setting = getenv("SONIX_SYNC_GZIP");
+	if (setting && !strcmp(setting, "0"))
+		p->gzip = false;
+	setting = getenv("SONIX_SYNC_REUSE");
+	if (setting && !strcmp(setting, "0"))
+		p->reuse = false;
+#endif
+	pthread_attr_t attr;
+	if (pthread_attr_init(&attr))
+		return false;
+	if (pthread_attr_setstacksize(&attr, 256 * 1024)) {
+		pthread_attr_destroy(&attr);
+		return false;
+	}
+	for (int i = 0; i < wanted; i++) {
+		sync_slot_t *slot = &p->slots[i];
+		slot->pool = p;
+		slot->serial = 1;
+		slot->session = http_session_new(sync_slot_current, slot);
+		bool inject = false;
+#ifdef NAVIDROME_TEST
+		const char *failure = getenv("SONIX_SYNC_FAIL_WORKER");
+		inject = failure && atoi(failure) == i + 1;
+#endif
+		if (!slot->session || inject || pthread_create(&slot->thread, &attr, sync_fetch, slot)) {
+			http_session_free(slot->session);
+			slot->session = NULL;
+			break;
+		}
+		p->workers++;
+	}
+	pthread_attr_destroy(&attr);
+	return p->workers > 0;
+}
+static void sync_collect(sync_pool_t *p, sync_slot_t *slot) {
+	http_session_stats_t stats;
+	http_session_stats(slot->session, &stats);
+	p->requests++;
+	p->encoded += stats.encoded;
+	p->decoded += stats.decoded;
+	p->opens += stats.opens;
+	p->reuses += stats.reuses;
+	p->transfer_seconds += stats.transfer_seconds;
+	p->connect_seconds += stats.connect_seconds;
+	p->parse_seconds += slot->batch.parse_seconds;
+	if (slot->batch.buffer_peak > p->buffer_peak)
+		p->buffer_peak = slot->batch.buffer_peak;
+}
+static void sync_pool_wait(sync_pool_t *p) {
+	struct timespec until;
+	clock_gettime(CLOCK_MONOTONIC, &until);
+	until.tv_nsec += 100000000;
+	if (until.tv_nsec >= 1000000000) {
+		until.tv_sec++;
+		until.tv_nsec -= 1000000000;
+	}
+	pthread_cond_timedwait(&p->ready, &p->mutex, &until);
+}
+static const char *sync_retire(sync_pool_t *p) {
+	atomic_fetch_add(&p->serial, 1);
+	pthread_mutex_lock(&p->mutex);
+	for (;;) {
+		bool running = false;
+		for (int i = 0; i < p->workers; i++)
+			running |= p->slots[i].state == 1;
+		if (!running)
+			break;
+		sync_pool_wait(p);
+	}
+	const char *error = NULL;
+	for (int i = 0; i < p->workers; i++) {
+		sync_slot_t *slot = &p->slots[i];
+		if (slot->state) {
+			sync_collect(p, slot);
+			p->discarded++;
+			if (slot->error && strcmp(slot->error, "nd_sync_cancelled") && strcmp(slot->error, "nd_page_large"))
+				error = slot->error;
+			nd_batch_free(&slot->batch);
+			slot->state = 0;
+		}
+	}
+	pthread_mutex_unlock(&p->mutex);
+	return error;
+}
+static void sync_pool_end(sync_pool_t *p) {
+	sync_retire(p);
+	atomic_store(&p->stop, true);
+	pthread_mutex_lock(&p->mutex);
+	pthread_cond_broadcast(&p->ready);
+	pthread_mutex_unlock(&p->mutex);
+	for (int i = 0; i < p->workers; i++) {
+		pthread_join(p->slots[i].thread, NULL);
+		http_session_free(p->slots[i].session);
+	}
+	pthread_cond_destroy(&p->ready);
+	pthread_mutex_destroy(&p->mutex);
+}
+static void sync_dispatch(sync_pool_t *p, sync_slot_t *slot, nd_kind_t kind, int offset, int amount) {
+	slot->kind = kind;
+	slot->offset = offset;
+	slot->amount = amount;
+	slot->serial = atomic_load(&p->serial);
+	slot->error = NULL;
+	slot->state = 1;
+	pthread_cond_broadcast(&p->ready);
+}
 static void sync_run(const job_t *job, const nd_record_t *record, const char *password) {
+	double start = sync_now(), validation_seconds = 0, publish_seconds = 0, cleanup_seconds = 0;
 	pthread_mutex_lock(&lock);
 	nd_library_t result = g.library;
+	sync_owners++;
 	pthread_mutex_unlock(&lock);
 	struct stat card = {0};
 	const char *error = stat(job->root, &card) == 0 ? NULL : "nd_cache_storage";
@@ -245,83 +431,142 @@ static void sync_run(const job_t *job, const nd_record_t *record, const char *pa
 	if (!error && !sync_current(job))
 		error = "nd_sync_cancelled";
 	if (!error)
-		error = scan_status(record, password, before);
-	int64_t candidate = 0;
+		error = scan_status(job, record, password, before);
+	if (!error && navidrome_cache_begin(job->local_epoch, job->card_epoch)) {
+		if (!nd_cache_open_sync(&result, &store) || !nd_store_begin(&store))
+			error = "nd_cache_error";
+		navidrome_cache_end();
+	} else if (!error)
+		error = "nd_sync_cancelled";
+	sync_pool_t pool;
+	bool initialized = false;
 	if (!error) {
-		if (!navidrome_cache_begin(job->local_epoch, job->card_epoch))
-			error = "nd_sync_cancelled";
-		else {
-			if (!nd_cache_open_sync(&result, &store) || !nd_store_begin(&store))
-				error = "nd_cache_error";
-			candidate = store.generation;
-			nd_store_close(&store);
-			navidrome_cache_end();
-		}
+		initialized = true;
+		if (!sync_pool_start(&pool, job, record, password))
+			error = "nd_worker_error";
 	}
 	for (int kind = 0; !error && kind < 4; kind++) {
-		int offset = 0;
-		int amount = 50;
+		int offset = 0, next = 0, amount = ND_BATCH_ITEMS;
+		bool bootstrap = true;
+#ifdef NAVIDROME_TEST
+		const char *size = getenv("SONIX_SYNC_PAGE");
+		if (size && atoi(size) > 0 && atoi(size) <= ND_BATCH_ITEMS)
+			amount = atoi(size);
+#endif
 		for (;;) {
 			if (!sync_current(job) || !nd_cache_card_same(job->root, card.st_dev, card.st_ino)) {
 				error = "nd_sync_cancelled";
 				break;
 			}
-			char query[256];
-			int count = 0;
-			nd_document_t doc;
-			for (;;) {
-				if (kind != ND_GENRES)
-					snprintf(query, sizeof(query), "query=&songCount=%d&songOffset=%d&albumCount=%d&albumOffset=%d&artistCount=%d&artistOffset=%d", kind == ND_TRACKS ? amount : 0, offset, kind == ND_ALBUMS ? amount : 0, offset, kind == ND_ARTISTS ? amount : 0, offset);
-				error = nd_api_json(record->host, record->user, password, kind == ND_GENRES ? "getGenres" : "search3", kind == ND_GENRES ? NULL : query, ND_API_BYTES, &doc);
-				if (error)
-					nd_log("navidrome: sync request kind=%d offset=%d count=%d result=%s\n", kind, offset, amount, error);
-				if (!error || strcmp(error, "nd_page_large") || amount == 1 || kind == ND_GENRES || !sync_current(job))
+			pthread_mutex_lock(&pool.mutex);
+			int active = 0;
+			for (int i = 0; i < pool.workers; i++)
+				active += pool.slots[i].state != 0;
+			for (int i = 0; i < pool.workers && (!bootstrap || !active); i++) {
+				if (pool.slots[i].state)
+					continue;
+				if (next > INT_MAX - amount) {
+					error = "nd_sync_inconsistent";
 					break;
-				amount = (amount + 1) / 2;
+				}
+				sync_dispatch(&pool, &pool.slots[i], kind, next, amount);
+				active++;
+				next += amount;
+				if (bootstrap || kind == ND_GENRES)
+					break;
 			}
-			if (error)
+			sync_slot_t *slot = NULL;
+			double waiting = sync_now();
+			while (!error && !slot) {
+				for (int i = 0; i < pool.workers; i++) {
+					sync_slot_t *s = &pool.slots[i];
+					if (s->state != 2)
+						continue;
+					if (s->error && strcmp(s->error, "nd_page_large") && strcmp(s->error, "nd_sync_cancelled")) {
+						error = s->error;
+						break;
+					}
+					if (s->offset == offset)
+						slot = s;
+				}
+				if (!slot && !error) {
+					sync_pool_wait(&pool);
+					if (!sync_current(job))
+						error = "nd_sync_cancelled";
+				}
+			}
+			pool.wait_seconds += sync_now() - waiting;
+			if (error) {
+				pthread_mutex_unlock(&pool.mutex);
 				break;
-			if (!sync_current(job))
-				error = "nd_sync_cancelled";
-			else if (!navidrome_cache_begin(job->local_epoch, job->card_epoch))
+			}
+			sync_collect(&pool, slot);
+			if (slot->error) {
+				error = slot->error;
+				nd_batch_free(&slot->batch);
+				slot->state = 0;
+				pthread_mutex_unlock(&pool.mutex);
+				if (strcmp(error, "nd_page_large") || amount == 1 || kind == ND_GENRES)
+					break;
+				const char *retired = sync_retire(&pool);
+				if (retired) {
+					error = retired;
+					break;
+				}
+				error = NULL;
+				amount = (amount + 1) / 2;
+				pool.reductions++;
+				next = offset;
+				bootstrap = true;
+				continue;
+			}
+			slot->state = 3;
+			pthread_mutex_unlock(&pool.mutex);
+			int count = slot->batch.count;
+			double importing = sync_now();
+			if (!sync_current(job) || !navidrome_cache_begin(job->local_epoch, job->card_epoch))
 				error = "nd_sync_cancelled";
 			else {
-				if (!nd_store_open(&store, result.path, result.scope, true, false))
-					error = "nd_cache_error";
-				else {
-					store.generation = candidate;
-					if (!nd_store_import(&store, kind, &doc, &count))
-						error = store.error ? store.error : "nd_response_error";
-				}
-				nd_store_close(&store);
+				if (!nd_store_import_batch(&store, &slot->batch))
+					error = store.error ? store.error : "nd_cache_error";
 				navidrome_cache_end();
+				if (!error) {
+					pool.commits++;
+					pool.accepted_pages[kind]++;
+					pool.accepted_rows += count;
+				}
 			}
-			nd_api_free(&doc);
-			if (error) {
-				nd_log("navidrome: sync page kind=%d offset=%d limit=%d result=%s\n", kind, offset, amount, error);
+			pool.import_seconds += sync_now() - importing;
+			pthread_mutex_lock(&pool.mutex);
+			nd_batch_free(&slot->batch);
+			slot->state = 0;
+			pthread_mutex_unlock(&pool.mutex);
+			if (error)
 				break;
-			}
-			if ((kind != ND_GENRES && count > amount) || offset > INT_MAX - count) {
-				nd_log("navidrome: sync page kind=%d offset=%d count=%d limit=%d reason=invalid_count\n", kind, offset, count, amount);
+			if (offset > INT_MAX - count) {
 				error = "nd_sync_inconsistent";
 				break;
 			}
 			offset += count;
 			pthread_mutex_lock(&lock);
-			if (current(job)) {
+			if (current(job) && job->card_epoch == g.card_epoch) {
 				g.library.stage = kind;
 				g.library.fetched = offset;
 			}
 			pthread_mutex_unlock(&lock);
 			notify();
+			bootstrap = false;
 			if (kind == ND_GENRES || count < amount) {
+				error = sync_retire(&pool);
 				nd_log("navidrome: sync stage kind=%d fetched=%d\n", kind, offset);
 				break;
 			}
 		}
 	}
+	if (initialized)
+		sync_pool_end(&pool);
 	if (!error)
-		error = scan_status(record, password, after);
+		error = scan_status(job, record, password, after);
 	if (!error && strcmp(before, after)) {
 		nd_log("navidrome: sync scan reason=marker_changed\n");
 		error = "nd_sync_inconsistent";
@@ -329,24 +574,19 @@ static void sync_run(const job_t *job, const nd_record_t *record, const char *pa
 	bool leased = navidrome_cache_begin(job->local_epoch, job->card_epoch);
 	if (!leased && !error)
 		error = "nd_sync_cancelled";
-	if (leased) {
-		if (!nd_store_open(&store, result.path, result.scope, true, false)) {
-			if (!error)
-				error = "nd_cache_error";
-		} else {
-			store.generation = candidate;
-			if (!error && !nd_store_validate(&store))
-				error = store.error ? store.error : "nd_sync_inconsistent";
-		}
+	if (!error) {
+		double phase = sync_now();
+		if (!nd_store_validate(&store))
+			error = store.error ? store.error : "nd_sync_inconsistent";
+		validation_seconds = sync_now() - phase;
 	}
 	bool valid = sync_current(job) && nd_cache_card_same(job->root, card.st_dev, card.st_ino);
 	pthread_mutex_lock(&lock);
-	valid = valid && current(job) && job->card_epoch == g.card_epoch && !g.sync_cancel;
-	if (!error && !valid)
+	if (!error && (!valid || !current(job) || job->card_epoch != g.card_epoch || g.sync_cancel))
 		error = "nd_sync_cancelled";
-	// The small final transaction is serialized with invalidation. Network,
-	// enumeration, relationship checks and page writes never hold this mutex.
+	double phase = sync_now();
 	bool published = !error && nd_store_publish(&store);
+	publish_seconds = sync_now() - phase;
 	if (!error && !published)
 		error = "nd_cache_error";
 	if (published)
@@ -354,17 +594,23 @@ static void sync_run(const job_t *job, const nd_record_t *record, const char *pa
 	pthread_mutex_unlock(&lock);
 	if (published && !nd_store_status(&store, &result))
 		error = "nd_cache_error";
-	if (store.db)
+	phase = sync_now();
+	if (leased && store.db)
 		nd_store_cleanup(&store);
 	nd_store_close(&store);
+	cleanup_seconds = sync_now() - phase;
 	if (leased)
 		navidrome_cache_end();
 	pthread_mutex_lock(&lock);
+	sync_owners--;
+	pthread_cond_broadcast(&io_drained);
 	if (current(job)) {
-		if (published && job->card_epoch == g.card_epoch)
-			g.library = result;
-		g.library.syncing = false;
-		g.library.error = error;
+		if (job->card_epoch == g.card_epoch) {
+			if (published)
+				g.library = result;
+			g.library.syncing = false;
+			g.library.error = error;
+		}
 		if (error && (!strcmp(error, "nd_auth_error") || !strcmp(error, "nd_network_error") || !strcmp(error, "nd_tls_error"))) {
 			g.connected = false;
 			g.error = error;
@@ -372,6 +618,10 @@ static void sync_run(const job_t *job, const nd_record_t *record, const char *pa
 		g.busy = false;
 	}
 	pthread_mutex_unlock(&lock);
+	if (initialized) {
+		nd_log("navidrome: sync metrics requests=%zu reductions=%zu discarded=%zu commits=%zu opens=%zu reuses=%zu encoded_bytes=%zu decoded_bytes=%zu slot_peak=%d buffer_peak=%zu album_pages=%zu track_pages=%zu artist_pages=%zu genre_pages=%zu accepted_rows=%zu\n", pool.requests, pool.reductions, pool.discarded, pool.commits, pool.opens, pool.reuses, pool.encoded, pool.decoded, pool.workers, pool.buffer_peak * pool.workers, pool.accepted_pages[0], pool.accepted_pages[1], pool.accepted_pages[2], pool.accepted_pages[3], pool.accepted_rows);
+		nd_log("navidrome: sync timing elapsed_ms=%.3f connect_worker_ms=%.3f transfer_decode_worker_ms=%.3f parse_worker_ms=%.3f wait_ms=%.3f import_ms=%.3f validation_ms=%.3f publication_ms=%.3f cleanup_ms=%.3f tls_separate=unavailable commit_separate=unavailable\n", (sync_now() - start) * 1000, pool.connect_seconds * 1000, pool.transfer_seconds * 1000, pool.parse_seconds * 1000, pool.wait_seconds * 1000, pool.import_seconds * 1000, validation_seconds * 1000, publish_seconds * 1000, cleanup_seconds * 1000);
+	}
 	nd_log("navidrome: sync finish published=%d result=%s\n", published, error ? error : "ok");
 }
 
@@ -825,7 +1075,7 @@ void navidrome_shutdown(void) {
 	if (join)
 		pthread_join(worker, NULL);
 	pthread_mutex_lock(&lock);
-	while (cache_users)
+	while (cache_users || sync_owners)
 		pthread_cond_wait(&io_drained, &lock);
 	pthread_mutex_unlock(&lock);
 	nd_debug_shutdown();
@@ -860,7 +1110,7 @@ void navidrome_set_root(const char *root) {
 		g.invalidate_playback();
 	// Card events run on the storage worker. Leases only cover local file I/O,
 	// never network waits, and no new old-card lease can enter after this epoch.
-	while (cache_users)
+	while (cache_users || sync_owners)
 		pthread_cond_wait(&io_drained, &lock);
 	memset(&g.library, 0, sizeof(g.library));
 	g.cache_pending = true;

@@ -26,6 +26,7 @@ typedef struct {
 } nd_library_t;
 typedef struct {
 	sqlite3 *db;
+	sqlite3_stmt *insert, *relationship, *genre;
 	char scope[33];
 	int64_t generation;
 	const char *error;
@@ -50,6 +51,8 @@ bool nd_store_open(nd_store_t *store, const char *path, const char *scope, bool 
 void nd_store_close(nd_store_t *store);
 bool nd_store_status(nd_store_t *store, nd_library_t *out);
 bool nd_store_begin(nd_store_t *store);
+struct nd_batch;
+bool nd_store_import_batch(nd_store_t *store, const struct nd_batch *batch);
 bool nd_store_import(nd_store_t *store, nd_kind_t kind, const nd_document_t *doc, int *count);
 bool nd_store_validate(nd_store_t *store);
 bool nd_store_publish(nd_store_t *store);

@@ -61,6 +61,11 @@ typedef struct tls_conn tls_conn_t;
 // be shown to the user, so it is in the same language as the rest of the
 // player. The socket is left alone: the caller still owns and closes it.
 tls_conn_t *tls_client(int fd, const char *hostname, char *err, size_t err_size);
+// Opt-in nonblocking finite requests. wait returns false on cancel/deadline.
+tls_conn_t *tls_client_wait(int fd, const char *hostname, bool (*wait)(void *, bool), void *user, char *err, size_t err_size);
+// -2 requests readability, -3 writability, -1 failure; otherwise recv/send shape.
+int tls_read_ready(tls_conn_t *c, void *buf, int len);
+int tls_write_ready(tls_conn_t *c, const void *buf, int len);
 
 // Same shapes as recv()/send(): >0 bytes moved, 0 for a clean end of stream,
 // -1 on error (a socket timeout included).

@@ -18,6 +18,9 @@ ${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -Wno-unused-function -O1 -g \
     src/system/streaming/navidromestore.c src/system/streaming/navidromelibrary.c \
     src/system/streaming/navidromecrypto.c src/system/streaming/navidromevault.c \
     src/system/core/json.c src/system/core/md5.c build_host/system/db/sqlite3_impl.o \
-    @"$check_dir/objects" -pthread -ldl -lm $(pkg-config --libs freetype2 sdl2) \
+    src/system/streaming/navidromebatch.c src/system/net/http.c src/system/net/tls.c \
+    src/system/net/gzip.c src/system/image/png_scaled.c src/gb/miniz/miniz.c \
+    @"$check_dir/objects" -pthread -ldl -lm -lresolv $(pkg-config --libs freetype2 sdl2) \
+    -Wl,--wrap=http_request,--wrap=http_last_error,--wrap=http_clear_request_metadata,--wrap=http_url_encode,--wrap=http_file_open \
     -Wl,--gc-sections,--wrap=rename,--wrap=fsync,--wrap=unlink,--wrap=malloc -o "$check_dir/check"
 "$check_dir/check"

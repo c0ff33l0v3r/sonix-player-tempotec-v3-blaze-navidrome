@@ -1,5 +1,6 @@
 #include "navidromeapi.h"
 #include "navidrome.h"
+#include "navidromebatch.h"
 #include "navidromedebug.h"
 #include "src/system/core/md5.h"
 #include "src/system/net/http.h"
@@ -175,4 +176,123 @@ const char *nd_api_artwork(const char *host, const char *user, const char *passw
 		return "nd_response_error";
 	}
 	return NULL;
+}
+
+const char *nd_api_page(http_session_t *session, const char *host, const char *user, const char *password, nd_kind_t kind, int offset, int requested, bool gzip, bool reuse, nd_batch_t *batch) {
+	char query[256], url[2500];
+	snprintf(query, sizeof(query), "query=&songCount=%d&songOffset=%d&albumCount=%d&albumOffset=%d&artistCount=%d&artistOffset=%d", kind == ND_TRACKS ? requested : 0, offset, kind == ND_ALBUMS ? requested : 0, offset, kind == ND_ARTISTS ? requested : 0, offset);
+	const char *error = request_url(host, user, password, kind == ND_GENRES ? "getGenres" : "search3", kind == ND_GENRES ? NULL : query, url, sizeof(url));
+	if (!error && !http_session_get(session, url, gzip, reuse)) {
+		const char *reason = http_session_error(session);
+		error = !strcmp(reason, "body_limit") ? "nd_page_large" : !strcmp(reason, "cancelled") ? "nd_sync_cancelled" : !strcmp(reason, "tls") ? "nd_tls_error" : (!strcmp(reason, "framing") || !strcmp(reason, "encoding_unsupported")) ? "nd_response_error" : !strcmp(reason, "allocation_failed") ? "nd_json_memory" : "nd_network_error";
+	}
+	nd_wipe(url, sizeof(url));
+	http_clear_request_metadata();
+	if (!error)
+		error = nd_batch_read(batch, session, requested);
+	http_session_stats_t stats;
+	http_session_stats(session, &stats);
+	nd_log("navidrome: sync request kind=%d offset=%d count=%d status=%d encoded_bytes=%zu decoded_bytes=%zu opens=%zu reuses=%zu connect_ms=%.3f transfer_ms=%.3f parse_ms=%.3f buffer_peak=%zu result=%s reason=%s\n", kind, offset, requested, http_session_status(session), stats.encoded, stats.decoded, stats.opens, stats.reuses, stats.connect_seconds * 1000, stats.transfer_seconds * 1000, batch->parse_seconds * 1000, batch->buffer_peak, error ? error : "ok", http_session_error(session) ? http_session_error(session) : "transport_complete");
+	return error;
+}
+
+static bool control_unique(const json_doc_t *doc, int object, const char *name, bool required) {
+	if (object < 0 || doc->toks[object].type != JSON_OBJECT)
+		return false;
+	int found = 0;
+	for (int t = object + 1; t < doc->count && doc->toks[t].start < doc->toks[object].end; t++) {
+		if (doc->toks[t].parent != object)
+			continue;
+		// json_str() exposes C strings; an escaped NUL must not alias a
+		// control name. Skip escaped backslashes so literal text is harmless.
+		for (int at = doc->toks[t].start; at < doc->toks[t].end; at++) {
+			if (doc->text[at] != '\\')
+				continue;
+			if (at + 6 <= doc->toks[t].end && !memcmp(doc->text + at, "\\u0000", 6))
+				return false;
+			at++;
+		}
+		char key[64];
+		if (!json_str(doc, t, key, sizeof(key)))
+			return false;
+		if (!strcmp(key, name) && ++found > 1)
+			return false;
+	}
+	return found == 1 || (!required && !found);
+}
+
+// Scan checks share the finite deadline/cancellation contract, without retaining
+// a third connection alongside the two enumeration workers.
+const char *nd_api_control(const char *host, const char *user, const char *password, bool (*current)(void *), void *arg, nd_document_t *out) {
+	memset(out, 0, sizeof(*out));
+	http_session_t *session = http_session_new(current, arg);
+	if (!session)
+		return "nd_json_memory";
+	char url[2500];
+	const char *error = request_url(host, user, password, "getScanStatus", NULL, url, sizeof(url));
+	if (!error && !http_session_get(session, url, false, false)) {
+		const char *reason = http_session_error(session);
+		error = !strcmp(reason, "tls") ? "nd_tls_error" : !strcmp(reason, "allocation_failed") ? "nd_json_memory" : "nd_network_error";
+	}
+	nd_wipe(url, sizeof(url));
+	http_clear_request_metadata();
+	char *body = !error ? malloc(16384) : NULL;
+	size_t used = 0;
+	if (!error && !body)
+		error = "nd_json_memory";
+	while (!error) {
+		unsigned char chunk[1024];
+		int n = http_session_read(session, chunk, sizeof(chunk));
+		if (n < 0) {
+			error = "nd_response_error";
+			break;
+		}
+		if (!n)
+			break;
+		if ((size_t)n >= 16384 - used || memchr(chunk, 0, n)) {
+			error = "nd_response_error";
+			break;
+		}
+		memcpy(body + used, chunk, n);
+		used += n;
+	}
+	if (!error) {
+		body[used] = 0;
+		json_parse_result_t parsed = json_parse_detailed(body, &out->doc, ND_API_TOKENS);
+		if (parsed != JSON_PARSE_OK)
+			error = parsed == JSON_PARSE_MEMORY ? "nd_json_memory" : "nd_response_error";
+		else {
+			out->response = json_get(&out->doc, json_root(&out->doc), "subsonic-response");
+			char status[32];
+			int token = json_get(&out->doc, out->response, "status");
+			bool valid = control_unique(&out->doc, json_root(&out->doc), "subsonic-response", true) && control_unique(&out->doc, out->response, "status", true) && json_str(&out->doc, token, status, sizeof(status));
+			if (valid) {
+				for (int i = out->doc.toks[token].start; i + 6 <= out->doc.toks[token].end; i++)
+					if (!memcmp(out->doc.text + i, "\\u0000", 6))
+						valid = false;
+			}
+			if (!valid || strcmp(status, "ok") || http_session_status(session) != 200) {
+				int failure = json_get(&out->doc, out->response, "error");
+				error = valid && !strcmp(status, "failed") && json_obj_long(&out->doc, failure, "code", 0) == 40 ? "nd_auth_error" : "nd_api_error";
+			}
+			if (!error) {
+				int scan = json_get(&out->doc, out->response, "scanStatus");
+				if (!control_unique(&out->doc, out->response, "scanStatus", true) || !control_unique(&out->doc, scan, "scanning", false) || !control_unique(&out->doc, scan, "lastScan", false))
+					error = "nd_response_error";
+			}
+			if (error)
+				json_free(&out->doc);
+		}
+	}
+	if (http_session_error(session) && !strcmp(http_session_error(session), "cancelled"))
+		error = "nd_sync_cancelled";
+	http_session_free(session);
+	if (error) {
+		if (body)
+			nd_wipe(body, used);
+		free(body);
+		memset(out, 0, sizeof(*out));
+	} else
+		out->body = body;
+	return error;
 }
