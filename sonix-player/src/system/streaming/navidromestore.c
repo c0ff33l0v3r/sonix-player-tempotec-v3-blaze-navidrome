@@ -25,6 +25,16 @@ static bool prepare(nd_store_t *s, sqlite3_stmt **stmt, const char *text) {
 
 static void bind(sqlite3_stmt *st, int col, const char *text) { sqlite3_bind_text(st, col, text, -1, SQLITE_TRANSIENT); }
 
+// Presentation only: retain every imported credit for exact-ID lookups.
+// The memberships index and album primary key keep this bounded on disk.
+#define ARTIST_ALBUM_SQL                                                                                               \
+	"EXISTS(SELECT 1 FROM rel r JOIN entity a ON a.gen=r.gen AND a.kind=0 AND a.id=r.album "                              \
+	"WHERE r.gen=e.gen AND r.kind=2 AND r.id=e.id)"
+
+static const char *artist_filter(nd_store_t *s, nd_kind_t kind) {
+	return !s->favorites && kind == ND_ARTISTS ? " AND " ARTIST_ALBUM_SQL : "";
+}
+
 // Per-connection views bind one immutable effective revision. Physical base rows
 // and changed rows keep distinct stable handles, including for pinned queues.
 static bool read_view(nd_store_t *s, int64_t gen) {
@@ -181,7 +191,7 @@ bool nd_store_status(nd_store_t *s, nd_library_t *out) {
 	}
 	if (!read_view(s, out->generation))
 		return false;
-	if (!prepare(s, &st, s->favorites ? "SELECT kind,count(*) FROM browse_entity e WHERE gen=? AND (kind=0 OR e.starred=1) GROUP BY kind" : "SELECT kind,count(*) FROM browse_entity WHERE gen=? GROUP BY kind"))
+	if (!prepare(s, &st, s->favorites ? "SELECT kind,count(*) FROM browse_entity e WHERE gen=? AND (kind=0 OR e.starred=1) GROUP BY kind" : "SELECT e.kind,count(*) FROM browse_entity e WHERE e.gen=? AND (e.kind<>2 OR " ARTIST_ALBUM_SQL ") GROUP BY e.kind"))
 		return false;
 	sqlite3_bind_int64(st, 1, out->generation);
 	while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
@@ -692,6 +702,20 @@ bool nd_store_contains(nd_store_t *s, int64_t gen, nd_kind_t kind, const char *i
 	return found;
 }
 
+bool nd_store_artist_browsable(nd_store_t *s, int64_t gen, const char *id) {
+	if (s->favorites || !read_view(s, gen))
+		return false;
+	sqlite3_stmt *st = NULL;
+	if (!prepare(s, &st, "SELECT 1 FROM browse_entity e JOIN snapshot s ON s.id=e.gen WHERE e.gen=?1 AND e.kind=2 AND e.id=?2 AND s.scope=?3 AND s.complete=1 AND " ARTIST_ALBUM_SQL))
+		return false;
+	sqlite3_bind_int64(st, 1, gen);
+	bind(st, 2, id);
+	bind(st, 3, s->scope);
+	bool found = sqlite3_step(st) == SQLITE_ROW;
+	sqlite3_finalize(st);
+	return found;
+}
+
 bool nd_store_letters(nd_store_t *s, int64_t gen, const nd_query_t *q, int first[ND_LETTER_BUCKETS]) {
 	if (!read_view(s, gen))
 		return false;
@@ -702,7 +726,7 @@ bool nd_store_letters(nd_store_t *s, int64_t gen, const nd_query_t *q, int first
 		return true;
 	const char *filter = !*q->filter ? (s->favorites && q->kind == ND_TRACKS ? " AND e.starred=1" : "") : " AND EXISTS(SELECT 1 FROM rel r WHERE r.gen=e.gen AND r.album=e.id AND r.kind=?5 AND r.id=?4)";
 	char text[1024];
-	snprintf(text, sizeof(text), "SELECT e.sortkey FROM browse_entity e JOIN snapshot s ON s.id=e.gen WHERE e.gen=?1 AND e.kind=?2 AND s.scope=?3 AND s.complete=1%s ORDER BY e.sortkey,e.id", filter);
+	snprintf(text, sizeof(text), "SELECT e.sortkey FROM browse_entity e JOIN snapshot s ON s.id=e.gen WHERE e.gen=?1 AND e.kind=?2 AND s.scope=?3 AND s.complete=1%s%s ORDER BY e.sortkey,e.id", filter, artist_filter(s, q->kind));
 	sqlite3_stmt *st = NULL;
 	if (!prepare(s, &st, text))
 		return false;
@@ -737,6 +761,7 @@ bool nd_store_query(nd_store_t *s, int64_t gen, const nd_query_t *q, int offset,
 	snprintf(where, sizeof(where), " FROM browse_entity e JOIN snapshot s ON s.id=e.gen WHERE e.gen=?1 AND e.kind=?2 AND s.scope=?3 AND s.complete=1%s", !q->filter[0] ? "" : q->kind == ND_TRACKS ? " AND e.album=?4" : " AND EXISTS(SELECT 1 FROM rel r WHERE r.gen=e.gen AND r.album=e.id AND r.kind=?5 AND r.id=?4)");
 	if (s->favorites && q->kind == ND_TRACKS && !*q->filter)
 		strcat(where, " AND e.starred=1");
+	strcat(where, artist_filter(s, q->kind));
 	sqlite3_stmt *st = NULL;
 	bool ok = true;
 	for (int pass = 0; ok && pass < 2; pass++) {

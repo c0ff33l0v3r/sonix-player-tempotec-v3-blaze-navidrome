@@ -23,4 +23,5 @@ ${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -O1 -g \
     src/system/net/gzip.c src/system/image/png_scaled.c src/gb/miniz/miniz.c src/system/net/http.c src/system/net/tls.c src/system/core/json.c src/system/core/md5.c "$check_sqlite" \
     @"$check_dir/lvgl-objects" -pthread -ldl -lm $(pkg-config --libs freetype2 sdl2) \
     -Wl,--wrap=http_request,--wrap=http_last_error,--wrap=http_clear_request_metadata,--wrap=http_url_encode,--wrap=http_file_open -Wl,--gc-sections,--wrap=rename,--wrap=fsync,--wrap=unlink -o "$check_dir/check"
-"$check_dir/check"
+SONIX_CHECK_WIDTH=320 "$check_dir/check"
+SONIX_CHECK_WIDTH=480 "$check_dir/check"

@@ -80,6 +80,8 @@ class Fixture(BaseHTTPRequestHandler):
                 Fixture.reduced |= count < 50
                 if current == 'empty':
                     total = 0
+                elif current == 'contributors':
+                    total = {'album': 70, 'song': 700, 'artist': 1020}[kind]
                 elif current in ('large', 'structured', 'nullable', 'longartist', 'longlabels', 'longlabels_raw', 'tokens'):
                     total = {'album': 70, 'song': 700, 'artist': 20}[kind]
                 elif current == 'deleted':
@@ -100,6 +102,9 @@ class Fixture(BaseHTTPRequestHandler):
                         entry = {'id': f'album-{i:05d}', 'name': f'Album {1700-i:05d}', 'artistId': artist, 'genre': 'Rock'}
                     else:
                         entry = {'id': f'artist-{i:02d}', 'name': f'Artist {i:02d}'}
+                        if current == 'contributors':
+                            entry = ({'id': f'contributor-{i:04d}', 'name': '########', 'roles': ['performer']}
+                                     if i < 1000 else {'id': f'artist-{i-1000:02d}', 'name': f'Artist {i-1000:02d}'})
                     if current == 'structured' and kind != 'artist':
                         # OpenSubsonic identities take precedence over legacy
                         # display/primary fields, which may describe a combined tag.

@@ -123,6 +123,12 @@ failing a refresh keeps the last successful library.
 After syncing, those four categories browse the local index, including offline
 once credentials are available (after unlock in encrypted mode). Settings shows
 connection status separately from the last sync time and library counts.
+Artists includes album artists and track artists with at least one album linked
+in the synced library. Contributor credits without a browsable album stay in the
+metadata cache but are omitted from the artist list, its count and letter jumps.
+This applies to existing snapshots offline, including read-only cards, without
+another Sync. Artist names are displayed as supplied; the filter does not repair
+damaged tags or hide names merely because they contain `#`.
 Thumbnails download as they become visible and cached thumbnails remain
 available offline. The metadata and artwork cache lives under
 `.local/navidrome/.cache/` on the card; credentials remain in the separate internal

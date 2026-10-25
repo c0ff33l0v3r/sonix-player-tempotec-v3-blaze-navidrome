@@ -51,6 +51,8 @@ static lv_timer_t *browse_timer;
 static const char *const captions[] = {"albums", "navidrome_tracks", "artists", "music_genres"};
 typedef struct {
 	int page, first, count, total;
+	int return_page, artist_parent;
+	char artist[ND_ID_MAX]; // Owned ancestor identity; never read GUI pages on the worker.
 	unsigned serial;
 	nd_library_t library;
 	nd_query_t query;
@@ -113,7 +115,7 @@ static void window_done(void *value) {
 	}
 	if (!result->filter_exists) {
 		gui_notify_popup("nd_item_removed");
-		switch_screen_return_to(result->page ? pages[result->page - 1].screen : result->query.favorites ? navidromefavorites_page() : navidrome_screen);
+		switch_screen_return_to(result->return_page >= 0 ? pages[result->return_page].screen : result->query.favorites ? navidromefavorites_page() : navidrome_screen);
 		free(result);
 		return;
 	}
@@ -210,6 +212,10 @@ static void *read_windows(void *unused) {
 		result->filter_exists = true;
 		if (result->ok && *result->query.filter)
 			result->filter_exists = nd_store_contains(&store, result->library.generation, result->query.filter_kind, result->query.filter);
+		if (result->ok && result->artist[0] && !nd_store_artist_browsable(&store, result->library.generation, result->artist)) {
+			result->filter_exists = false;
+			result->return_page = result->artist_parent;
+		}
 		if (result->ok)
 			result->ok = nd_store_query(&store, result->library.generation, &result->query, result->first, result->rows, &result->count, &result->total);
 		if (result->ok && result->query.favorites && result->query.kind == ND_TRACKS && result->query.filter[0]) {
@@ -273,6 +279,16 @@ static void submit_window(browse_page_t *p) {
 	pthread_mutex_lock(&window_lock);
 	memset(&request, 0, sizeof(request));
 	request.page = (int)(p - pages);
+	request.return_page = request.page - 1;
+	// Capture only the current hierarchy, so a direct album entry cannot
+	// inherit an artist from a previously visited child page.
+	for (int level = 0; !p->query.favorites && level <= request.page; level++) {
+		const nd_query_t *query = &pages[level].query;
+		if (query->kind == ND_ALBUMS && query->filter_kind == ND_ARTISTS && query->filter[0]) {
+			snprintf(request.artist, sizeof(request.artist), "%s", query->filter);
+			request.artist_parent = level - 1;
+		}
+	}
 	request.serial = p->serial;
 	request.first = first;
 	p->requested_first = first;

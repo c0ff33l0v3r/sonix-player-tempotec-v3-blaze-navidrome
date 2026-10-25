@@ -89,4 +89,7 @@ bool nd_store_track(nd_store_t *store, int64_t generation, const char *id, nd_ro
 bool nd_store_favorite(nd_store_t *store, int64_t generation, nd_kind_t kind, const char *id);
 bool nd_store_contains(nd_store_t *store, int64_t generation, nd_kind_t kind, const char *id);
 
+// Full-library presentation eligibility; contains/metadata retain raw identities.
+bool nd_store_artist_browsable(nd_store_t *store, int64_t generation, const char *id);
+
 #endif

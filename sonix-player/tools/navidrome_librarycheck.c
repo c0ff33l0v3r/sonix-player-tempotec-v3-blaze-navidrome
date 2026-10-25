@@ -8,11 +8,14 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#include "navidrome_artistfilter_fixture.h"
 
 static char configuration[1024], endpoint[512];
 const char *config_get(const char *section, const char *key, const char *fallback) {
@@ -56,6 +59,13 @@ static nd_library_t library(void) {
 	nd_library_t result;
 	navidrome_library_snapshot(&result);
 	return result;
+}
+
+static atomic_int artist_fetched;
+static void artist_progress(void) {
+	nd_library_t result = library();
+	if (result.syncing && result.stage == ND_ARTISTS)
+		atomic_store(&artist_fetched, result.fetched);
 }
 
 static nd_library_t sync_ok(int tracks, int albums) {
@@ -417,6 +427,7 @@ int main(int argc, char **argv) {
 		puts("process restart starts locked and restores snapshot after offline unlock: passed");
 		return 0;
 	}
+	artist_filter_checks(argv[2]);
 	assert(!mkdir(card, 0700));
 	navidrome_init();
 	navidrome_set_root(card);
@@ -447,6 +458,24 @@ int main(int argc, char **argv) {
 	mode("normal");
 	puts("full library, local windows/order/relationships: passed");
 
+	mode("contributors");
+	atomic_store(&artist_fetched, 0);
+	navidrome_set_listener(artist_progress);
+	nd_library_t credits = sync_ok(700, 70);
+	navidrome_set_listener(NULL);
+	assert(atomic_load(&artist_fetched) == 1020);
+	assert(credits.counts[ND_ARTISTS] == 20);
+	nd_store_t credit_store;
+	assert(nd_store_open(&credit_store, credits.path, credits.scope, false, false));
+	assert(nd_store_contains(&credit_store, credits.generation, ND_ARTISTS, "contributor-0999"));
+	assert(!nd_store_artist_browsable(&credit_store, credits.generation, "contributor-0999"));
+	sqlite3_stmt *credit_count;
+	assert(sqlite3_prepare_v2(credit_store.db, "SELECT count(*) FROM entity WHERE gen=? AND kind=2", -1, &credit_count, NULL) == SQLITE_OK);
+	sqlite3_bind_int64(credit_count, 1, credits.generation);
+	assert(sqlite3_step(credit_count) == SQLITE_ROW && sqlite3_column_int(credit_count, 0) == 1020);
+	sqlite3_finalize(credit_count);
+	nd_store_close(&credit_store);
+	puts("full unlinked artist page does not terminate enumeration; 1020 raw credits and 20 browsable artists: passed");
 	mode("longartist");
 	sync_ok(700, 70);
 	mode("longlabels");

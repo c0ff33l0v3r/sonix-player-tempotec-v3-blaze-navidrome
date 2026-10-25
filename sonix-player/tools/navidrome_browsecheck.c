@@ -247,6 +247,8 @@ static void seed(const nd_library_t *library) {
 }
 
 #if !defined(NAVIDROME_COORDINATOR_TEST) && !defined(NAVIDROME_PLAYLIST_UI) && !defined(NAVIDROME_STAR_UI)
+#include "navidrome_artistfilter_uifixture.h"
+
 int main(void) {
 	alarm(60);
 	setvbuf(stdout, NULL, _IONBF, 0);
@@ -270,9 +272,13 @@ int main(void) {
 	assert(library.ready);
 	lv_init();
 	font_ui_14 = font_ui_18 = font_ui_20 = font_ui_64_bold = lv_font_unscii_8;
-	lv_display_t *display = lv_display_create(320, 480);
+	int width = getenv("SONIX_CHECK_WIDTH") ? atoi(getenv("SONIX_CHECK_WIDTH")) : 320;
+	assert(width == 320 || width == 480);
+	int height = width == 320 ? 480 : 800;
+	ui_panel_width = width;
+	lv_display_t *display = lv_display_create(width, height);
 	navidrome_screen = lv_obj_create(NULL);
-	gui_config_t cfg = {.screen_width = 320, .screen_height = 480, .padding = 8, .top_bar_height = 20};
+	gui_config_t cfg = {.screen_width = width, .screen_height = height, .padding = 8, .top_bar_height = 20};
 	navidromebrowse_init(&cfg);
 	int requests_before = atomic_load(&calls);
 	navidromebrowse_open(ND_TRACKS);
@@ -435,6 +441,7 @@ int main(void) {
 	lv_obj_send_event(pages[0].rows[0], LV_EVENT_CLICKED, NULL);
 	assert(playback_selections == before_selection + 1);
 	puts("real LVGL long press, cross-window selection, concurrent letter jump/Cancel, and restored playback: passed");
+	library = artist_ui_checks(library, dir);
 
 	navidromebrowse_open(ND_TRACKS); // Leave one window completion pending.
 	navidrome_lock();
