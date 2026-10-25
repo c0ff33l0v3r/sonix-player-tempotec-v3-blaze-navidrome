@@ -36,7 +36,7 @@ typedef struct {
 	sqlite3_stmt *local_insert, *local_artist, *annotation;
 	bool favorites, local;
 	int64_t view;
-	char scope[33];
+	char scope[33], path[1024]; // Exact published source path, including relative roots.
 	int64_t generation;
 	const char *error;
 } nd_store_t;
@@ -52,7 +52,22 @@ typedef struct {
 typedef struct {
 	nd_row_t row;
 	char album_id[ND_ID_MAX], album[ND_TEXT_MAX], artist_id[ND_ID_MAX];
+	char genre[ND_TEXT_MAX]; // Optional display text, never a navigation identity.
+	int year;
 } nd_playrow_t;
+
+typedef struct {
+	nd_playrow_t info;
+	int y[ND_WINDOW], ordinal[ND_WINDOW];
+	bool heading[ND_WINDOW];
+	int extent, offset;
+} nd_album_window_t;
+bool nd_store_album_position(nd_store_t *store, int64_t generation, const nd_query_t *query,
+							 const char *id, int pitch, int disc_pitch, bool alternate, int *position);
+// Worker-only windows; pixel pitches come from the GUI, offset excludes the header.
+bool nd_store_album_window(nd_store_t *store, int64_t generation, const nd_query_t *query,
+						   int offset, int pitch, int disc_pitch, nd_row_t rows[ND_WINDOW],
+						   int *count, int *total, nd_album_window_t *layout);
 // Worker-only compact queue index and bounded individual row resolution.
 bool nd_store_play_index(nd_store_t *store, int64_t generation, const nd_query_t *query, const char *selected, int64_t **handles, int *count, int *start);
 bool nd_store_play_row(nd_store_t *store, int64_t generation, int64_t handle, nd_playrow_t *out);
@@ -82,15 +97,16 @@ bool nd_store_import(nd_store_t *store, nd_kind_t kind, const nd_document_t *doc
 bool nd_store_validate(nd_store_t *store);
 bool nd_store_publish(nd_store_t *store);
 void nd_store_cleanup(nd_store_t *store);
-// Logical pins hold no SQLite handle or transaction. At most two generations.
+// Logical pins hold no SQLite handle/transaction. Eight contexts plus staging.
 bool nd_store_retain(const char *scope, int64_t generation);
+bool nd_store_retain_source(const nd_library_t *library);
+void nd_store_release_source(const nd_library_t *library);
 void nd_store_release(const char *scope, int64_t generation);
 bool nd_store_query(nd_store_t *store, int64_t generation, const nd_query_t *query, int offset, nd_row_t rows[ND_WINDOW], int *count, int *total);
 bool nd_store_letters(nd_store_t *store, int64_t generation, const nd_query_t *query, int first[ND_LETTER_BUCKETS]);
 bool nd_store_track(nd_store_t *store, int64_t generation, const char *id, nd_row_t *out);
 bool nd_store_favorite(nd_store_t *store, int64_t generation, nd_kind_t kind, const char *id);
 bool nd_store_contains(nd_store_t *store, int64_t generation, nd_kind_t kind, const char *id);
-
 // Full-library presentation eligibility; contains/metadata retain raw identities.
 bool nd_store_artist_browsable(nd_store_t *store, int64_t generation, const char *id);
 

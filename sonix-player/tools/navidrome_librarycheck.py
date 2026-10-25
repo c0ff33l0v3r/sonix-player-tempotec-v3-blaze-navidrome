@@ -50,7 +50,15 @@ class Fixture(BaseHTTPRequestHandler):
                 if key == 'bad':
                     self.reply_bytes(b'<html>synthetic-server-password</html>')
                     return
-                size = 1024 if key == 'big' else 1
+                requested_size = int(args['size'][0])
+                if key == 'quality-fail' and requested_size > 32 and Fixture.mode != 'quality-recovered':
+                    self.reply_bytes(b'invalid artwork', 503)
+                    return
+                size = 1024 if key == 'big' else requested_size
+                if key == 'quality-under-key' and requested_size == 320:
+                    size = 16
+                if key == 'quality-best' and requested_size == 72:
+                    size = 32
                 color = b'\x00\x00\xff\xff' if key == 'blue' else b'\xff\x00\x00\xff'
                 def chunk(kind, data):
                     return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
@@ -180,6 +188,12 @@ def main():
         assert not Fixture.failures and Fixture.reduced
         assert Fixture.art_requests.get('red') == 2 and Fixture.art_requests.get('bad') == 1
         assert Fixture.art_requests.get('blue') == 1 and 'uncached-offline' not in Fixture.art_requests
+        assert Fixture.art_requests.get('quality-upgrade') == 3
+        assert Fixture.art_requests.get('quality-reuse') == 1
+        assert Fixture.art_requests.get('quality-fail') == 3
+        assert Fixture.art_requests.get('quality-under-key') == 2
+        assert Fixture.art_requests.get('quality-best') == 2
+        assert Fixture.art_requests.get('quality-reconnect') == 2
         print('real HTTP fixture authentication, paging, request exclusions and redaction: passed')
 
 

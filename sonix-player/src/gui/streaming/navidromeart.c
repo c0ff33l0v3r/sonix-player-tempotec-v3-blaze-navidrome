@@ -3,6 +3,7 @@
 #include "src/system/core/utils.h"
 #include "src/system/image/stb_image_decl.h"
 #include "src/system/streaming/navidrome.h"
+#include "src/system/streaming/navidromedebug.h"
 #include <dirent.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -14,10 +15,10 @@
 #include <unistd.h>
 #include <utime.h>
 
-#define ART_BUDGET (32 * 1024 * 1024)
+#define ART_BUDGET (32u * 1024u * 1024u)
 typedef struct {
 	unsigned serial;
-	bool pending, done, found, player;
+	bool pending, done, found, player, album;
 	unsigned profile_epoch;
 	nd_library_t library;
 	char id[ND_ID_MAX];
@@ -25,7 +26,7 @@ typedef struct {
 	int backdrop_w, backdrop_h;
 	cover_image_t image, backdrop;
 } art_slot_t;
-#define ART_SLOTS ND_ART_SLOT_COUNT // Browser, player and Search own disjoint slots.
+#define ART_SLOTS ND_ART_SLOT_COUNT // Rows, player, Search and album heads own disjoint slots.
 static art_slot_t slots[ART_SLOTS];
 static pthread_mutex_t art_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t wake = PTHREAD_COND_INITIALIZER;
@@ -36,6 +37,7 @@ static bool started;
 static struct {
 	char key[33];
 	time_t until;
+	unsigned network_epoch;
 } failures[ND_WINDOW];
 static unsigned failed_next;
 
@@ -79,7 +81,7 @@ static void cache_key(const art_slot_t *job, int size, char key[33]) {
 
 // Encoded artwork can be decoded at the new display size. Reads stay scoped to
 // the same profile/card and keep the existing byte/dimension limits.
-static bool cached_image(const art_slot_t *job, const nd_context_t *context, const char *path, cover_image_t *out) {
+static bool cached_image(const art_slot_t *job, const nd_context_t *context, const char *path, int minimum, int *resolution, cover_image_t *out) {
 	bool leased = job->player ? navidrome_playback_begin(context) : navidrome_cache_begin(context->epoch, context->card_epoch);
 	if (!leased)
 		return false;
@@ -106,7 +108,9 @@ static bool cached_image(const art_slot_t *job, const nd_context_t *context, con
 		utime(path, NULL);
 	navidrome_cache_end();
 	int w = 0, h = 0, components = 0;
-	bool found = cached && stbi_info_from_memory((const stbi_uc *)cached, (int)length, &w, &h, &components) && w > 0 && h > 0 && w <= 512 && h <= 512 && cover_load_image_memory(cached, length, job->size, job->size, COVER_FIT_COVER, out);
+	bool found = cached && stbi_info_from_memory((const stbi_uc *)cached, (int)length, &w, &h, &components) && w > 0 && h > 0 && w <= 512 && h <= 512 && (w < h ? w : h) > minimum && cover_load_image_memory(cached, length, job->size, job->size, COVER_FIT_COVER, out);
+	if (found)
+		*resolution = w < h ? w : h;
 	free(cached);
 	return found;
 }
@@ -126,38 +130,58 @@ static bool load(const art_slot_t *job, cover_image_t *out) {
 	strcpy(slash, "/art");
 	cache_key(job, job->size, key);
 	snprintf(path, sizeof(path), "%s/%s.img", dir, key);
-	bool found = cached_image(job, &context, path, out);
+	int resolution = 0;
+	bool found = cached_image(job, &context, path, 0, &resolution, out);
+	// An exact-key response was already requested at these bounds. Its source
+	// may simply be small; do not repeatedly download an inherently small cover.
+	bool complete = found;
 	if (!found && !job->player) {
-		// Finite historical list-thumbnail sizes, largest first. Do not require
-		// reconnect/Sync merely because a new layout uses different bounds.
-		// Player art keeps its exact-size quality/cache policy.
-		static const int sizes[] = {72, 64, 48, 43, 32};
-		for (size_t i = 0; !found && i < sizeof(sizes) / sizeof(*sizes); i++) {
-			if (sizes[i] == job->size)
+		// Prefer a cached encoding with enough actual source pixels. Smaller
+		// thumbnails remain a fallback, not a reason to skip a sharper download.
+		// Player art keeps its exact-size cache policy.
+		static const int sizes[] = {480, 320, 300, 240, 200, 72, 64, 48, 43, 32};
+		for (size_t i = 0; !complete && i < sizeof(sizes) / sizeof(*sizes); i++) {
+			if (sizes[i] == job->size || (!job->album && sizes[i] > 72))
 				continue;
 			char old_key[33], old_path[1200];
 			cache_key(job, sizes[i], old_key);
 			snprintf(old_path, sizeof(old_path), "%s/%s.img", dir, old_key);
-			found = cached_image(job, &context, old_path, out);
+			cover_image_t candidate = {0};
+			int candidate_resolution = 0;
+			if (cached_image(job, &context, old_path, resolution, &candidate_resolution, &candidate)) {
+				cover_free(out);
+				*out = candidate;
+				resolution = candidate_resolution;
+				found = true;
+				complete = resolution >= job->size;
+			}
 		}
 	}
-	if (found) {
+	if (complete) {
 		valid = (job->player ? navidrome_playback_current(&context, false) : navidrome_context_current(&context, false));
+		if (job->album && valid)
+			nd_log("navidrome: album artwork target_px=%d source_px=%d result=cached_complete\n", job->size, resolution);
 		nd_wipe(&context, sizeof(context));
 		if (!valid)
 			cover_free(out);
 		return valid;
 	}
-	bool cooldown = false;
+	bool cooldown = false, attempted = false;
 	for (int i = 0; i < ND_WINDOW; i++)
-		if (!strcmp(failures[i].key, key) && failures[i].until > time(NULL))
+		if (!strcmp(failures[i].key, key) && failures[i].network_epoch == context.network_epoch && failures[i].until > time(NULL))
 			cooldown = true;
-	if (!cooldown && job->library.writable && (job->player ? navidrome_playback_current(&context, true) : navidrome_context_current(&context, true))) {
+	bool online = job->player ? navidrome_playback_current(&context, true) : navidrome_context_current(&context, true);
+	if (!cooldown && job->library.writable && online) {
+		attempted = true;
 		char *body = NULL;
 		size_t length = 0;
 		const char *error = nd_api_artwork(context.host, context.user, context.password, job->id, job->size, &body, &length);
 		int w = 0, h = 0, components = 0;
-		if (!error && stbi_info_from_memory((const stbi_uc *)body, (int)length, &w, &h, &components) && w > 0 && h > 0 && w <= 512 && h <= 512 && (job->player ? navidrome_playback_current(&context, true) : navidrome_context_current(&context, true)) && cover_load_image_memory(body, length, job->size, job->size, COVER_FIT_COVER, out)) {
+		cover_image_t downloaded = {0};
+		if (!error && stbi_info_from_memory((const stbi_uc *)body, (int)length, &w, &h, &components) && w > 0 && h > 0 && w <= 512 && h <= 512 && (job->player ? navidrome_playback_current(&context, true) : navidrome_context_current(&context, true)) && cover_load_image_memory(body, length, job->size, job->size, COVER_FIT_COVER, &downloaded)) {
+			cover_free(out);
+			*out = downloaded;
+			resolution = w < h ? w : h;
 			bool leased = (job->player ? navidrome_playback_begin(&context) : navidrome_cache_begin(context.epoch, context.card_epoch));
 			if (leased) {
 				// Connected Search can request art before the first Sync.
@@ -192,6 +216,7 @@ static bool load(const art_slot_t *job, cover_image_t *out) {
 			if (leased)
 				navidrome_cache_end();
 			found = (job->player ? navidrome_playback_current(&context, true) : navidrome_context_current(&context, true));
+			complete = found;
 			if (!found)
 				cover_free(out);
 		}
@@ -199,12 +224,22 @@ static bool load(const art_slot_t *job, cover_image_t *out) {
 			nd_wipe(body, length);
 		free(body);
 	}
-	nd_wipe(&context, sizeof(context));
-	if (!found) {
+	if (found && !(job->player ? navidrome_playback_current(&context, false) : navidrome_context_current(&context, false))) {
+		cover_free(out);
+		found = false;
+	}
+	// Only an actual failed HTTP attempt starts a cooldown. Offline reads and
+	// hits during cooldown must not create or extend it. Reconnect has a fresh
+	// network epoch, so an old failure cannot block a newly eligible upgrade.
+	if (!complete && attempted) {
 		unsigned slot = failed_next++ % ND_WINDOW;
 		snprintf(failures[slot].key, sizeof(failures[slot].key), "%s", key);
 		failures[slot].until = time(NULL) + 30;
+		failures[slot].network_epoch = context.network_epoch;
 	}
+	if (job->album)
+		nd_log("navidrome: album artwork target_px=%d source_px=%d online=%d writable=%d cooldown=%d attempted=%d result=%s\n", job->size, resolution, online, job->library.writable, cooldown, attempted, complete ? "complete" : found ? "cached_fallback" : "unavailable");
+	nd_wipe(&context, sizeof(context));
 	return found;
 }
 
@@ -225,6 +260,11 @@ static void *art_worker(void *unused) {
 		pthread_mutex_unlock(&art_lock);
 		cover_image_t image = {0}, backdrop = {0};
 		bool found = load(&job, &image);
+		if (found && (i == ND_ART_ALBUM_SLOT || i == ND_ART_SEARCH_ALBUM_SLOT)) {
+			int luma;
+			image.has_tone = cover_page_tone(&image, COVER_PAGE_LIGHT_FROM, &image.tone, &luma, &image.tone_light);
+			image.tone_luma = image.has_tone ? luma : 0;
+		}
 		if (found && job.player && job.backdrop_w > 0 && job.backdrop_w <= 512 && job.backdrop_h > 0 && job.backdrop_h <= 1024)
 			cover_blur_fill(&image, job.backdrop_w, job.backdrop_h, &backdrop);
 		pthread_mutex_lock(&art_lock);
@@ -264,6 +304,7 @@ static void request(int i, const nd_library_t *library, const char *id, int size
 	art_slot_t *slot = &slots[i];
 	slot->library = *library;
 	slot->player = i == ND_WINDOW;
+	slot->album = i == ND_ART_ALBUM_SLOT || i == ND_ART_SEARCH_ALBUM_SLOT;
 	nd_context_t context;
 	if (navidrome_context(&context, false))
 		slot->profile_epoch = context.profile_epoch;

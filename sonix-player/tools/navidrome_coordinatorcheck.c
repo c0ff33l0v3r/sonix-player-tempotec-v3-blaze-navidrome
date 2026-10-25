@@ -107,6 +107,8 @@ static void wait_fetch(int previous) {
 	}
 	assert(atomic_load(&fetches) > previous);
 }
+#include "navidrome_album_coordinator_fixture.h"
+
 int main(int argc, char **argv) {
 	alarm(60);
 	char dir[] = "/tmp/sonix-navidrome-coordinator-XXXXXX";
@@ -384,6 +386,9 @@ int main(int argc, char **argv) {
 		assert(starts == 10 && playlist_count() == 12);
 		puts("coordinator search queues: exact match set, unsynced metadata/audio start, selected-first Shuffle, unique full search/album rounds, Shuffle Repeat and normal-order restoration: passed");
 	}
+	nd_library_t header_library;
+	navidrome_library_snapshot(&header_library);
+	album_coordinator_check(&header_library, lv_screen_active());
 	navidrome_lock();
 	drain();
 	navidromeplay_tick();

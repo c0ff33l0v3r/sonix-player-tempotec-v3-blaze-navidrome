@@ -209,7 +209,7 @@ static void check_ui(int width, int height) {
 	assert(navidrome_save("http://fixture/base", "fixture user", server_password, "vault1"));
 	wait_idle();
 	lv_init();
-	font_ui_24 = font_ui_14 = font_ui_18 = font_ui_20 = font_ui_64_bold = lv_font_unscii_8;
+	font_ui_28 = font_ui_24_bold = font_ui_24 = font_ui_14 = font_ui_18 = font_ui_20 = font_ui_64_bold = lv_font_unscii_8;
 	lv_display_t *display = lv_display_create(width, height);
 	navidrome_screen = lv_obj_create(NULL);
 	gui_config_t cfg = {.screen_width = width, .screen_height = height, .padding = 8, .top_bar_height = 20};

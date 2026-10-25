@@ -3,10 +3,15 @@
 #include "navidrome_selftest.c"
 #undef main
 #include "src/gui/streaming/navidromesettings.c"
+#include "src/gui/streaming/navidromealbum.c"
+
+void navidromeplay_cache_stop(void) {}
+bool navidromeplay_cache_reader_active(void) { return false; }
 
 // Stub surrounding shell presentation; the form, widgets, events and service are real.
 int32_t ui_panel_width = 320;
-lv_font_t font_ui_14, font_ui_18, font_ui_20;
+lv_font_t font_ui_14, font_ui_18, font_ui_20, font_ui_24;
+const theme_palette_t *theme(void) { static theme_palette_t colors; return &colors; }
 extern const lv_font_t lv_font_unscii_8;
 lv_style_t theme_style_screen, theme_style_card, theme_style_card_pressed;
 lv_style_t theme_style_text, theme_style_text_dim, theme_style_icon;
@@ -26,7 +31,9 @@ static const uint8_t pixel[4] = {255, 255, 255, 255};
 const lv_image_dsc_t icon_eye = TEST_IMAGE, icon_eye_off = TEST_IMAGE;
 const char *tr(const char *key) { return key; }
 void gui_notify_popup(const char *key) { (void)key; }
-bool switcher_back_drag_active(void) { return false; }
+static bool fixture_navigation_drag;
+bool switcher_back_drag_active(void) { return fixture_navigation_drag; }
+bool player_sheet_drag_active(void) { return fixture_navigation_drag; }
 void switcher_attach_back_gesture(lv_obj_t *screen) { (void)screen; }
 void switch_screen(lv_obj_t *screen) { lv_screen_load(screen); }
 void switch_screen_return_to(lv_obj_t *screen) { lv_screen_load(screen); }
@@ -120,12 +127,15 @@ void frameprof_event_ran(void *cb, unsigned us) {
 	(void)us;
 }
 
+static int fixture_album_preference = -1;
 bool config_get_bool(const char *section, const char *key, bool fallback) {
+	if (!strcmp(section, "navidrome") && !strcmp(key, "album_head") && fixture_album_preference >= 0) return fixture_album_preference != 0;
 	(void)section;
 	(void)key;
 	return fallback;
 }
 void config_set_bool(const char *section, const char *key, bool value) {
+	if (!strcmp(section, "navidrome") && !strcmp(key, "album_head")) fixture_album_preference = value;
 	(void)section;
 	(void)key;
 	(void)value;
@@ -161,13 +171,26 @@ int main(void) {
 	assert(mkdtemp(dir) && !chdir(dir));
 	navidrome_init();
 	lv_init();
-	font_ui_14 = font_ui_18 = font_ui_20 = lv_font_unscii_8;
+	font_ui_14 = font_ui_18 = font_ui_20 = font_ui_24 = lv_font_unscii_8;
 	lv_display_t *display = lv_display_create(320, 480);
 	lv_obj_t *outside = lv_obj_create(NULL);
 	gui_config_t cfg = {.screen_width = 320, .screen_height = 480, .padding = 8, .top_bar_height = 20};
 	navidromesettings_init(&cfg);
 	navidromesettings_open();
 	assert(lv_screen_active() == settings_form.screen);
+    assert(lv_obj_has_state(album_view_switch,LV_STATE_CHECKED) && navidromealbum_enabled());
+    lv_obj_remove_state(album_view_switch,LV_STATE_CHECKED);
+    lv_obj_send_event(album_view_switch,LV_EVENT_VALUE_CHANGED,NULL);
+    assert(!navidromealbum_enabled() && !atomic_load(&calls));
+    fixture_navigation_drag=true;
+    lv_obj_add_state(album_view_switch,LV_STATE_CHECKED);
+    lv_obj_send_event(album_view_switch,LV_EVENT_VALUE_CHANGED,NULL);
+    assert(!navidromealbum_enabled() && !lv_obj_has_state(album_view_switch,LV_STATE_CHECKED));
+    fixture_navigation_drag=false;
+    lv_obj_add_state(album_view_switch,LV_STATE_CHECKED);
+    lv_obj_send_event(album_view_switch,LV_EVENT_VALUE_CHANGED,NULL);
+    assert(navidromealbum_enabled() && !atomic_load(&calls));
+
 	enter_server();
 	atomic_store(&fail_rename, 1);
 	enter_unlock_password();

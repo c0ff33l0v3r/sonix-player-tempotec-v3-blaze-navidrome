@@ -58,6 +58,7 @@ bool navidrome_context_current(const nd_context_t *context, bool network);
 bool navidrome_playback_current(const nd_context_t *context, bool network);
 bool navidrome_playback_begin(const nd_context_t *context);
 bool navidrome_playback_publish(const nd_context_t *context, const char *temp, const char *path);
+bool navidrome_playback_pin_source(const nd_library_t *library);
 bool navidrome_playback_pin(const nd_library_t *library);
 void navidrome_network_failed(const nd_context_t *context);
 // Called under service mutex: callback may only wake/cancel workers or post.

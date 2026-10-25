@@ -6,14 +6,15 @@
 #undef gui_post
 #include "src/gui/shell/azindex.c"
 #include "src/gui/streaming/navidromebrowse.c"
+#include "src/gui/streaming/navidromealbum.c"
 
 int32_t ui_panel_width = 320;
-lv_font_t font_ui_14, font_ui_18, font_ui_20, font_ui_64_bold;
+lv_font_t font_ui_14, font_ui_18, font_ui_20, font_ui_64_bold, font_ui_24, font_ui_28, font_ui_24_bold;
 extern const lv_font_t lv_font_unscii_8;
 lv_style_t theme_style_icon;
 static const uint8_t fixture_pixel[4] = {255, 255, 255, 255};
 #define FIXTURE_ICON {.header = {.magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_ARGB8888, .w = 1, .h = 1, .stride = 4}, .data = fixture_pixel, .data_size = 4}
-const lv_image_dsc_t icon_star_plus = FIXTURE_ICON, icon_close = FIXTURE_ICON, icon_list_plus = FIXTURE_ICON, icon_ellipsis_vertical = FIXTURE_ICON, icon_check = FIXTURE_ICON;
+const lv_image_dsc_t icon_album_big = FIXTURE_ICON, icon_shuffle = FIXTURE_ICON, icon_list_queue = FIXTURE_ICON, icon_star_plus = FIXTURE_ICON, icon_close = FIXTURE_ICON, icon_list_plus = FIXTURE_ICON, icon_ellipsis_vertical = FIXTURE_ICON, icon_check = FIXTURE_ICON;
 #ifndef NAVIDROME_PLAYLIST_UI
 void navidromeplaylists_pick_source(int64_t session, int64_t generation, lv_obj_t *origin, bool favorites) {
 	(void)favorites;
@@ -64,6 +65,13 @@ bool navidromeplay_select(const nd_library_t *library, const nd_query_t *query, 
 	return true;
 }
 #endif
+#ifndef NAVIDROME_COORDINATOR_TEST
+bool navidromeplay_album(const nd_library_t *library, const nd_query_t *query, int action, void *origin) {
+	(void)library; (void)query; (void)action; (void)origin; return true;
+}
+#endif
+void back_btn_tint_on_screen(lv_obj_t *screen, bool on, lv_color_t color) { (void)screen; (void)on; (void)color; }
+void topbar_tint_on_screen(lv_obj_t *screen, bool on, lv_color_t bg, lv_color_t ink) { (void)screen; (void)on; (void)bg; (void)ink; }
 const char *tr(const char *key) {
 #ifdef NAVIDROME_PLAYLIST_UI
 	if (!strcmp(key, "playlist_tracks")) return "%d tracks";
@@ -78,7 +86,8 @@ void gui_notify_popup(const char *key) {
 	fixture_notices++;
 }
 #ifndef NAVIDROME_STAR_UI
-void toast_success(const char *key) { (void)key; }
+static char fixture_last_success[80];
+void toast_success(const char *key) { snprintf(fixture_last_success,sizeof(fixture_last_success),"%s",key); }
 #endif
 bool switcher_back_drag_active(void) { return dragging; }
 bool player_sheet_drag_active(void) { return dragging; }
@@ -102,14 +111,33 @@ lv_obj_t *settingsrow_title(lv_obj_t *screen, gui_config_t *cfg, const char *tex
 	return label;
 }
 #ifndef NAVIDROME_PLAYLIST_UI
-void navidromeart_release(int slot) { (void)slot; }
+static bool fixture_album_art_ready;
+static int fixture_album_art_size;
+static unsigned fixture_album_art_requests;
+void navidromeart_release(int slot) {
+    if (slot == ND_ART_ALBUM_SLOT) fixture_album_art_size = 0;
+}
 void navidromeart_request(int slot, const nd_library_t *library, const char *id, int size) {
+	if (slot == ND_ART_ALBUM_SLOT) { fixture_album_art_size = size; fixture_album_art_requests++; }
 	(void)slot;
 	(void)library;
 	(void)id;
 	(void)size;
 }
 bool navidromeart_take(int slot, cover_image_t *image, bool *finished) {
+    if (slot == ND_ART_ALBUM_SLOT && fixture_album_art_size) {
+        *finished = fixture_album_art_ready;
+        if (!fixture_album_art_ready) return false;
+        int size = fixture_album_art_size;
+        memset(image,0,sizeof(*image));
+        image->pixels = calloc((size_t)size*size,4); assert(image->pixels);
+        for (int i=0;i<size*size;i++) { image->pixels[i*4+1]=255; image->pixels[i*4+3]=255; }
+        image->dsc = (lv_image_dsc_t){.header={.magic=LV_IMAGE_HEADER_MAGIC,.cf=LV_COLOR_FORMAT_ARGB8888,.w=size,.h=size,.stride=size*4},.data=image->pixels,.data_size=(uint32_t)(size*size*4)};
+        image->has_tone=true; image->tone=0x00ff00; image->tone_luma=149; image->tone_light=false;
+        fixture_album_art_size=0;
+        return true;
+    }
+
 	(void)slot;
 	(void)image;
 	*finished = true;
@@ -187,6 +215,7 @@ static void window_wait(int level) {
 	}
 	assert(!"window timeout");
 }
+
 #endif
 
 static void seed(const nd_library_t *library) {
@@ -273,7 +302,7 @@ int main(void) {
 	}
 	assert(library.ready);
 	lv_init();
-	font_ui_14 = font_ui_18 = font_ui_20 = font_ui_64_bold = lv_font_unscii_8;
+	font_ui_24 = font_ui_28 = font_ui_24_bold = font_ui_14 = font_ui_18 = font_ui_20 = font_ui_64_bold = lv_font_unscii_8;
 	int width = getenv("SONIX_CHECK_WIDTH") ? atoi(getenv("SONIX_CHECK_WIDTH")) : 320;
 	assert(width == 320 || width == 480);
 	int height = width == 320 ? 480 : 800;

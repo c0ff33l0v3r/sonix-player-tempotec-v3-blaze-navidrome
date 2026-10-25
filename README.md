@@ -177,6 +177,58 @@ into `.local/navidrome/.cache/` when the card is writable. Read-only legacy card
 remain usable until they can migrate. Credentials and diagnostic logs retain
 their existing locations.
 
+Navidrome settings → **Alternative album view** is on by default and is
+independent of Music's setting. Albums open with a large cover, cover-derived
+page colors, available artist/genre/year, numbered tracks and multi-disc
+headings. The header scrolls away as you browse. Turn it off for the existing
+track list with thumbnails. Ordinary album headers offer **Play**, **Shuffle**
+and **Queue**; Queue adds one random album track using the usual Play next/Add
+at end preference. Header playback shortcuts stay hidden during playlist picking,
+track selection and Search; those views keep their own existing track actions.
+Older snapshots still open without Sync, omitting optional details they lack.
+
+**Album artwork cache** stores downloaded JPEG/PNG image bytes on the selected
+card in `.local/navidrome/.cache/art/<hash>.img`. It is keyed by profile scope,
+server cover-art ID, requested pixel size and cache-format version. It is **not
+one cache file per song**: tracks/albums sharing a cover ID share the same entry
+at a given size. Different requested sizes can produce separate files for that
+cover; a new file is written only when artwork is actually downloaded. Sync does
+not download artwork in bulk. Visible rows and album/player views request it
+on demand.
+
+| View | Requested artwork size | On the 320 px Blaze panel |
+| --- | --- | --- |
+| Browse, Search and playlist rows | `ui_px(72)` square | 48×48 px |
+| Alternative album header | `ui_px(300)`, clamped to available width | 200×200 px |
+| Now Playing | Current cover-box width, capped at 512 px; Studio uses its own cover width | Normally 320×320 px in the standard player |
+
+`ui_px()` scales reference sizes from the 480 px layout; these are request/display
+bounds, not a guarantee that the server's original has that much detail. The
+loader validates and decodes the server image on a worker, cropping/scaling it
+to the requested square. Decoded images and the player's blurred backdrop live
+in bounded RAM slots; there is no separate persistent backdrop or decoded cache
+file for every track. Local Music's embedded/folder artwork uses its separate
+thumbnail/player cache rather than this Navidrome directory.
+
+An exact-size downloaded response is reused first. Headers can also reuse cached
+encodings requested at 480, 320, 300, 240, 200, 72, 64, 48, 43 or 32 px; list rows
+check the thumbnail sizes in that set. Actual image dimensions determine whether
+another size has enough detail. When only smaller thumbnails exist, an eligible
+connected view downloads the requested size. Offline/read-only views, or failed
+upgrades, retain the best available smaller copy. Reusing another size does not
+write a new cache file. Now Playing keeps its independent exact-size policy.
+
+Artwork has a 32 MiB disk budget with oldest-accessed entries evicted as needed.
+Each encoded response is limited to 256 KiB and source dimensions to 512×512;
+invalid/missing images use placeholders. Writes publish through a temporary file
+after validation. Real download failures have a 30-second cooldown within that
+connection; offline reads and repeated opens do not extend it. Explicit Reconnect
+allows a new attempt and refreshes an open album header while retaining the old
+image until its replacement is ready. A cached thumbnail enlarged offline can
+look soft; reconnecting can supply detail that resampling cannot recreate.
+Placeholders stay at native size or downscale. Cache keys and diagnostics exclude
+passwords, authentication tokens and request URLs.
+
 **Favorites** opens cached **Albums** and **Tracks** lists. Album, track, and artist
 favorites are independent: starring an album does not star its tracks. Successful
 Add/Remove actions update the corresponding saved list and count automatically;

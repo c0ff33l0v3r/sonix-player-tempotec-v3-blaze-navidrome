@@ -15,6 +15,8 @@ typedef struct {
 	int totals[3];
 	bool remaining[3];
 	nd_row_t rows[ND_WINDOW];
+	nd_album_window_t album;
+	bool alternate;
 	nd_library_t library;
 	const char *error, *reason;
 } nd_search_result_t;
@@ -28,4 +30,6 @@ bool nd_search_valid(nd_search_t *search);
 void nd_search_read(nd_search_t *search, nd_kind_t kind, int first, nd_search_result_t *out);
 void nd_search_child(nd_search_t *search, int level, nd_kind_t parent_kind, const char *id, nd_search_result_t *out);
 void nd_search_child_read(nd_search_t *search, int level, int first, nd_search_result_t *out);
+void nd_search_child_album_read(nd_search_t *search, int level, int offset, int pitch, int disc_pitch, bool alternate, nd_search_result_t *out);
+bool nd_search_child_position(nd_search_t *search, int level, const char *id, int pitch, int disc_pitch, bool alternate, int *position);
 #endif

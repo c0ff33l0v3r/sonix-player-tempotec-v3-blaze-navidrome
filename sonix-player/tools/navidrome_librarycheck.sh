@@ -9,7 +9,7 @@ fi
 check_binary=$(mktemp /tmp/sonix-navidrome-librarycheck.XXXXXX)
 trap 'rm -f "$check_binary"' EXIT HUP INT TERM
 ${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -O1 -g ${NAVIDROME_CHECK_FLAGS:-} \
-    -DHOST_BUILD -DLV_CONF_INCLUDE_SIMPLE -I. -Ilvgl \
+    -DHOST_BUILD -DNAVIDROME_TEST -DLV_CONF_INCLUDE_SIMPLE -I. -Ilvgl \
     tools/navidrome_librarycheck.c tools/navidrome_test_support.c tools/navidrome_cover_test_support.c \
     src/gui/streaming/navidromeart.c src/system/image/stb_image_impl.c \
     src/system/streaming/navidromedebug.c src/system/streaming/navidrome.c src/system/streaming/navidromeapi.c src/system/streaming/navidromebatch.c \

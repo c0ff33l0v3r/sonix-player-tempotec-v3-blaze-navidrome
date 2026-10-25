@@ -1,4 +1,5 @@
 #include "navidromesearch.h"
+#include "navidromealbum.h"
 #include "navidromeart.h"
 #include "navidromepage.h"
 #include "src/gui/fonts/fonts.h"
@@ -24,6 +25,10 @@ typedef struct {
 	lv_obj_t *screen, *list, *extent, *status, *reason, *title;
 	lv_obj_t *rows[ND_WINDOW], *names[ND_WINDOW], *details[ND_WINDOW], *images[ND_WINDOW];
 	cover_image_t art[ND_WINDOW];
+	lv_obj_t *numbers[ND_WINDOW];
+	nd_album_view_t album_view;
+	char anchor[ND_ID_MAX];
+	int anchor_delta;
 	bool art_done[ND_WINDOW], loading, populated;
 	nd_search_result_t data;
 	nd_kind_t kind;
@@ -47,7 +52,10 @@ static const char *const search_labels[] = {"albums", "navidrome_tracks", "artis
 typedef struct {
 	unsigned generation, serial;
 	int page, first;
-	bool child;
+	bool child, alternate, restore;
+	unsigned layout_revision;
+	int pitch, disc_pitch, anchor_delta;
+	char anchor[ND_ID_MAX];
 	nd_kind_t kind;
 	char query[ND_SEARCH_QUERY], id[ND_ID_MAX];
 	nd_search_result_t result;
@@ -95,6 +103,7 @@ static void search_retire(void) {
 	pthread_cond_signal(&search_ready);
 	pthread_mutex_unlock(&search_lock);
 	for (int i = 0; i < 3; i++) {
+		navidromealbum_release(&search_pages[i].album_view);
 		search_pages[i].serial++;
 		search_pages[i].loading = false;
 		search_pages[i].populated = false;
@@ -142,11 +151,23 @@ static void search_paint_rows(search_page_t *p) {
 	lv_snprintf(reason, sizeof(reason), "%s%s%s", p->data.reason ? tr(p->data.reason) : "", p->data.reason && (p->data.error || !p->data.count) ? " · " : "", p->data.error ? tr(p->data.error) : !p->data.count ? tr(empty) : "");
 	lv_label_set_text(p->reason, reason);
 
+	int old_height = p->album_view.height;
+	navidromealbum_bind(&p->album_view, p != search_pages && p->kind == ND_TRACKS && p->data.alternate, &p->data.album.info, &p->data.library, false, false);
 	search_layout(p);
-	lv_obj_set_height(p->extent, LV_MAX(1, total * search_pitch));
+	int extent = p->data.alternate ? p->data.album.extent : total * search_pitch;
+	if (extent > INT_MAX - p->album_view.height) {
+		lv_label_set_text(p->reason, tr("nd_search_child_limit"));
+		return;
+	}
+	lv_obj_set_height(p->extent, LV_MAX(1, extent + p->album_view.height));
+	if (!p->album_view.active && p != search_pages && *p->data.album.info.row.title)
+		lv_label_set_text(p->title, p->data.album.info.row.title);
+	if (old_height && p->album_view.height && old_height != p->album_view.height && lv_obj_get_scroll_y(p->list) >= old_height) {
+		lv_obj_scroll_to_y(p->list, lv_obj_get_scroll_y(p->list) + p->album_view.height - old_height, LV_ANIM_OFF);
+	}
 	for (int i = 0; i < p->data.count; i++) {
 		nd_row_t *row = &p->data.rows[i];
-		lv_obj_set_y(p->rows[i], (p->data.first + i) * search_pitch);
+		lv_obj_set_y(p->rows[i], p->album_view.height + (p->album_view.active ? p->data.album.y[i] : (p->data.first + i) * search_pitch));
 		lv_label_set_text(p->names[i], row->title);
 		lv_label_set_text(p->details[i], row->artist);
 		lv_obj_set_hidden(p->rows[i], false);
@@ -154,15 +175,16 @@ static void search_paint_rows(search_page_t *p) {
 		lv_image_set_inner_align(p->images[i], LV_IMAGE_ALIGN_CONTAIN);
 		lv_obj_add_style(p->images[i], &theme_style_icon, 0);
 		lv_obj_set_hidden(p->images[i], false);
-		p->art_done[i] = !*row->cover;
-		if (*row->cover)
+		p->art_done[i] = p->album_view.active || !*row->cover;
+		if (*row->cover && !p->album_view.active)
 			navidromeart_request(ND_ART_SEARCH_SLOT + i, &p->data.library, row->cover, ui_px(ND_ART_THUMB_SIZE));
+		navidromealbum_row(&p->album_view, p->rows[i], p->names[i], p->details[i], p->numbers[i], p->images[i], row, p->album_view.active && p->data.album.heading[i]);
 	}
 }
 static void search_done(void *value) {
 	search_job_t *job = value;
 	search_page_t *p = &search_pages[job->page];
-	if (job->generation != search_generation || p->serial != job->serial || search_active_page() != job->page || !navidrome_search_current(&search_identity, false)) {
+	if ((job->page && job->layout_revision != navidromealbum_revision()) || job->generation != search_generation || p->serial != job->serial || search_active_page() != job->page || !navidrome_search_current(&search_identity, false)) {
 		free(job);
 		return;
 	}
@@ -218,6 +240,10 @@ static void search_done(void *value) {
 	p->data = job->result;
 	p->populated = true;
 	search_paint_rows(p);
+	if (job->restore) {
+		lv_obj_scroll_to_y(p->list, LV_MAX(0, job->first * (job->alternate ? 1 : search_pitch) + p->album_view.height - job->anchor_delta), LV_ANIM_OFF);
+		p->anchor[0] = 0;
+	}
 	if (!job->page && !p->data.error) {
 		for (int i = 0; i < 3; i++)
 			if (search_totals[i] < 0) {
@@ -275,10 +301,20 @@ static void *search_work(void *unused) {
 		else if (job->child)
 			nd_search_child(session, job->page, job->kind, job->id, &job->result);
 		else if (job->page)
-			nd_search_child_read(session, job->page, job->first, &job->result);
+			nd_search_child_read(session, job->page, job->alternate ? 0 : job->first, &job->result);
 		else
 			nd_search_read(session, job->kind, job->first, &job->result);
 
+		if (session && job->page && job->result.kind == ND_TRACKS && !job->result.error) {
+			if (job->restore) {
+				int position;
+				if (nd_search_child_position(session, job->page, job->anchor, job->pitch, job->disc_pitch, job->alternate, &position))
+					job->first = job->alternate ? position : position / job->pitch;
+				else
+					job->restore = false;
+			}
+			nd_search_child_album_read(session, job->page, job->child ? 0 : job->first, job->pitch, job->disc_pitch, job->alternate, &job->result);
+		}
 		if (!gui_post(search_done, job)) {
 			pthread_mutex_lock(&search_lock);
 			free(search_undelivered);
@@ -299,6 +335,13 @@ static void search_submit(search_page_t *p, int first, const char *id, nd_kind_t
 	search_pending.page = (int)(p - search_pages);
 	search_pending.first = first;
 	search_pending.kind = kind;
+	search_pending.alternate = navidromealbum_enabled() && p != search_pages && p->kind == ND_TRACKS;
+	search_pending.layout_revision = navidromealbum_revision();
+	search_pending.pitch = search_pitch;
+	search_pending.disc_pitch = ui_px(44);
+	search_pending.restore = *p->anchor != 0;
+	search_pending.anchor_delta = p->anchor_delta;
+	snprintf(search_pending.anchor, sizeof(search_pending.anchor), "%s", p->anchor);
 	snprintf(search_pending.query, sizeof(search_pending.query), "%s", search_query);
 	if (id) {
 		search_pending.child = true;
@@ -325,6 +368,14 @@ static void search_scroll(lv_event_t *e) {
 	if (search_gesture() || !p->populated || p->data.error || (p == search_pages && !*search_query))
 		return;
 
+	navidromealbum_tick(&p->album_view);
+	if (p->album_view.active) {
+		int y = LV_MAX(0, lv_obj_get_scroll_y(p->list) - p->album_view.height);
+		int last = p->data.count ? p->data.album.y[p->data.count - 1] + (p->data.album.heading[p->data.count - 1] ? ui_px(44) : search_pitch) : 0;
+		if (!p->loading && (y < p->data.album.offset || (y + lv_obj_get_height(p->list) > last && last < p->data.album.extent)))
+			search_submit(p, LV_MAX(0, y - 2 * search_pitch), NULL, p->kind);
+		return;
+	}
 	int first = lv_obj_get_scroll_y(p->list) / search_pitch;
 	int visible = lv_obj_get_height(p->list) / search_pitch + 1;
 	int wanted = first > 1 ? first - 1 : 0;
@@ -338,6 +389,12 @@ static void search_scroll(lv_event_t *e) {
 }
 static void search_layout(search_page_t *p) {
 	bool root = p == search_pages;
+	if (p->album_view.active) {
+		lv_obj_set_y(p->list, p->album_view.cfg->top_bar_height);
+		lv_obj_set_height(p->list, search_height - p->album_view.cfg->top_bar_height - search_padding);
+		lv_obj_set_hidden(p->list, false);
+		return;
+	}
 	if (p != search_pages) {
 		lv_obj_set_pos(p->status, search_padding, p->status_top);
 		lv_obj_set_pos(p->reason, search_padding, p->status_top + ui_px(24));
@@ -499,6 +556,7 @@ static void search_unloaded(lv_event_t *e) {
 	p->serial++;
 	p->loading = false;
 	search_art_release(p);
+	navidromealbum_release(&p->album_view);
 }
 void navidromesearch_refresh(void) {
 	int level = search_active_page();
@@ -549,6 +607,31 @@ void navidromesearch_refresh(void) {
 		}
 	}
 
+	if (p != search_pages && p->kind == ND_TRACKS && p->album_view.revision != navidromealbum_revision() && p->populated) {
+		int y = lv_obj_get_scroll_y(p->list);
+		for (int i = 0; i < p->data.count; i++) {
+			if (*p->data.rows[i].id && lv_obj_get_y(p->rows[i]) + search_pitch > y) {
+				memcpy(p->anchor, p->data.rows[i].id, sizeof(p->anchor));
+				p->anchor_delta = lv_obj_get_y(p->rows[i]) - y;
+				break;
+			}
+		}
+		p->album_view.revision = navidromealbum_revision();
+		search_submit(p, 0, NULL, p->kind);
+	}
+	bool was_tinted = p->album_view.tinted;
+	navidromealbum_tick(&p->album_view);
+	if (was_tinted != p->album_view.tinted) {
+		for (int i = 0; i < p->data.count; i++)
+			navidromealbum_row(&p->album_view, p->rows[i], p->names[i], p->details[i], p->numbers[i], p->images[i], &p->data.rows[i], p->data.album.heading[i]);
+	}
+	for (int i = 0; i < p->data.count; i++)
+		if (!p->art_done[i] && navidromeart_take(ND_ART_SEARCH_SLOT + i, &p->art[i], &p->art_done[i])) {
+			lv_obj_remove_style(p->images[i], &theme_style_icon, 0);
+			lv_image_set_inner_align(p->images[i], LV_IMAGE_ALIGN_CONTAIN);
+			lv_image_set_src(p->images[i], &p->art[i].dsc);
+			lv_obj_set_hidden(p->images[i], false);
+		}
 }
 static void search_tick(lv_timer_t *timer) {
 	pthread_mutex_lock(&search_lock);
@@ -668,6 +751,15 @@ void navidromesearch_init(gui_config_t *cfg) {
 			player_sheet_attach_drag(p->rows[i], true);
 		}
 
+		for (int i = 0; i < ND_WINDOW; i++) {
+			p->numbers[i] = lv_label_create(p->rows[i]);
+			lv_obj_add_style(p->numbers[i], &theme_style_text_dim, 0);
+			lv_obj_set_style_text_font(p->numbers[i], &font_ui_20, 0);
+			lv_obj_set_width(p->numbers[i], ui_px(40));
+			lv_obj_align(p->numbers[i], LV_ALIGN_LEFT_MID, 0, 0);
+			lv_obj_set_hidden(p->numbers[i], true);
+		}
+		navidromealbum_init(&p->album_view, cfg, p->screen, p->list, p->title, p->status, p->reason, ND_ART_SEARCH_ALBUM_SLOT, NULL, p);
 		lv_obj_add_event_cb(p->list, search_scroll, LV_EVENT_SCROLL, p);
 		lv_obj_add_event_cb(p->screen, search_loaded, LV_EVENT_SCREEN_LOADED, p);
 		lv_obj_add_event_cb(p->screen, search_unloaded, LV_EVENT_SCREEN_UNLOADED, p);

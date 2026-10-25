@@ -52,3 +52,16 @@ bool library_search_pattern(const char *text, char *out, size_t size) {
 	out[n++] = '%'; out[n] = 0;
 	return true;
 }
+
+// Presentation-only configuration for focused UI fixtures; production config
+// persistence is exercised separately with the real config module.
+static int fixture_album_layout = -1;
+__attribute__((weak)) bool config_get_bool(const char *section, const char *key, bool fallback) {
+    if (!strcmp(section, "navidrome") && !strcmp(key, "album_head") && fixture_album_layout >= 0)
+        return fixture_album_layout != 0;
+    return fallback;
+}
+__attribute__((weak)) void config_set_bool(const char *section, const char *key, bool value) {
+    if (!strcmp(section, "navidrome") && !strcmp(key, "album_head")) fixture_album_layout = value;
+}
+__attribute__((weak)) bool config_save(void) { return true; }

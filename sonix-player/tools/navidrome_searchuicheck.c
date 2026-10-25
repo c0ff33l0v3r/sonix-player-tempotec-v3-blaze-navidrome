@@ -128,7 +128,7 @@ int main(int argc, char **argv) {
 	navidrome_poll_network();
 	lv_init();
 	ui_panel_width = width;
-	font_ui_24 = font_ui_14 = font_ui_16 = font_ui_18 = font_ui_20 = font_ui_64_bold = lv_font_unscii_8;
+	font_ui_28 = font_ui_24_bold = font_ui_24 = font_ui_14 = font_ui_16 = font_ui_18 = font_ui_20 = font_ui_64_bold = lv_font_unscii_8;
 	lv_display_t *display = lv_display_create(width, width == 320 ? 480 : 720);
 	navidrome_screen = lv_obj_create(NULL);
 	gui_config_t cfg = {.screen_width = width, .screen_height = width == 320 ? 480 : 720, .padding = ui_px(12), .top_bar_height = ui_px(30)};

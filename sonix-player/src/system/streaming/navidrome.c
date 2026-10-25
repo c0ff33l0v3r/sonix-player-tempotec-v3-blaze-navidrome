@@ -1399,3 +1399,10 @@ void navidrome_search_failed(const nd_context_t *context, const char *reason) {
 	pthread_mutex_unlock(&lock);
 	notify();
 }
+
+bool navidrome_playback_pin_source(const nd_library_t *library) {
+	pthread_mutex_lock(&lock);
+	bool ok = !g.stop && g.unlocked && library->ready && library->epoch == g.local_epoch && library->card_epoch == g.card_epoch && library->generation == (library->favorites ? g.favorites.generation : g.library.generation) && !strcmp(library->scope, library->favorites ? g.favorites.scope : g.library.scope) && !strcmp(library->path, library->favorites ? g.favorites.path : g.library.path) && nd_store_retain_source(library);
+	pthread_mutex_unlock(&lock);
+	return ok;
+}

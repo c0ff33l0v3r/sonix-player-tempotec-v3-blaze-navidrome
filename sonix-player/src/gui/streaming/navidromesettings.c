@@ -1,4 +1,6 @@
 #include "navidromesettings.h"
+#include "navidromealbum.h"
+#include "src/gui/nowplaying/player.h"
 
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/confirm.h"
@@ -23,6 +25,7 @@ typedef struct {
 } form_t;
 typedef enum { PASSPHRASE_CREATE, PASSPHRASE_UNLOCK, PASSPHRASE_CHANGE, PASSPHRASE_ENCRYPT, PASSPHRASE_PLAIN } pass_mode_t;
 static form_t main_form, pass_form, settings_form;
+static lv_obj_t *album_view_switch;
 static lv_obj_t *encrypt_switch, *encrypt_row, *protection_note, *pass_return;
 static bool encrypt_selected;
 static lv_obj_t *debug_switch, *debug_note;
@@ -171,6 +174,7 @@ static void form_init(form_t *f, const char *title) {
 static bool identical(const navidrome_snapshot_t *s) { return !strcmp(lv_textarea_get_text(main_form.fields[0]), s->host) && !strcmp(lv_textarea_get_text(main_form.fields[1]), s->user); }
 
 static void actions(void) {
+	lv_obj_set_state(album_view_switch, LV_STATE_CHECKED, navidromealbum_enabled());
 	navidrome_snapshot_t s;
 	navidrome_snapshot(&s);
 	bool editable = (!s.configured || s.unlocked) && !s.busy;
@@ -601,11 +605,25 @@ static void debug_cb(lv_event_t *e) {
 	actions();
 }
 
+static void album_view_cb(lv_event_t *e) {
+	(void)e;
+	if (!gesture() && !player_sheet_drag_active())
+		navidromealbum_set_enabled(lv_obj_has_state(album_view_switch, LV_STATE_CHECKED));
+	actions();
+}
+
 void navidromesettings_init(gui_config_t *cfg) {
 	config = cfg;
 	form_init(&settings_form, "nd_settings");
 	form_init(&main_form, "nd_server");
 	settingsrow_add(settings_form.body, "nd_server", NULL, server_cb, NULL);
+	settingsrow_toggle(settings_form.body, "musicsettings_album_head", &album_view_switch, album_view_cb);
+	lv_obj_t *album_note = lv_label_create(settings_form.body);
+	lv_obj_set_width(album_note, lv_pct(100));
+	lv_label_set_long_mode(album_note, LV_LABEL_LONG_WRAP);
+	lv_obj_add_style(album_note, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(album_note, &font_ui_18, 0);
+	lv_label_set_text(album_note, tr("musicsettings_album_head_note"));
 	encrypt_row = settingsrow_toggle(settings_form.body, "nd_encrypt_credentials", &encrypt_switch, encrypt_cb);
 	protection_note = lv_label_create(settings_form.body);
 	lv_obj_set_width(protection_note, lv_pct(100));

@@ -127,6 +127,37 @@ int main(void) {
 	playlist_load_paths(local_list, 2, 0);
 	assert(playlist_next(path, sizeof(path)) && !strcmp(path, local_list[1]));
 	playlist_clear();
+	// Mixed provider additions preserve current playback and source ownership.
+	playlist_load_paths(local_list, 2, 0);
+	int before_close = closed;
+	assert(playlist_enqueue_source(&src));
+	assert(playlist_has_source() && playlist_count() == 4);
+	assert(playlist_current_path(path, sizeof(path)) && !strcmp(path, local_list[0]));
+	assert(playlist_metadata_at(1, &meta) && !strcmp(meta.title, "Title 0"));
+	assert(playlist_enqueue_source(&src));
+	assert(playlist_count() == 6 && playlist_path_at(3, path, sizeof(path)) && !strcmp(path, "ndq:fixture:0"));
+	assert(playlist_move(2, 5));
+	playlist_set_mode(PLAYBACK_MODE_SHUFFLE);
+	assert(playlist_current_path(path, sizeof(path)) && !strcmp(path, local_list[0]));
+	playlist_set_mode(PLAYBACK_MODE_NORMAL);
+	playlist_drop_sources();
+	assert(playlist_count() == 2 && !playlist_has_source() && closed == before_close + 2);
+	assert(playlist_current_path(path, sizeof(path)) && !strcmp(path, local_list[0]));
+	assert(playlist_path_at(1, path, sizeof(path)) && !strcmp(path, local_list[1]));
+	playlist_clear();
+	before_close = closed;
+	assert(playlist_enqueue_source(&src) && playlist_count() == 2 && playlist_current_index() == 0);
+	for (int i = 1; i < 8; i++) { src.user = (void *)(intptr_t)i; assert(playlist_enqueue_source(&src)); }
+	src.user = (void *)(intptr_t)8;
+	int held_count = playlist_count();
+	assert(!playlist_enqueue_source(&src) && playlist_count() == held_count);
+	playlist_clear();
+	assert(closed == before_close + 8);
+	playlist_load_paths(local_list, 2, 0);
+	fail_allocation = true;
+	assert(!playlist_enqueue_source(&src) && playlist_count() == 2 && !playlist_has_source());
+	playlist_clear();
+	puts("source additions: both mixed directions, ordered batches, shuffle/current preservation, release, eight-owner limit and atomic allocation failure: passed");
 	puts("source queue: 17000 entries, modes, edits, sparse local entries, release and path regression passed");
 	printf("queue index bookkeeping: %zu bytes/entry on this host; fixed metadata resolution window\n", sizeof(int64_t) + sizeof(uint32_t) + sizeof(size_t));
 	return 0;

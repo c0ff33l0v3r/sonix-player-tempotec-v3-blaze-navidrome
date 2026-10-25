@@ -17,4 +17,8 @@ bool navidromeplay_track(const char *path, nd_playrow_t *track, nd_library_t *li
 bool navidromeplay_reference(const char *path);
 bool navidromeplay_auto(const char *reference);
 bool navidromeplay_preparing(void);
+// Shuffle (0), Play (1), or one random source-owned Queue entry (2).
+bool navidromeplay_album(const nd_library_t *library, const nd_query_t *query, int action, void *origin);
+bool navidromeplay_lookup(const char *reference, nd_playrow_t *row, nd_library_t *library);
+
 #endif

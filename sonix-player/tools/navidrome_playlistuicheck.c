@@ -10,18 +10,18 @@ static struct {
 	char id[ND_ID_MAX];
 	int size;
 	bool pending;
-} fixture_art[ND_WINDOW];
+} fixture_art[ND_ART_SLOT_COUNT];
 static bool fixture_art_ready;
 static unsigned fixture_art_requests;
 static unsigned fixture_art_releases;
 void navidromeart_release(int slot) {
-	assert(slot >= 0 && slot < ND_WINDOW);
+	assert(slot >= 0 && slot < ND_ART_SLOT_COUNT);
 	fixture_art_releases++;
 	memset(&fixture_art[slot], 0, sizeof(fixture_art[slot]));
 }
 void navidromeart_request(int slot, const nd_library_t *library, const char *id, int size) {
-	assert(slot >= 0 && slot < ND_WINDOW && *library->scope && *library->path);
-	assert(size == ui_px(ND_ART_THUMB_SIZE));
+	assert(slot >= 0 && slot < ND_ART_SLOT_COUNT && *library->scope && *library->path);
+	assert(slot >= ND_ART_ALBUM_SLOT || size == ui_px(ND_ART_THUMB_SIZE));
 	snprintf(fixture_art[slot].id, sizeof(fixture_art[slot].id), "%s", id);
 	fixture_art[slot].size = size;
 	fixture_art[slot].pending = true;
@@ -182,12 +182,13 @@ int main(int argc, char **argv) {
 	library_wait(&lib);
 	assert(lib.ready);
 	lv_init();
-	font_ui_14 = font_ui_16 = font_ui_18 = font_ui_20 = font_ui_24 = lv_font_unscii_8;
+	font_ui_28 = font_ui_24_bold = font_ui_14 = font_ui_16 = font_ui_18 = font_ui_20 = font_ui_24 = lv_font_unscii_8;
 	lv_display_t *display = lv_display_create(ui_panel_width, panel_height);
 	lv_style_init(&theme_style_icon);
 	lv_style_set_image_recolor_opa(&theme_style_icon, LV_OPA_COVER);
 	navidrome_screen = lv_obj_create(NULL);
 	gui_config_t cfg = {.screen_width = (unsigned)ui_panel_width, .screen_height = (unsigned)panel_height, .padding = 8, .top_bar_height = 20};
+	navidromealbum_set_enabled(false); // Retained thumbnail-layout coverage.
 	navidromebrowse_init(&cfg);
 	navidromeplaylists_init(&cfg);
 	int requests = atomic_load(&calls);

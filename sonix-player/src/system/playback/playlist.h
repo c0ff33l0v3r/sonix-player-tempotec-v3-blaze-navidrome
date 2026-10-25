@@ -26,13 +26,21 @@ typedef enum {
 typedef struct {
 	void *user;
 	int count;
+	size_t first; // Provider ordinal of the first entry in an inserted batch.
 	bool (*path)(void *user, size_t entry, char *out, size_t size);
 	bool (*metadata)(void *user, size_t entry, song_metadata_t *out);
 	void (*close)(void *user);
 } playlist_source_t;
 // Takes ownership only on success; allocation failure preserves the old queue.
 bool playlist_load_source(const playlist_source_t *source, int start);
+// Stage the requested mode until queue allocation succeeds; commit both together.
+bool playlist_load_source_mode(const playlist_source_t *source, int start, playback_mode_t mode);
 bool playlist_has_source(void);
+unsigned playlist_identity(void); // Changes on replacement/clear, not on order edits.
+// Atomically insert an owned provider batch. Ownership transfers only on success.
+bool playlist_enqueue_source(const playlist_source_t *source);
+// Remove source-backed entries on lifecycle invalidation; local entries survive.
+void playlist_drop_sources(void);
 bool playlist_metadata_at(int index, song_metadata_t *out);
 
 // Builds the queue from every playable file in `folder`, ordered the same way

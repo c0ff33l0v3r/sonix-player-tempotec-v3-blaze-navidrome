@@ -30,6 +30,7 @@ typedef struct {
 	dev_t device;
 	ino_t inode;
 	int count;
+	nd_playrow_t album;
 	const char *reason;
 } child_t;
 struct nd_search {
@@ -561,6 +562,8 @@ static bool local_child(nd_search_t *s, child_t *c, nd_kind_t parent, const char
 	nd_store_t store = {0};
 	bool lease = navidrome_cache_begin(c->library.epoch, c->library.card_epoch);
 	bool ok = lease && nd_store_open(&store, c->library.path, c->library.scope, false, false) && nd_store_contains(&store, c->library.generation, parent, id);
+	if (ok && parent == ND_ALBUMS)
+		ok = nd_store_metadata(&store, c->library.generation, ND_ALBUMS, id, &c->album);
 	nd_store_close(&store);
 	if (lease)
 		navidrome_cache_end();
@@ -602,6 +605,8 @@ void nd_search_child(nd_search_t *s, int level, nd_kind_t parent, const char *id
 				int obj = json_get(&doc.doc, doc.response, parent == ND_ARTISTS ? "artist" : "album");
 				char returned[ND_ID_MAX];
 				if (!string(&doc.doc, obj, "id", returned, sizeof(returned), true, false) || strcmp(id, returned))
+					error = "nd_response_error";
+				if (!error && parent == ND_ALBUMS && !nd_metadata_row(&doc.doc, obj, ND_ALBUMS, &c->album))
 					error = "nd_response_error";
 				int a = array(&doc.doc, obj, parent == ND_ARTISTS ? "album" : "song");
 				int n = json_len(&doc.doc, a);
@@ -666,6 +671,7 @@ void nd_search_child_read(nd_search_t *s, int level, int first, nd_search_result
 	out->source = c->source;
 	out->reason = c->reason;
 	out->library = c->library;
+	out->album.info = c->album;
 	if (c->source == ND_SEARCH_SYNCED) {
 		nd_store_t store = {0};
 		bool lease = navidrome_cache_begin(c->library.epoch, c->library.card_epoch);
@@ -713,4 +719,181 @@ void nd_search_child_read(nd_search_t *s, int level, int first, nd_search_result
 		out->count = 0;
 		out->error = "nd_sync_cancelled";
 	}
+}
+
+static int child_disc(int disc) { return disc > 0 ? disc : 1; }
+
+static const char *child_album_cte = "WITH t AS (SELECT id,CASE WHEN disc>0 THEN disc ELSE 1 END AS disc,data,row_number() OVER(ORDER BY disc,track,key,id)-1 AS ordinal,"
+									 "dense_rank() OVER(ORDER BY CASE WHEN disc>0 THEN disc ELSE 1 END)-1 AS dr FROM row),"
+									 "d AS (SELECT disc,min(ordinal) AS ordinal,dr FROM t GROUP BY disc),"
+									 "v AS (SELECT data,ordinal,disc,0 AS heading,ordinal*?1+CASE WHEN (SELECT count(*) FROM d)>1 THEN (dr+1)*?2 ELSE 0 END AS y FROM t "
+									 "UNION ALL SELECT NULL,ordinal,disc,1,ordinal*?1+dr*?2 FROM d WHERE (SELECT count(*) FROM d)>1) ";
+
+void nd_search_child_album_read(nd_search_t *s, int level, int offset, int pitch, int disc_pitch, bool alternate, nd_search_result_t *out) {
+	if (!alternate) {
+		nd_search_child_read(s, level, offset, out);
+		return;
+	}
+	memset(out, 0, sizeof(*out));
+	if (!s || level < 1 || level > 2 || offset < 0 || pitch <= 0 || disc_pitch <= 0 || !current(s)) {
+		out->error = "nd_sync_cancelled";
+		return;
+	}
+	child_t *c = &s->children[level - 1];
+	if (c->kind != ND_TRACKS) {
+		out->error = "nd_response_error";
+		return;
+	}
+	out->alternate = true;
+	out->kind = c->kind;
+	out->source = c->source;
+	out->reason = c->reason;
+	out->library = c->library;
+	out->card_backed = *c->path != 0;
+	out->album.info = c->album;
+	out->album.offset = offset;
+	bool ok = true;
+	if (c->source == ND_SEARCH_SYNCED) {
+		nd_store_t store = {0};
+		bool lease = navidrome_cache_begin(c->library.epoch, c->library.card_epoch);
+		ok = lease && nd_store_open(&store, c->library.path, c->library.scope, false, false) && nd_store_album_window(&store, c->library.generation, &c->query, offset, pitch, disc_pitch, out->rows, &out->count, &out->total, &out->album);
+		nd_store_close(&store);
+		if (lease)
+			navidrome_cache_end();
+	} else if (c->source == ND_SEARCH_SERVER && c->memory) {
+		int groups = 0;
+		for (int i = 0; i < c->count; i++)
+			if (!i || child_disc(c->memory[i].disc) != child_disc(c->memory[i - 1].disc))
+				groups++;
+		int64_t extent = (int64_t)c->count * pitch + (groups > 1 ? (int64_t)groups * disc_pitch : 0);
+		ok = extent <= INT_MAX;
+		out->total = c->count;
+		out->album.extent = ok ? (int)extent : 0;
+		int y = 0;
+		for (int i = 0; ok && i < c->count; i++) {
+			if (groups > 1 && (!i || child_disc(c->memory[i].disc) != child_disc(c->memory[i - 1].disc))) {
+				if (y + disc_pitch > offset && out->count < ND_WINDOW) {
+					int n = out->count++;
+					out->rows[n].disc = child_disc(c->memory[i].disc);
+					out->album.heading[n] = true;
+					out->album.y[n] = y;
+					out->album.ordinal[n] = i;
+				}
+				y += disc_pitch;
+			}
+			if (y + pitch > offset && out->count < ND_WINDOW) {
+				int n = out->count++;
+				out->rows[n] = c->memory[i];
+				out->album.y[n] = y;
+				out->album.ordinal[n] = i;
+			}
+			y += pitch;
+		}
+	} else if (c->source == ND_SEARCH_SERVER && *c->path) {
+		bool lease = navidrome_cache_begin(c->library.epoch, c->library.card_epoch);
+		struct stat sb;
+		ok = lease && !lstat(c->path, &sb) && S_ISREG(sb.st_mode) && sb.st_dev == c->device && sb.st_ino == c->inode && sqlite3_open_v2(c->path, &c->db, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK && sqlite3_exec(c->db, "PRAGMA cache_size=-64; PRAGMA temp_store=FILE", NULL, NULL, NULL) == SQLITE_OK;
+		char text[1600];
+		for (int pass = 0; ok && pass < 2; pass++) {
+			snprintf(text, sizeof(text), "%s%s", child_album_cte, pass ? "SELECT data,ordinal,disc,heading,y FROM v WHERE y+CASE WHEN heading THEN ?2 ELSE ?1 END>?3 ORDER BY y LIMIT 16" : "SELECT (SELECT count(*) FROM t),coalesce(max(y+CASE WHEN heading THEN ?2 ELSE ?1 END),0) FROM v");
+			sqlite3_stmt *st = NULL;
+			ok = sqlite3_prepare_v2(c->db, text, -1, &st, NULL) == SQLITE_OK;
+			if (ok) {
+				sqlite3_bind_int(st, 1, pitch);
+				sqlite3_bind_int(st, 2, disc_pitch);
+				sqlite3_bind_int(st, 3, offset);
+				int rc;
+				while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+					if (!pass) {
+						out->total = sqlite3_column_int(st, 0);
+						int64_t extent = sqlite3_column_int64(st, 1);
+						if (extent > INT_MAX || extent < 0) {
+							ok = false;
+							break;
+						}
+						out->album.extent = (int)extent;
+						continue;
+					}
+					int n = out->count++;
+					out->album.heading[n] = sqlite3_column_int(st, 3) != 0;
+					out->album.ordinal[n] = sqlite3_column_int(st, 1);
+					out->album.y[n] = sqlite3_column_int(st, 4);
+					if (out->album.heading[n])
+						out->rows[n].disc = sqlite3_column_int(st, 2);
+					else if (sqlite3_column_bytes(st, 0) != sizeof(nd_row_t)) {
+						ok = false;
+						break;
+					} else
+						memcpy(&out->rows[n], sqlite3_column_blob(st, 0), sizeof(nd_row_t));
+				}
+				ok = ok && rc == SQLITE_DONE;
+			}
+			sqlite3_finalize(st);
+		}
+		if (c->db) {
+			sqlite3_close(c->db);
+			c->db = NULL;
+		}
+		if (lease)
+			navidrome_cache_end();
+	} else
+		ok = false;
+	if (!ok || !current(s)) {
+		out->count = 0;
+		out->error = "nd_cache_storage";
+	}
+}
+
+bool nd_search_child_position(nd_search_t *s, int level, const char *id, int pitch, int disc_pitch, bool alternate, int *position) {
+	if (!s || level < 1 || level > 2 || !current(s))
+		return false;
+	child_t *c = &s->children[level - 1];
+	if (c->source == ND_SEARCH_SYNCED) {
+		nd_store_t store = {0};
+		bool lease = navidrome_cache_begin(c->library.epoch, c->library.card_epoch);
+		bool ok = lease && nd_store_open(&store, c->library.path, c->library.scope, false, false) && nd_store_album_position(&store, c->library.generation, &c->query, id, pitch, disc_pitch, alternate, position);
+		nd_store_close(&store);
+		if (lease)
+			navidrome_cache_end();
+		return ok;
+	}
+	if (c->memory) {
+		int groups = 0, disc = 0;
+		for (int i = 0; i < c->count; i++)
+			if (!i || child_disc(c->memory[i].disc) != child_disc(c->memory[i - 1].disc))
+				groups++;
+		for (int i = 0; i < c->count; i++) {
+			if (!i || child_disc(c->memory[i].disc) != child_disc(c->memory[i - 1].disc))
+				disc++;
+			if (!strcmp(id, c->memory[i].id)) {
+				*position = i * pitch + (alternate && groups > 1 ? disc * disc_pitch : 0);
+				return true;
+			}
+		}
+		return false;
+	}
+	bool lease = navidrome_cache_begin(c->library.epoch, c->library.card_epoch);
+	struct stat sb;
+	bool ok = lease && !lstat(c->path, &sb) && S_ISREG(sb.st_mode) && sb.st_dev == c->device && sb.st_ino == c->inode && sqlite3_open_v2(c->path, &c->db, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK;
+	sqlite3_stmt *st = NULL;
+	if (ok)
+		ok = sqlite3_prepare_v2(c->db, "WITH t AS (SELECT id,row_number() OVER(ORDER BY disc,track,key,id)-1 AS ordinal,dense_rank() OVER(ORDER BY CASE WHEN disc>0 THEN disc ELSE 1 END) AS dr FROM row) SELECT ordinal,dr,(SELECT max(dr) FROM t) FROM t WHERE id=?", -1, &st, NULL) == SQLITE_OK;
+	if (ok) {
+		sqlite3_bind_text(st, 1, id, -1, SQLITE_TRANSIENT);
+		ok = sqlite3_step(st) == SQLITE_ROW;
+		if (ok) {
+			int64_t y = sqlite3_column_int64(st, 0) * pitch + (alternate && sqlite3_column_int(st, 2) > 1 ? sqlite3_column_int64(st, 1) * disc_pitch : 0);
+			ok = y <= INT_MAX;
+			if (ok)
+				*position = (int)y;
+		}
+	}
+	sqlite3_finalize(st);
+	if (c->db) {
+		sqlite3_close(c->db);
+		c->db = NULL;
+	}
+	if (lease)
+		navidrome_cache_end();
+	return ok;
 }

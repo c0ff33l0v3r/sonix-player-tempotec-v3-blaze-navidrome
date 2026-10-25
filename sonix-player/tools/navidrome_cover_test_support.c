@@ -55,3 +55,10 @@ bool cover_blur_fill(const cover_image_t *src, int width, int height, cover_imag
 	memset(out, 0, sizeof(*out));
 	return false;
 }
+
+// Cache fixtures do not claim cover-palette extraction coverage. Header UI
+// fixtures supply deterministic tones and inspect the real color application.
+bool cover_page_tone(const cover_image_t *image, int threshold, uint32_t *tone, int *luma, bool *light) {
+    (void)image; (void)threshold; (void)tone; (void)luma; (void)light;
+    return false;
+}
