@@ -26,6 +26,7 @@ typedef enum {
 	BS_PODCAST,
 	BS_AIRPLAY,
 	BS_DLNA,
+	BS_NAVIDROME,
 	BS_SCREEN,	// screen on
 	BS_STANDBY, // screen dark, SoC awake
 	BS_SLEEP,	// suspended to RAM

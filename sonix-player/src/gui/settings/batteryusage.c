@@ -21,9 +21,7 @@ lv_obj_t *batteryusage_screen;
 // rest reuse the keys of their own pages where there is one, so the words
 // match -- sleep is what the Power page calls its standby.
 static const char *const ITEM_LABELS[BS_ITEM_COUNT] = {
-	"battery_usage_local",	"btreceiver_title",		 "dac_mode",		  "radio", "Qobuz", "Tidal", "podcasts",
-	"AirPlay",				"DLNA",					 "battery_usage_screen", "battery_usage_standby",
-	"power_standby_mem",	"battery_usage_bt_out",
+	"battery_usage_local", "btreceiver_title", "dac_mode", "radio", "Qobuz", "Tidal", "podcasts", "AirPlay", "DLNA", "navidrome", "battery_usage_screen", "battery_usage_standby", "power_standby_mem", "battery_usage_bt_out",
 };
 static const bs_item_t SEG_ITEMS[SEGS] = {BS_SCREEN, BS_STANDBY, BS_SLEEP};
 

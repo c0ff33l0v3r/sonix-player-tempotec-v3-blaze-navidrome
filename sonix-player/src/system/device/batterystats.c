@@ -15,6 +15,7 @@
 #include "src/system/device/usb.h"
 #include "src/system/remote/airplay.h"
 #include "src/system/remote/dlna.h"
+#include "src/system/streaming/navidromeaudio.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/qobuzcache.h"
 #include "src/system/streaming/radio.h"
@@ -35,15 +36,16 @@ static const float RATE_PLAY[BS_SOURCE_COUNT] = {
 	[BS_LOCAL] = 6.2f, // the measured 8.7 %/h less RATE_AWAKE
 	[BS_BT_RECEIVER] = 8.0f, [BS_USB_DAC] = 6.0f, [BS_RADIO] = 8.5f, [BS_QOBUZ] = 8.5f,
 	[BS_TIDAL] = 8.5f,		 [BS_PODCAST] = 8.5f, [BS_AIRPLAY] = 8.5f, [BS_DLNA] = 8.5f,
+	[BS_NAVIDROME] = 8.5f, // uncalibrated streaming-source seed, also used for cached playback
 };
 
 // The short names of the log line, in bs_item_t order.
 static const char *const ITEM_NAMES[BS_ITEM_COUNT] = {
-	"local", "btrx", "usbdac", "radio", "qobuz", "tidal", "podcast", "airplay", "dlna", "screen", "standby", "sleep", "btout",
+	"local", "btrx", "usbdac", "radio", "qobuz", "tidal", "podcast", "airplay", "dlna", "navidrome", "screen", "standby", "sleep", "btout",
 };
 
 #define STATS_MAGIC 0x53425431u // "SBT1"
-#define STATS_VERSION 1
+#define STATS_VERSION 2
 #define SAVE_EVERY_MS (10 * 60 * 1000)
 // Before this the clock has not been set (an RTC back at its epoch), and an
 // hour would be filed under a day long gone. 2020-09-13.
@@ -58,6 +60,25 @@ typedef struct {
 	int64_t since_ms;
 	batterystats_hour_t hours[BS_HOURS];
 } stats_file_t;
+
+// Frozen native version-1 layout: never size these arrays with the current enum.
+// Files are read on the same platform/ABI on which they were originally written.
+#define STATS_V1_ITEM_COUNT 13
+typedef struct {
+	int32_t hour;
+	uint32_t ms[STATS_V1_ITEM_COUNT];
+	float used[STATS_V1_ITEM_COUNT];
+	float pending[STATS_V1_ITEM_COUNT];
+	int8_t level;
+	bool cable;
+} stats_v1_hour_t;
+
+typedef struct {
+	uint32_t magic;
+	uint32_t version;
+	int64_t since_ms;
+	stats_v1_hour_t hours[BS_HOURS];
+} stats_v1_file_t;
 
 static stats_file_t s_stats;
 static const char *s_path;
@@ -135,6 +156,9 @@ static int playing_source(void) {
 	if (podcastcache_owns(path)) {
 		return BS_PODCAST;
 	}
+	if (nd_audio_owns(path)) {
+		return BS_NAVIDROME;
+	}
 	return BS_LOCAL;
 }
 
@@ -207,6 +231,43 @@ static void track_level(int level, bool powered) {
 	// reference stays where it was, or the same percent would be counted twice.
 }
 
+static void read_stats(FILE *f) {
+	struct {
+		uint32_t magic, version;
+	} header;
+	if (fread(&header, 1, sizeof(header), f) != sizeof(header) || header.magic != STATS_MAGIC || fseek(f, 0, SEEK_SET)) {
+		return;
+	}
+	// One bounded staging buffer; incomplete reads never modify the live counts.
+	static union {
+		stats_file_t current;
+		stats_v1_file_t legacy;
+	} in;
+	if (header.version == STATS_VERSION) {
+		if (fread(&in.current, 1, sizeof(in.current), f) == sizeof(in.current)) {
+			s_stats = in.current;
+		}
+	} else if (header.version == 1 && fread(&in.legacy, 1, sizeof(in.legacy), f) == sizeof(in.legacy)) {
+		static const bs_item_t old_items[STATS_V1_ITEM_COUNT] = {
+			BS_LOCAL, BS_BT_RECEIVER, BS_USB_DAC, BS_RADIO, BS_QOBUZ, BS_TIDAL, BS_PODCAST, BS_AIRPLAY, BS_DLNA, BS_SCREEN, BS_STANDBY, BS_SLEEP, BS_BT_OUT,
+		};
+		s_stats.since_ms = in.legacy.since_ms;
+		for (int i = 0; i < BS_HOURS; i++) {
+			const stats_v1_hour_t *old = &in.legacy.hours[i];
+			batterystats_hour_t *h = &s_stats.hours[i];
+			h->hour = old->hour;
+			h->level = old->level;
+			h->cable = old->cable;
+			for (int k = 0; k < STATS_V1_ITEM_COUNT; k++) {
+				int item = old_items[k];
+				h->ms[item] = old->ms[k];
+				h->used[item] = old->used[k];
+				h->pending[item] = old->pending[k];
+			}
+		}
+	}
+}
+
 void batterystats_init(void) {
 #ifdef HOST_BUILD
 	s_path = getenv("SONIX_BATTERY_STATS"); // unset: kept in memory for the session
@@ -215,10 +276,7 @@ void batterystats_init(void) {
 #endif
 	FILE *f = s_path ? fopen(s_path, "rb") : NULL;
 	if (f) {
-		static stats_file_t in;
-		if (fread(&in, 1, sizeof(in), f) == sizeof(in) && in.magic == STATS_MAGIC && in.version == STATS_VERSION) {
-			s_stats = in;
-		}
+		read_stats(f);
 		fclose(f);
 	}
 	s_stats.magic = STATS_MAGIC;
@@ -311,7 +369,9 @@ void batterystats_save(void) {
 		return;
 	}
 	bool ok = write(fd, &s_stats, sizeof(s_stats)) == (ssize_t)sizeof(s_stats) && fsync(fd) == 0;
-	close(fd);
+	if (close(fd) != 0) {
+		ok = false;
+	}
 	if (!ok || rename(tmp, s_path) != 0) {
 		printf("batterystats: saving %s failed (%s)\n", s_path, strerror(errno));
 		unlink(tmp);

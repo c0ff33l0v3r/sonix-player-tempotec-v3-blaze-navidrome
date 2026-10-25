@@ -150,6 +150,13 @@ queue edits use the existing Music behavior. Browsing away or refreshing the
 library preserves the captured queue. Queues containing Navidrome entries are
 session-only and are not restored after restart.
 
+Settings → Power → **Battery usage** lists Navidrome listening time and estimated
+battery use over its 24-hour history, including streaming and cached/offline
+playback. The initial estimate uses the same uncalibrated playback weight as
+Qobuz/Tidal; Sync and background work have no separate attribution. Existing
+history is preserved, and older Navidrome listening already recorded as Local
+music remains there.
+
 Playback requests the original audio without transcoding. MP3 and FLAC can start
 during download; other supported local formats finish downloading first. Seeking
 while downloading stays within confirmed available audio; unknown final lengths
