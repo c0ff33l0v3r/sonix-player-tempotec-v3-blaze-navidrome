@@ -7,7 +7,8 @@
 #define ND_BATCH_SLOT_BYTES (2u * 1024u * 1024u)
 typedef struct {
 	uint32_t next, id, title, artist, album, cover, relations;
-	int duration, disc, track;
+	int duration, disc, track, expected;
+	bool starred;
 } nd_batch_row_t;
 typedef struct {
 	uint32_t next, id;
@@ -19,6 +20,7 @@ typedef struct nd_batch {
 	uint32_t first, last;
 	int count;
 	nd_kind_t kind;
+	bool favorites;
 	const char *error;
 	double parse_seconds;
 	size_t buffer_peak;

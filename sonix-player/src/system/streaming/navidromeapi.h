@@ -20,6 +20,10 @@ const char *nd_api_artwork(const char *host, const char *user, const char *passw
 const char *nd_api_playlist(const char *host, const char *user, const char *password, const char *method, const char *query, const char *form, nd_document_t *out);
 void nd_api_free(nd_document_t *doc);
 const char *nd_api_stream(const char *host, const char *user, const char *password, const char *id, http_stream_t *stream);
+// Strict opt-in identity/control fields reject duplicate keys and escaped NULs.
+bool nd_api_field_unique(const json_doc_t *document, int object, const char *name, bool required);
+// Opt-in finite, cancellable protected JSON for Favorites; legacy callers retain behavior.
+const char *nd_api_finite_json(const char *host, const char *user, const char *password, const char *method, const char *query, size_t limit, bool (*current)(void *), void *arg, nd_document_t *out);
 const char *nd_api_control(const char *host, const char *user, const char *password, bool (*current)(void *), void *arg, nd_document_t *out);
 
 #endif

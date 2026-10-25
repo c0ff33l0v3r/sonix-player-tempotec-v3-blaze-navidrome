@@ -9,7 +9,7 @@ typedef struct {
 	int first, ordinal;
 	nd_kind_t kind;
 	char name[ND_PL_NAME], remote[ND_ID_MAX], track[ND_ID_MAX], checked[ND_PL_HASH];
-	bool confirmed;
+	bool confirmed, favorites;
 } nd_pl_request_t;
 typedef struct {
 	nd_pl_request_t request;

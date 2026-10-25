@@ -158,18 +158,18 @@ static bool migrate_database(const char *old, const char *path) {
 	return true;
 }
 
-static bool migrate_cache(const char *base, const char *path) {
+static bool migrate_cache(const char *base, const char *path, bool favorites) {
 	char dir[1100], old[1100], dest[1100];
 	if (snprintf(dir, sizeof(dir), "%s/.cache", base) >= (int)sizeof(dir) || !directory(dir))
 		return false;
-	if (snprintf(old, sizeof(old), "%s/library.db", base) >= (int)sizeof(old))
+	if (snprintf(old, sizeof(old), "%s/%s.db", base, favorites ? "favorites" : "library") >= (int)sizeof(old))
 		return false;
 	struct stat st;
 	if (lstat(old, &st) == 0 && access(path, F_OK) != 0) {
 		if (!S_ISREG(st.st_mode) || !migrate_database(old, path))
 			return false;
 	}
-	const char *names[] = {"art", "audio", "library.db.invalid"};
+	const char *names[] = {"art", "audio", favorites ? "favorites.db.invalid" : "library.db.invalid"};
 	for (int i = 0; i < 3; i++) {
 		if (snprintf(old, sizeof(old), "%s/%s", base, names[i]) >= (int)sizeof(old) || snprintf(dest, sizeof(dest), "%s/%s", dir, names[i]) >= (int)sizeof(dest))
 			return false;
@@ -190,16 +190,21 @@ static bool migrate_cache(const char *base, const char *path) {
 }
 
 void nd_cache_load(const char *root, const char *vault, const char *host, const char *user, bool migrate_legacy, nd_library_t *out) {
+	nd_cache_load_source(root, vault, host, user, migrate_legacy, out, false);
+}
+
+void nd_cache_load_source(const char *root, const char *vault, const char *host, const char *user, bool migrate_legacy, nd_library_t *out, bool favorites) {
 	memset(out, 0, sizeof(*out));
+	out->favorites = favorites;
 	out->error = "nd_cache_storage";
 	if (!*host || !scope_load(vault, host, user, out->scope)) {
-		out->error = "nd_cache_error";
+		out->error = favorites ? "nd_favorites_cache_error" : "nd_cache_error";
 		return;
 	}
 	struct stat st;
 	if (!root || !*root || stat(root, &st) || !S_ISDIR(st.st_mode))
 		return;
-	int n = snprintf(out->path, sizeof(out->path), "%s/" ND_CACHE_RELATIVE "/library.db", root);
+	int n = snprintf(out->path, sizeof(out->path), "%s/" ND_CACHE_RELATIVE "/%s.db", root, favorites ? "favorites" : "library");
 	if (n < 0 || (size_t)n >= sizeof(out->path)) {
 		out->path[0] = 0;
 		return;
@@ -207,13 +212,13 @@ void nd_cache_load(const char *root, const char *vault, const char *host, const 
 	struct statvfs fs;
 	out->writable = access(root, W_OK) == 0 && (st.st_mode & 0222) && statvfs(root, &fs) == 0 && !(fs.f_flag & ST_RDONLY);
 	char base[1024], legacy[1100];
-	if (snprintf(base, sizeof(base), "%s/.local/navidrome", root) >= (int)sizeof(base) || snprintf(legacy, sizeof(legacy), "%s/library.db", base) >= (int)sizeof(legacy))
+	if (snprintf(base, sizeof(base), "%s/.local/navidrome", root) >= (int)sizeof(base) || snprintf(legacy, sizeof(legacy), "%s/%s.db", base, favorites ? "favorites" : "library") >= (int)sizeof(legacy))
 		return;
 	// Never relocate a path already captured by an in-session queue. A writable
 	// reinsertion/restart retries migration; read-only old cards remain readable.
 	bool moved = true;
 	if (out->writable && migrate_legacy && !lstat(base, &st))
-		moved = S_ISDIR(st.st_mode) && migrate_cache(base, out->path);
+		moved = S_ISDIR(st.st_mode) && migrate_cache(base, out->path, favorites);
 	if (access(out->path, F_OK) && !access(legacy, F_OK)) {
 		if (snprintf(out->path, sizeof(out->path), "%s", legacy) >= (int)sizeof(out->path))
 			return;
@@ -224,16 +229,18 @@ void nd_cache_load(const char *root, const char *vault, const char *host, const 
 	if (access(out->path, F_OK))
 		return;
 	nd_store_t store;
-	if (nd_store_open(&store, out->path, out->scope, false, false) && nd_store_status(&store, out)) {
+	if (nd_store_open_source(&store, out->path, out->scope, false, false, favorites) && nd_store_status(&store, out)) {
 		nd_store_close(&store);
 		return;
 	}
 	nd_store_close(&store);
 	out->ready = false;
-	out->error = "nd_cache_error";
+	out->corrupt = true;
+	out->error = favorites ? "nd_favorites_cache_error" : "nd_cache_error";
 }
 
 bool nd_cache_open_sync(const nd_library_t *lib, nd_store_t *store) {
+	bool corrupt = lib->corrupt;
 	char dir[1024];
 	snprintf(dir, sizeof(dir), "%s", lib->path);
 	char *slash = strrchr(dir, '/');
@@ -248,19 +255,19 @@ bool nd_cache_open_sync(const nd_library_t *lib, nd_store_t *store) {
 		}
 	if (mkdir(dir, 0700) != 0 && errno != EEXIST)
 		return false;
-	if (nd_store_open(store, lib->path, lib->scope, true, false) && (!lib->error || strcmp(lib->error, "nd_cache_error")))
+	if (nd_store_open_source(store, lib->path, lib->scope, true, false, lib->favorites) && !corrupt)
 		return true;
 	nd_store_close(store);
 	// Rebuilding disposable invalid storage is authorized only by explicit Sync.
 	// Keep it aside until a new complete snapshot exists; never touch a readable
 	// valid snapshot merely because a normal write was denied.
-	if (!lib->error || strcmp(lib->error, "nd_cache_error"))
+	if (!corrupt)
 		return false;
 	char backup[1050];
 	snprintf(backup, sizeof(backup), "%s.invalid", lib->path);
 	if (rename(lib->path, backup) != 0)
 		return false;
-	return nd_store_open(store, lib->path, lib->scope, true, false);
+	return nd_store_open_source(store, lib->path, lib->scope, true, false, lib->favorites);
 }
 
 bool nd_cache_card_same(const char *root, uint64_t device, uint64_t inode) {

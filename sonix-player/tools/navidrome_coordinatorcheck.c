@@ -13,6 +13,7 @@ static atomic_bool allow_ready;
 static atomic_int fetches;
 static atomic_int fail_track = -1;
 static int starts, sheet_opens, stops;
+static int player_refreshes, favorite_refreshes;
 static bool network_demand;
 long config_get_int(const char *section, const char *key, long fallback) {
 	(void)section;
@@ -42,7 +43,8 @@ void device_state_play_prepared(const char *path, const song_metadata_t *meta, b
 	playback.progress_total_secs = duration;
 	playback.status = paused ? AUDIO_STATUS_PAUSED : AUDIO_STATUS_PLAYING;
 }
-void player_refresh_now_playing(void) {}
+void player_refresh_now_playing(void) { player_refreshes++; }
+void player_refresh_favorite(void) { favorite_refreshes++; }
 void toast_busy_end(void) {}
 void toast_busy_dismissable(const char *key) { (void)key; }
 void player_sheet_open(bool animate) {
@@ -252,8 +254,65 @@ int main(void) {
 			break;
 		usleep(1000);
 	}
-	assert(lib.ready && navidromeplay_select(&lib, &query, "song-00300", other));
+	nd_library_t favorite_queue;
+	navidrome_favorites_snapshot(&favorite_queue);
+	seed(&favorite_queue);
+	navidrome_set_root(dir);
+	for (int i = 0; i < 10000; i++) {
+		navidrome_favorites_snapshot(&favorite_queue);
+		if (!favorite_queue.loading)
+			break;
+		usleep(1000);
+	}
+	navidrome_library_snapshot(&lib);
+	nd_query_t full_query = {.kind = ND_TRACKS};
+	assert(navidromeplay_select(&lib, &full_query, "song-00300", other));
 	wait_started(6);
+	nd_playrow_t full_starred_track;
+	assert(navidromeplay_track(playback.current_file, &full_starred_track, NULL) && full_starred_track.row.favorite);
+	nd_query_t favorite_query = {.kind = ND_TRACKS, .favorites = true};
+	assert(favorite_queue.ready && navidromeplay_select(&favorite_queue, &favorite_query, "song-00300", other));
+	wait_started(7);
+	assert(playlist_count() == 17000 && playlist_current_index() == 300);
+	nd_playrow_t starred_track;
+	assert(navidromeplay_track(playback.current_file, &starred_track, NULL) && starred_track.row.favorite);
+	nd_store_t changed = {0};
+	nd_context_t change_context;
+	nd_library_t changed_cache = favorite_queue;
+	assert(navidrome_context(&change_context, false));
+	assert(nd_store_open_source(&changed, favorite_queue.path, favorite_queue.scope, true, false, true));
+	assert(nd_store_local_begin(&changed) && nd_store_local_put(&changed, ND_TRACKS, &starred_track, false, 0) && nd_store_local_activate(&changed));
+	assert(navidrome_context_commit(&change_context, changed.db) && nd_store_status(&changed, &changed_cache) && navidrome_favorites_adopt(&change_context, &changed_cache));
+	nd_store_cleanup(&changed);
+	assert(changed_cache.counts[ND_TRACKS] == 16999 && playlist_count() == 17000 && playlist_current_index() == 300);
+	assert(nd_store_contains(&changed, favorite_queue.generation, ND_TRACKS, "song-00300"));
+	nd_store_close(&changed);
+	nd_wipe(&change_context, sizeof(change_context));
+	int previous_player_refreshes = player_refreshes, previous_favorite_refreshes = favorite_refreshes;
+	playback.progress_current_secs = 42;
+	bool annotation_updated = false;
+	for (int i = 0; i < 1000; i++) {
+		navidromeplay_tick();
+		drain();
+		nd_playrow_t represented;
+		if (navidromeplay_track(playback.current_file, &represented, NULL) && represented.row.favorite_known && !represented.row.favorite) {
+			annotation_updated = true;
+			break;
+		}
+		usleep(1000);
+	}
+	assert(annotation_updated && playlist_count() == 17000 && playlist_current_index() == 300);
+	assert(player_refreshes == previous_player_refreshes && favorite_refreshes > previous_favorite_refreshes);
+	assert(starts == 7 && playback.progress_current_secs == 42 && playback.status == AUDIO_STATUS_PLAYING);
+	puts("coordinator favorite annotation refreshes only the star without restarting playback or resetting progress: passed");
+	nd_store_t refreshed = {0};
+	assert(nd_store_open_source(&refreshed, favorite_queue.path, favorite_queue.scope, true, false, true));
+	assert(nd_store_begin(&refreshed) && nd_store_validate(&refreshed) && nd_store_publish(&refreshed));
+	nd_store_cleanup(&refreshed);
+	assert(nd_store_contains(&refreshed, favorite_queue.generation, ND_TRACKS, "song-00300"));
+	nd_store_close(&refreshed);
+	assert(strstr(playback.current_file, "song-00300"));
+	puts("coordinator Favorites complete queue, exact track selection and generation pin retention: passed");
 	navidrome_lock();
 	drain();
 	navidromeplay_tick();

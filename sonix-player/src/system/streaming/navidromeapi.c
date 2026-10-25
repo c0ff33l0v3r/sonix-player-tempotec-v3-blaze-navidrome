@@ -148,9 +148,7 @@ static const char *json_request(const char *host, const char *user, const char *
 	return error;
 }
 
-const char *nd_api_json(const char *host, const char *user, const char *password, const char *method, const char *query, size_t limit, nd_document_t *out) {
-	return json_request(host, user, password, method, query, limit, ND_API_TOKENS, NULL, out);
-}
+const char *nd_api_json(const char *host, const char *user, const char *password, const char *method, const char *query, size_t limit, nd_document_t *out) { return json_request(host, user, password, method, query, limit, ND_API_TOKENS, NULL, out); }
 
 const char *nd_api_playlist(const char *host, const char *user, const char *password, const char *method, const char *query, const char *form, nd_document_t *out) {
 	if (form && strlen(form) > ND_PL_BYTES)
@@ -192,7 +190,10 @@ const char *nd_api_artwork(const char *host, const char *user, const char *passw
 const char *nd_api_page(http_session_t *session, const char *host, const char *user, const char *password, nd_kind_t kind, int offset, int requested, bool gzip, bool reuse, nd_batch_t *batch) {
 	char query[256], url[2500];
 	snprintf(query, sizeof(query), "query=&songCount=%d&songOffset=%d&albumCount=%d&albumOffset=%d&artistCount=%d&artistOffset=%d", kind == ND_TRACKS ? requested : 0, offset, kind == ND_ALBUMS ? requested : 0, offset, kind == ND_ARTISTS ? requested : 0, offset);
-	const char *error = request_url(host, user, password, kind == ND_GENRES ? "getGenres" : "search3", kind == ND_GENRES ? NULL : query, url, sizeof(url));
+	bool albums = batch->favorites && kind == ND_ALBUMS;
+	if (albums)
+		snprintf(query, sizeof(query), "type=starred&size=%d&offset=%d", requested, offset);
+	const char *error = request_url(host, user, password, albums ? "getAlbumList2" : kind == ND_GENRES ? "getGenres" : "search3", kind == ND_GENRES ? NULL : query, url, sizeof(url));
 	if (!error && !http_session_get(session, url, gzip, reuse)) {
 		const char *reason = http_session_error(session);
 		error = !strcmp(reason, "body_limit") ? "nd_page_large" : !strcmp(reason, "cancelled") ? "nd_sync_cancelled" : !strcmp(reason, "tls") ? "nd_tls_error" : (!strcmp(reason, "framing") || !strcmp(reason, "encoding_unsupported")) ? "nd_response_error" : !strcmp(reason, "allocation_failed") ? "nd_json_memory" : "nd_network_error";
@@ -207,7 +208,7 @@ const char *nd_api_page(http_session_t *session, const char *host, const char *u
 	return error;
 }
 
-static bool control_unique(const json_doc_t *doc, int object, const char *name, bool required) {
+bool nd_api_field_unique(const json_doc_t *doc, int object, const char *name, bool required) {
 	if (object < 0 || doc->toks[object].type != JSON_OBJECT)
 		return false;
 	int found = 0;
@@ -234,20 +235,20 @@ static bool control_unique(const json_doc_t *doc, int object, const char *name, 
 
 // Scan checks share the finite deadline/cancellation contract, without retaining
 // a third connection alongside the two enumeration workers.
-const char *nd_api_control(const char *host, const char *user, const char *password, bool (*current)(void *), void *arg, nd_document_t *out) {
+static const char *finite_json(const char *host, const char *user, const char *password, const char *method, const char *query, size_t limit, bool control, bool (*current)(void *), void *arg, nd_document_t *out) {
 	memset(out, 0, sizeof(*out));
 	http_session_t *session = http_session_new(current, arg);
 	if (!session)
 		return "nd_json_memory";
 	char url[2500];
-	const char *error = request_url(host, user, password, "getScanStatus", NULL, url, sizeof(url));
+	const char *error = request_url(host, user, password, method, query, url, sizeof(url));
 	if (!error && !http_session_get(session, url, false, false)) {
 		const char *reason = http_session_error(session);
 		error = !strcmp(reason, "tls") ? "nd_tls_error" : !strcmp(reason, "allocation_failed") ? "nd_json_memory" : "nd_network_error";
 	}
 	nd_wipe(url, sizeof(url));
 	http_clear_request_metadata();
-	char *body = !error ? malloc(16384) : NULL;
+	char *body = !error ? malloc(limit) : NULL;
 	size_t used = 0;
 	if (!error && !body)
 		error = "nd_json_memory";
@@ -260,8 +261,8 @@ const char *nd_api_control(const char *host, const char *user, const char *passw
 		}
 		if (!n)
 			break;
-		if ((size_t)n >= 16384 - used || memchr(chunk, 0, n)) {
-			error = "nd_response_error";
+		if ((size_t)n >= limit - used || memchr(chunk, 0, n)) {
+			error = !control && (size_t)n >= limit - used ? "nd_page_large" : "nd_response_error";
 			break;
 		}
 		memcpy(body + used, chunk, n);
@@ -271,12 +272,12 @@ const char *nd_api_control(const char *host, const char *user, const char *passw
 		body[used] = 0;
 		json_parse_result_t parsed = json_parse_detailed(body, &out->doc, ND_API_TOKENS);
 		if (parsed != JSON_PARSE_OK)
-			error = parsed == JSON_PARSE_MEMORY ? "nd_json_memory" : "nd_response_error";
+			error = parsed == JSON_PARSE_MEMORY ? "nd_json_memory" : !control && parsed == JSON_PARSE_TOKENS ? "nd_page_large" : !control && parsed == JSON_PARSE_DEPTH ? "nd_json_depth" : "nd_response_error";
 		else {
 			out->response = json_get(&out->doc, json_root(&out->doc), "subsonic-response");
 			char status[32];
 			int token = json_get(&out->doc, out->response, "status");
-			bool valid = control_unique(&out->doc, json_root(&out->doc), "subsonic-response", true) && control_unique(&out->doc, out->response, "status", true) && json_str(&out->doc, token, status, sizeof(status));
+			bool valid = nd_api_field_unique(&out->doc, json_root(&out->doc), "subsonic-response", true) && nd_api_field_unique(&out->doc, out->response, "status", true) && json_str(&out->doc, token, status, sizeof(status));
 			if (valid) {
 				for (int i = out->doc.toks[token].start; i + 6 <= out->doc.toks[token].end; i++)
 					if (!memcmp(out->doc.text + i, "\\u0000", 6))
@@ -284,11 +285,11 @@ const char *nd_api_control(const char *host, const char *user, const char *passw
 			}
 			if (!valid || strcmp(status, "ok") || http_session_status(session) != 200) {
 				int failure = json_get(&out->doc, out->response, "error");
-				error = valid && !strcmp(status, "failed") && json_obj_long(&out->doc, failure, "code", 0) == 40 ? "nd_auth_error" : "nd_api_error";
+				error = valid && !strcmp(status, "failed") ? json_obj_long(&out->doc, failure, "code", 0) == 40 ? "nd_auth_error" : "nd_api_error" : control || http_session_status(session) >= 400 ? "nd_api_error" : "nd_response_error";
 			}
-			if (!error) {
+			if (!error && control) {
 				int scan = json_get(&out->doc, out->response, "scanStatus");
-				if (!control_unique(&out->doc, out->response, "scanStatus", true) || !control_unique(&out->doc, scan, "scanning", false) || !control_unique(&out->doc, scan, "lastScan", false))
+				if (!nd_api_field_unique(&out->doc, out->response, "scanStatus", true) || !nd_api_field_unique(&out->doc, scan, "scanning", false) || !nd_api_field_unique(&out->doc, scan, "lastScan", false))
 					error = "nd_response_error";
 			}
 			if (error)
@@ -305,5 +306,15 @@ const char *nd_api_control(const char *host, const char *user, const char *passw
 		memset(out, 0, sizeof(*out));
 	} else
 		out->body = body;
+	return error;
+}
+
+const char *nd_api_control(const char *host, const char *user, const char *password, bool (*current)(void *), void *arg, nd_document_t *out) { return finite_json(host, user, password, "getScanStatus", NULL, 16384, true, current, arg, out); }
+
+const char *nd_api_finite_json(const char *host, const char *user, const char *password, const char *method, const char *query, size_t limit, bool (*current)(void *), void *arg, nd_document_t *out) {
+	if (limit < 2 || limit > ND_API_BYTES)
+		return "nd_input_long";
+	const char *error = finite_json(host, user, password, method, query, limit, false, current, arg, out);
+	nd_log("navidrome: favorite request method=%s result=%s\n", method, error ? error : "ok");
 	return error;
 }

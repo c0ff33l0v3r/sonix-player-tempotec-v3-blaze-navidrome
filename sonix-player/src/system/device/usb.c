@@ -1,4 +1,3 @@
-#include "src/system/streaming/navidrome.h"
 #include "usb.h"
 
 #include "src/system/device/adb.h"
@@ -29,6 +28,7 @@
 #include "src/gui/shell/gui.h"
 #include "src/system/audio/audio.h"
 #include "src/system/playback/device_state.h"
+#include "src/system/streaming/navidrome.h"
 
 
 // The ADB init script (S440adb) builds its own gadget under this directory
@@ -878,7 +878,7 @@ static void storage_restore(void) {
 	audiobookdb_open(db_path);
 	logging_resume_after_usb();
 	btlog_card_attach(sd_mount);
-	navidrome_set_root(sd_mount);
+	navidrome_set_root(mount_still_up() ? sd_mount : NULL);
 
 	storage_active = false;
 

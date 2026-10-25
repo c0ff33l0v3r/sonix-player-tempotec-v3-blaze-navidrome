@@ -45,6 +45,7 @@ static int pl_name_page;
 static bool pl_copying, pl_renaming, pl_fixed, pl_recovering, pl_skip_load;
 static nd_playlist_t pl_menu_playlist;
 static int64_t pl_session, pl_generation, pl_recovery_id;
+static bool pl_source_favorites;
 static char pl_recovery_name[ND_PL_NAME];
 static lv_obj_t *pl_origin;
 static nd_pl_request_t pl_confirm_request, pl_removal;
@@ -211,7 +212,7 @@ static void pl_done(nd_pl_result_t *r, void *value) {
 		return;
 	}
 	if (action == NDPL_CREATE && page == 2) {
-		nd_pl_request_t q = {.action = NDPL_ADD, .id = r->playlist.id, .revision = r->playlist.revision, .session = pl_session, .generation = pl_generation};
+		nd_pl_request_t q = {.action = NDPL_ADD, .id = r->playlist.id, .revision = r->playlist.revision, .session = pl_session, .generation = pl_generation, .favorites = pl_source_favorites};
 		pl_action(page, &q);
 		free(r);
 		return;
@@ -507,7 +508,7 @@ static void pl_row(lv_event_t *event) {
 		return;
 	}
 	if (page == 2) {
-		nd_pl_request_t q = {.action = NDPL_ADD, .id = p->playlists[index].id, .revision = p->playlists[index].revision, .session = pl_session, .generation = pl_generation};
+		nd_pl_request_t q = {.action = NDPL_ADD, .id = p->playlists[index].id, .revision = p->playlists[index].revision, .session = pl_session, .generation = pl_generation, .favorites = pl_source_favorites};
 		pl_action(2, &q);
 		return;
 	}
@@ -665,13 +666,15 @@ void navidromeplaylists_open(void) {
 	else
 		switch_screen(pl_pages[0].screen);
 }
-void navidromeplaylists_pick(int64_t session, int64_t generation, lv_obj_t *origin) {
+void navidromeplaylists_pick(int64_t session, int64_t generation, lv_obj_t *origin) { navidromeplaylists_pick_source(session, generation, origin, false); }
+void navidromeplaylists_pick_source(int64_t session, int64_t generation, lv_obj_t *origin, bool favorites) {
+	pl_source_favorites = favorites;
 	pl_session = session;
 	pl_generation = generation;
 	pl_origin = origin;
 	if (pl_fixed && switcher_in_history(pl_pages[1].screen)) {
 		pl_origin = pl_pages[1].screen;
-		nd_pl_request_t q = {.action = NDPL_ADD, .id = pl_pages[1].playlist.id, .revision = pl_pages[1].playlist.revision, .session = session, .generation = generation};
+		nd_pl_request_t q = {.action = NDPL_ADD, .id = pl_pages[1].playlist.id, .revision = pl_pages[1].playlist.revision, .session = session, .generation = generation, .favorites = favorites};
 		pl_skip_load = true;
 		switch_screen_return_to(pl_origin);
 		pl_skip_load = false;

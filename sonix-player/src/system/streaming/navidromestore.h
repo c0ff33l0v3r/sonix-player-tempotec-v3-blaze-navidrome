@@ -14,11 +14,16 @@ typedef enum { ND_ALBUMS, ND_TRACKS, ND_ARTISTS, ND_GENRES } nd_kind_t;
 typedef struct {
 	char id[ND_ID_MAX], title[ND_TEXT_MAX], artist[ND_TEXT_MAX], cover[ND_ID_MAX];
 	int duration, disc, track;
+	bool favorite_known;
+	int details;   // 0 complete, 1 loading, 2 unavailable (albums only).
+	bool favorite; // Explicit cached annotation, never inherited from album membership.
 } nd_row_t;
 typedef struct {
 	bool ready, writable, syncing, loading;
+	bool corrupt;	// Cache format/read failure, independent of last-operation feedback.
+	bool favorites; // Independent favorites database/source; counts retain the four-kind ABI.
 	unsigned epoch, card_epoch, offer;
-	int64_t generation;
+	int64_t generation, base;
 	time_t finished;
 	int counts[4], stage, fetched;
 	char path[1024], scope[33];
@@ -27,12 +32,17 @@ typedef struct {
 typedef struct {
 	sqlite3 *db;
 	sqlite3_stmt *insert, *relationship, *genre;
+	sqlite3_stmt *favorite_album, *favorite_seen, *favorite_member, *favorite_song;
+	sqlite3_stmt *local_insert, *local_artist, *annotation;
+	bool favorites, local;
+	int64_t view;
 	char scope[33];
 	int64_t generation;
 	const char *error;
 } nd_store_t;
 typedef struct {
 	nd_kind_t kind;
+	bool favorites;
 	// Albums filtered by an artist/genre, or tracks filtered by an album.
 	nd_kind_t filter_kind;
 	char filter[ND_ID_MAX];
@@ -46,8 +56,21 @@ typedef struct {
 bool nd_store_play_index(nd_store_t *store, int64_t generation, const nd_query_t *query, const char *selected, int64_t **handles, int *count, int *start);
 bool nd_store_play_row(nd_store_t *store, int64_t generation, int64_t handle, nd_playrow_t *out);
 
+// Incremental Favorites transactions. Caller owns the lease/commit barrier.
+bool nd_store_local_begin(nd_store_t *store);
+bool nd_store_local_put(nd_store_t *store, nd_kind_t kind, const nd_playrow_t *row, bool starred, int details);
+bool nd_store_local_activate(nd_store_t *store);
+bool nd_store_metadata(nd_store_t *store, int64_t generation, nd_kind_t kind, const char *id, nd_playrow_t *row);
+bool nd_store_annotation(nd_store_t *store, int64_t generation, nd_kind_t kind, const char *id, bool *starred);
+// Extract one exact bounded metadata object, used by targeted item completion.
+bool nd_metadata_row(const json_doc_t *doc, int object, nd_kind_t kind, nd_playrow_t *row);
+
+// Validate the independent Subsonic starred timestamp; absence means clear.
+bool nd_metadata_starred(const json_doc_t *document, int object, bool *starred);
+
 // Blocking store boundary. Each worker owns its own handle. No GUI SQL calls.
 bool nd_store_open(nd_store_t *store, const char *path, const char *scope, bool write, bool rebuild);
+bool nd_store_open_source(nd_store_t *store, const char *path, const char *scope, bool write, bool rebuild, bool favorites);
 void nd_store_close(nd_store_t *store);
 bool nd_store_status(nd_store_t *store, nd_library_t *out);
 bool nd_store_begin(nd_store_t *store);
@@ -63,6 +86,7 @@ void nd_store_release(const char *scope, int64_t generation);
 bool nd_store_query(nd_store_t *store, int64_t generation, const nd_query_t *query, int offset, nd_row_t rows[ND_WINDOW], int *count, int *total);
 bool nd_store_letters(nd_store_t *store, int64_t generation, const nd_query_t *query, int first[ND_LETTER_BUCKETS]);
 bool nd_store_track(nd_store_t *store, int64_t generation, const char *id, nd_row_t *out);
+bool nd_store_favorite(nd_store_t *store, int64_t generation, nd_kind_t kind, const char *id);
 bool nd_store_contains(nd_store_t *store, int64_t generation, nd_kind_t kind, const char *id);
 
 #endif

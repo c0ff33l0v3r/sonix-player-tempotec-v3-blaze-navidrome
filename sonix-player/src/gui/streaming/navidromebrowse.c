@@ -1,5 +1,6 @@
 #include "navidromebrowse.h"
 #include "navidromeart.h"
+#include "navidromefavorites.h"
 #include "navidromepage.h"
 #include "navidromeplaylists.h"
 #include "src/gui/fonts/fonts.h"
@@ -11,12 +12,14 @@
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/toast.h"
 #include "src/gui/shell/uiscale.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
 #include "src/system/streaming/navidrome.h"
 #include "src/system/streaming/navidromeplay.h"
 #include "src/system/streaming/navidromeplaylists.h"
+#include "src/system/streaming/navidromestars.h"
 #include <limits.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -38,7 +41,8 @@ typedef struct {
 	int first, count, total, selected;
 	bool selecting, select_busy, picking;
 	int64_t session;
-	lv_obj_t *select_add, *select_close, *menus[ND_WINDOW];
+	int64_t favorite_revision;
+	lv_obj_t *select_add, *select_close, *select_favorite, *menus[ND_WINDOW];
 	bool chosen[ND_WINDOW];
 } browse_page_t;
 static browse_page_t pages[3];
@@ -52,8 +56,10 @@ typedef struct {
 	nd_query_t query;
 	nd_row_t rows[ND_WINDOW];
 	bool ok, filter_exists, need_map;
+	int metadata_details;
 	int letters[ND_LETTER_BUCKETS];
 	int64_t session;
+	int64_t favorite_revision;
 	int selected;
 	bool chosen[ND_WINDOW];
 } window_t;
@@ -63,6 +69,13 @@ static bool worker_started, pending;
 static window_t request;
 static void submit_window(browse_page_t *page);
 static void browse_selection_ui(browse_page_t *p);
+
+static void browse_snapshot(bool favorites, nd_library_t *out) {
+	if (favorites)
+		navidrome_favorites_snapshot(out);
+	else
+		navidrome_library_snapshot(out);
+}
 
 static bool gesture(void) { return switcher_back_drag_active() || player_sheet_drag_active() || coverflow_drag_active(); }
 
@@ -83,8 +96,8 @@ static void window_done(void *value) {
 	window_t *result = value;
 	browse_page_t *p = &pages[result->page];
 	nd_library_t current;
-	navidrome_library_snapshot(&current);
-	if (p->serial != result->serial || lv_screen_active() != p->screen || !current.ready || current.epoch != result->library.epoch || current.generation != result->library.generation) {
+	browse_snapshot(result->query.favorites, &current);
+	if (p->serial != result->serial || lv_screen_active() != p->screen || !current.ready || current.epoch != result->library.epoch || current.card_epoch != result->library.card_epoch || current.generation != result->library.generation) {
 		free(result);
 		return;
 	}
@@ -100,20 +113,27 @@ static void window_done(void *value) {
 	}
 	if (!result->filter_exists) {
 		gui_notify_popup("nd_item_removed");
-		switch_screen_return_to(result->page ? pages[result->page - 1].screen : navidrome_screen);
+		switch_screen_return_to(result->page ? pages[result->page - 1].screen : result->query.favorites ? navidromefavorites_page() : navidrome_screen);
 		free(result);
+		return;
+	}
+	if (result->first > 0 && result->first >= result->total) {
+		lv_obj_scroll_to_y(p->list, result->total ? (result->total - 1) * pitch : 0, LV_ANIM_OFF);
+		free(result);
+		submit_window(p);
 		return;
 	}
 	bool keep_art[ND_WINDOW];
 	// Selection reloads metadata too; unchanged bindings keep decoded covers
 	// and pending requests instead of flashing the placeholder for every tap.
-	bool same_library = p->library.epoch == result->library.epoch && p->library.card_epoch == result->library.card_epoch && p->library.generation == result->library.generation && !strcmp(p->library.scope, result->library.scope);
+	bool same_library = p->library.epoch == result->library.epoch && p->library.card_epoch == result->library.card_epoch && (p->library.generation == result->library.generation || (p->query.favorites && p->library.base == result->library.base)) && !strcmp(p->library.scope, result->library.scope);
 	for (int i = 0; i < ND_WINDOW; i++) {
 		keep_art[i] = same_library && p->art_bound[i] && i < p->count && i < result->count && !strcmp(p->data[i].id, result->rows[i].id) && !strcmp(p->data[i].cover, result->rows[i].cover);
 		if (!keep_art[i] && p->art_bound[i])
 			release_art_row(p, i);
 	}
 	p->library = result->library;
+	p->favorite_revision = result->favorite_revision;
 	p->first = result->first;
 	p->count = result->count;
 	p->total = result->total;
@@ -135,10 +155,10 @@ static void window_done(void *value) {
 	lv_obj_set_height(p->extent, p->total ? p->total * pitch : 1);
 	char status[80];
 	lv_snprintf(status, sizeof(status), tr("nd_item_count"), p->total);
-	lv_label_set_text(p->status, p->total ? status : tr("nd_library_empty"));
+	lv_label_set_text(p->status, result->metadata_details ? tr(result->metadata_details == 1 && navidrome_star_loading(ND_ALBUMS, p->query.filter) ? "nd_favorites_loading" : "nd_favorites_metadata_error") : p->total ? status : tr(p->query.favorites ? "nd_favorites_empty" : "nd_library_empty"));
 	for (int i = 0; i < ND_WINDOW; i++) {
 		lv_obj_set_hidden(p->rows[i], i >= p->count);
-		lv_obj_set_hidden(p->menus[i], p->selecting || (p->query.kind != ND_TRACKS && p->query.kind != ND_ALBUMS));
+		lv_obj_set_hidden(p->menus[i], p->selecting || (p->query.kind != ND_TRACKS && p->query.kind != ND_ALBUMS && p->query.kind != ND_ARTISTS));
 		lv_obj_set_hidden(p->checks[i], !p->chosen[i]);
 		lv_obj_set_style_bg_opa(p->rows[i], p->chosen[i] ? LV_OPA_50 : LV_OPA_COVER, 0);
 		if (i >= p->count)
@@ -163,7 +183,7 @@ static void window_done(void *value) {
 			lv_snprintf(detail, sizeof(detail), "%s%s%d:%02d", row->artist, row->artist[0] ? "  ·  " : "", row->duration / 60, row->duration % 60);
 		else
 			lv_snprintf(detail, sizeof(detail), "%s", row->artist);
-		lv_label_set_text(p->details[i], detail);
+		lv_label_set_text(p->details[i], row->details ? tr(row->details == 1 && navidrome_star_loading(p->query.kind, row->id) ? "nd_favorites_loading" : "nd_favorites_metadata_error") : detail);
 	}
 	browse_selection_ui(p);
 	free(result);
@@ -186,12 +206,17 @@ static void *read_windows(void *unused) {
 		pthread_mutex_unlock(&window_lock);
 		nd_store_t store = {0};
 		bool leased = navidrome_cache_begin(result->library.epoch, result->library.card_epoch);
-		result->ok = leased && nd_store_open(&store, result->library.path, result->library.scope, false, false);
+		result->ok = leased && nd_store_open_source(&store, result->library.path, result->library.scope, false, false, result->query.favorites);
 		result->filter_exists = true;
 		if (result->ok && *result->query.filter)
 			result->filter_exists = nd_store_contains(&store, result->library.generation, result->query.filter_kind, result->query.filter);
 		if (result->ok)
 			result->ok = nd_store_query(&store, result->library.generation, &result->query, result->first, result->rows, &result->count, &result->total);
+		if (result->ok && result->query.favorites && result->query.kind == ND_TRACKS && result->query.filter[0]) {
+			nd_playrow_t album;
+			if (nd_store_metadata(&store, result->library.generation, ND_ALBUMS, result->query.filter, &album))
+				result->metadata_details = album.row.details;
+		}
 		if (result->ok && result->need_map)
 			result->ok = nd_store_letters(&store, result->library.generation, &result->query, result->letters);
 		if (result->ok && result->session) {
@@ -199,13 +224,14 @@ static void *read_windows(void *unused) {
 			nd_playlist_store_t selections = {0};
 			if (nd_pl_path(&result->library, path) && nd_pl_open(&selections, path, result->library.scope, false)) {
 				sqlite3_stmt *st = NULL;
-				if (nd_pl_prepare(&selections, &st, "SELECT ordinal FROM selection WHERE session=?")) {
+				if (nd_pl_prepare(&selections, &st, "SELECT kind,track FROM selection WHERE session=?")) {
 					sqlite3_bind_int64(st, 1, result->session);
 					while (sqlite3_step(st) == SQLITE_ROW) {
-						int ordinal = sqlite3_column_int(st, 0);
+						const char *id = (const char *)sqlite3_column_text(st, 1);
 						result->selected++;
-						if (ordinal >= result->first && ordinal < result->first + result->count)
-							result->chosen[ordinal - result->first] = true;
+						for (int i = 0; i < result->count; i++)
+							if (sqlite3_column_int(st, 0) == (int)result->query.kind && id && !strcmp(id, result->rows[i].id))
+								result->chosen[i] = true;
 					}
 				}
 				sqlite3_finalize(st);
@@ -213,6 +239,17 @@ static void *read_windows(void *unused) {
 			nd_pl_close(&selections);
 		}
 		nd_store_close(&store);
+		if (leased && result->ok && !result->query.favorites) {
+			nd_library_t favorites;
+			navidrome_favorites_snapshot(&favorites);
+			result->favorite_revision = favorites.generation;
+			if (favorites.ready && favorites.epoch == result->library.epoch && favorites.card_epoch == result->library.card_epoch && !strcmp(favorites.scope, result->library.scope)) {
+				if (nd_store_open_source(&store, favorites.path, favorites.scope, false, false, true))
+					for (int i = 0; i < result->count; i++)
+						result->rows[i].favorite_known = nd_store_annotation(&store, favorites.generation, result->query.kind, result->rows[i].id, &result->rows[i].favorite);
+				nd_store_close(&store);
+			}
+		}
 		if (leased)
 			navidrome_cache_end();
 		if (!gui_post(window_done, result))
@@ -224,7 +261,7 @@ static void *read_windows(void *unused) {
 
 static void submit_window(browse_page_t *p) {
 	nd_library_t library;
-	navidrome_library_snapshot(&library);
+	browse_snapshot(p->query.favorites, &library);
 	if (!library.ready)
 		return;
 	int first = lv_obj_get_scroll_y(p->list) / pitch - 2;
@@ -290,8 +327,8 @@ static void row_clicked(lv_event_t *e) {
 			return;
 		}
 		nd_library_t current;
-		navidrome_library_snapshot(&current);
-		if (!current.ready || current.epoch != p->library.epoch)
+		browse_snapshot(p->query.favorites, &current);
+		if (!current.ready || current.epoch != p->library.epoch || current.generation != p->library.generation)
 			return;
 		for (int i = 0; i < p->count; i++) {
 			if (p->rows[i] != row)
@@ -314,6 +351,7 @@ static void row_clicked(lv_event_t *e) {
 			next->session++;
 			next->map_ready = next->map_bound = false;
 			memset(&next->query, 0, sizeof(next->query));
+			next->query.favorites = p->query.favorites;
 			next->query.kind = p->query.kind == ND_ALBUMS ? ND_TRACKS : ND_ALBUMS;
 			next->query.filter_kind = p->query.kind;
 			lv_snprintf(next->query.filter, sizeof(next->query.filter), "%s", p->data[i].id);
@@ -348,12 +386,15 @@ static void unloaded(lv_event_t *e) {
 }
 
 void navidromebrowse_refresh(void) {
+	navidrome_star_poll();
 	nd_library_t library;
-	navidrome_library_snapshot(&library);
 	for (int level = 0; level < 3; level++) {
 		browse_page_t *p = &pages[level];
 		if (!p->screen || lv_screen_active() != p->screen)
 			continue;
+		browse_snapshot(p->query.favorites, &library);
+		if (p->select_favorite)
+			lv_obj_set_state(p->select_favorite, LV_STATE_DISABLED, p->select_busy || navidrome_star_busy());
 		if (!library.ready) {
 			p->selecting = false;
 			p->selected = 0;
@@ -362,20 +403,32 @@ void navidromebrowse_refresh(void) {
 			switch_screen_return_to(navidrome_screen);
 			return;
 		}
-		if (p->library.epoch != library.epoch) {
+		if (p->library.epoch != library.epoch || p->library.generation != library.generation) {
 			p->map_ready = p->map_bound = false;
 			azindex_set_rows(p->index, NULL, 0, false);
 		}
-		if (!p->loading && p->library.epoch != library.epoch) {
-			p->select_busy = false;
-			p->selecting = false;
-			p->selected = 0;
-			p->session++;
+		if (!p->loading && (p->library.epoch != library.epoch || p->library.generation != library.generation)) {
+			if (p->select_busy)
+				continue;
+			bool keep_selection = p->query.favorites && p->library.epoch == library.epoch && p->library.card_epoch == library.card_epoch;
+			if (!keep_selection) {
+				p->select_busy = false;
+				p->selecting = false;
+				p->selected = 0;
+				p->session++;
+			}
 			browse_selection_ui(p);
-			release_art(p);
+			if (!keep_selection)
+				release_art(p);
 			for (int i = 0; i < ND_WINDOW; i++)
 				lv_obj_set_hidden(p->rows[i], true);
 			submit_window(p);
+		}
+		if (!p->query.favorites && !p->loading && !p->select_busy) {
+			nd_library_t favorites;
+			navidrome_favorites_snapshot(&favorites);
+			if (p->favorite_revision != favorites.generation)
+				submit_window(p);
 		}
 		if (p->loading && lv_tick_elaps(p->submitted) > 2500)
 			submit_window(p); // Recover from a dropped GUI post without a network retry.
@@ -405,13 +458,14 @@ static void tick(lv_timer_t *timer) {
 		navidromebrowse_refresh();
 }
 
-static void browse_open(nd_kind_t kind, bool picking) {
+static void browse_open(nd_kind_t kind, bool picking, bool favorites) {
 	browse_page_t *p = &pages[0];
 	p->picking = picking;
 	p->map_ready = p->map_bound = false;
 	azindex_set_rows(p->index, NULL, 0, false);
 	memset(&p->query, 0, sizeof(p->query));
 	p->query.kind = kind;
+	p->query.favorites = favorites;
 	p->selecting = false;
 	p->selected = 0;
 	p->session++;
@@ -429,8 +483,9 @@ static void browse_open(nd_kind_t kind, bool picking) {
 		switch_screen(p->screen);
 }
 
-void navidromebrowse_open(nd_kind_t kind) { browse_open(kind, false); }
-void navidromebrowse_pick(nd_kind_t kind) { browse_open(kind, true); }
+void navidromebrowse_open(nd_kind_t kind) { browse_open(kind, false, false); }
+void navidromebrowse_open_favorites(nd_kind_t kind) { browse_open(kind, false, true); }
+void navidromebrowse_pick(nd_kind_t kind) { browse_open(kind, true, false); }
 
 bool navidromebrowse_album(const char *id, const char *title) {
 	nd_library_t library;
@@ -468,6 +523,8 @@ static void browse_selection_ui(browse_page_t *p) {
 		return;
 	lv_obj_set_hidden(p->select_add, !p->selecting);
 	lv_obj_set_hidden(p->select_close, !p->selecting);
+	lv_obj_set_hidden(p->select_favorite, !p->selecting || (p->query.kind != ND_TRACKS && p->query.kind != ND_ALBUMS));
+	lv_obj_set_state(p->select_favorite, LV_STATE_DISABLED, p->select_busy || navidrome_star_busy());
 	if (p->selecting) {
 		char text[80];
 		lv_snprintf(text, sizeof(text), tr("nd_pl_selected"), p->selected);
@@ -493,6 +550,54 @@ static bool browse_selection_back(void) {
 		}
 	return false;
 }
+static void browse_favorite_done(nd_star_result_t *r, void *data) {
+	uintptr_t token = (uintptr_t)data;
+	browse_page_t *p = &pages[token & 3];
+	if (p->serial == (unsigned)(token >> 2) && lv_screen_active() == p->screen) {
+		p->select_busy = false;
+		if (navidrome_star_current(&r->context)) {
+			if (!r->error && r->request.action != ND_STAR_CHECK)
+				toast_success("nd_favorites_saved");
+			else if (r->request.action == ND_STAR_SELECTED) {
+				char message[400], summary[200];
+				lv_snprintf(summary, sizeof(summary), tr("nd_favorites_batch"), r->completed, r->total);
+				lv_snprintf(message, sizeof(message), "%s%s%s", summary, r->error ? "\n" : "", r->error ? tr(r->error) : "");
+				gui_notify_popup(message);
+			} else
+				gui_notify_popup(r->error ? r->error : r->request.action == ND_STAR_CHECK ? "nd_favorites_checked" : "nd_favorites_saved");
+		}
+		browse_selection_ui(p);
+	}
+	free(r);
+}
+static void browse_favorite_start(browse_page_t *p, nd_star_request_t *q) {
+	nd_context_t captured;
+	if (!navidrome_context(&captured, false)) {
+		gui_notify_popup("nd_favorites_stale");
+		return;
+	}
+	q->bound_profile = true;
+	q->profile_epoch = captured.profile_epoch;
+	q->library = p->library;
+	nd_wipe(&captured, sizeof(captured));
+	nd_library_t current;
+	browse_snapshot(p->query.favorites, &current);
+	if (!current.ready || p->library.epoch != current.epoch || p->library.card_epoch != current.card_epoch || p->library.generation != current.generation) {
+		gui_notify_popup("nd_favorites_stale");
+		return;
+	}
+	if (p->loading || p->select_busy)
+		return;
+	uintptr_t token = ((uintptr_t)p->serial << 2) | (unsigned)(p - pages);
+	if (navidrome_star_submit(q, browse_favorite_done, (void *)token)) {
+		p->select_busy = true;
+		browse_selection_ui(p);
+	} else {
+		navidrome_snapshot_t snapshot;
+		navidrome_snapshot(&snapshot);
+		gui_notify_popup(snapshot.state == ND_CONNECTED ? "nd_working" : navidrome_feedback(&snapshot));
+	}
+}
 static void browse_selection_button(lv_event_t *e) {
 	if (gesture())
 		return;
@@ -501,8 +606,15 @@ static void browse_selection_button(lv_event_t *e) {
 		browse_selection_back();
 		return;
 	}
+	if (lv_event_get_current_target(e) == p->select_favorite) {
+		if (p->selecting && p->selected > 0 && (p->query.kind == ND_TRACKS || p->query.kind == ND_ALBUMS)) {
+			nd_star_request_t q = {.action = ND_STAR_SELECTED, .kind = p->query.kind, .session = p->session, .library = p->library};
+			browse_favorite_start(p, &q);
+		}
+		return;
+	}
 	if (p->selected > 0)
-		navidromeplaylists_pick(p->session, p->library.generation, p->screen);
+		navidromeplaylists_pick_source(p->session, p->library.generation, p->screen, p->query.favorites);
 }
 static void browse_selection_done(nd_pl_result_t *r, void *data) {
 	uintptr_t token = (uintptr_t)data;
@@ -524,14 +636,14 @@ static void browse_selection_done(nd_pl_result_t *r, void *data) {
 	p->selecting = p->selected > 0;
 	browse_selection_ui(p);
 	if (picker)
-		navidromeplaylists_pick(p->session, p->library.generation, p->screen);
+		navidromeplaylists_pick_source(p->session, p->library.generation, p->screen, p->query.favorites);
 	else
 		submit_window(p);
 	free(r);
 }
 static void browse_row_select(browse_page_t *p, lv_obj_t *row, bool picker) {
 	nd_library_t current;
-	navidrome_library_snapshot(&current);
+	browse_snapshot(p->query.favorites, &current);
 	if (!current.ready || p->library.epoch != current.epoch || p->library.card_epoch != current.card_epoch || strcmp(p->library.scope, current.scope)) {
 		gui_notify_popup("nd_pl_stale");
 		return;
@@ -540,7 +652,7 @@ static void browse_row_select(browse_page_t *p, lv_obj_t *row, bool picker) {
 		return;
 	for (int i = 0; i < p->count; i++)
 		if (p->rows[i] == row) {
-			nd_pl_request_t q = {.action = (!p->selecting || picker) ? NDPL_SELECT_ONLY : NDPL_SELECT, .session = p->session, .ordinal = p->first + i, .kind = p->query.kind, .generation = p->library.generation};
+			nd_pl_request_t q = {.action = (!p->selecting || picker) ? NDPL_SELECT_ONLY : NDPL_SELECT, .session = p->session, .ordinal = p->first + i, .kind = p->query.kind, .generation = p->library.generation, .favorites = p->query.favorites};
 			snprintf(q.track, sizeof(q.track), "%s", p->data[i].id);
 			uintptr_t token = ((uintptr_t)p->serial << 3) | (picker ? 4 : 0) | (unsigned)(p - pages);
 			if (!navidrome_playlists_submit(&q, browse_selection_done, (void *)token))
@@ -568,6 +680,14 @@ static void browse_long_cb(lv_event_t *e) {
 static browse_page_t *browse_menu_page;
 static int browse_menu_index;
 static unsigned browse_menu_serial;
+static nd_star_request_t browse_menu_favorite;
+static void browse_favorite_menu(void *arg) {
+	if (!browse_menu_page || browse_menu_page->serial != browse_menu_serial || lv_screen_active() != browse_menu_page->screen || gesture())
+		return;
+	nd_star_request_t q = browse_menu_favorite;
+	q.action = (nd_star_action_t)(uintptr_t)arg;
+	browse_favorite_start(browse_menu_page, &q);
+}
 static void browse_add_menu(void *unused) {
 	(void)unused;
 	if (browse_menu_page && browse_menu_index < browse_menu_page->count && browse_menu_page->serial == browse_menu_serial)
@@ -578,15 +698,29 @@ static void browse_menu_cb(lv_event_t *e) {
 	if (gesture())
 		return;
 	browse_page_t *p = lv_event_get_user_data(e);
-	if (p->loading)
+	if (p->loading || p->select_busy)
 		return;
 	for (int i = 0; i < p->count; i++)
 		if (p->menus[i] == lv_event_get_current_target(e)) {
 			browse_menu_page = p;
 			browse_menu_index = i;
 			browse_menu_serial = p->serial;
-			popover_item_t items[] = {{"add_to_playlist", browse_add_menu, NULL, false}};
-			popover_show(p->menus[i], items, 1);
+			browse_menu_favorite = (nd_star_request_t){.kind = p->query.kind};
+			snprintf(browse_menu_favorite.id, sizeof(browse_menu_favorite.id), "%s", p->data[i].id);
+			browse_menu_favorite.metadata.row = p->data[i];
+			nd_star_state_t star = navidrome_star_state(p->query.kind, p->data[i].id);
+			if (star == ND_STAR_UNKNOWN && (p->data[i].favorite_known || p->data[i].favorite))
+				star = p->data[i].favorite ? ND_STAR_SET : ND_STAR_CLEAR;
+			popover_item_t items[3];
+			int n = 0;
+			bool favorite = star == ND_STAR_SET || ((star == ND_STAR_UNKNOWN || star == ND_STAR_UNCERTAIN) && p->data[i].favorite);
+			nd_star_action_t action = star == ND_STAR_UNCERTAIN ? ND_STAR_TOGGLE : favorite ? ND_STAR_REMOVE : ND_STAR_ADD;
+			items[n++] = (popover_item_t){favorite ? "remove_from_favourites" : "medialist_add_to_favourites", browse_favorite_menu, (void *)(uintptr_t)action, false};
+			if (navidrome_star_retry(p->query.kind, p->data[i].id) || p->data[i].details)
+				items[n++] = (popover_item_t){"nd_favorites_retry", browse_favorite_menu, (void *)(uintptr_t)ND_STAR_RETRY, false};
+			if (p->query.kind == ND_TRACKS || p->query.kind == ND_ALBUMS)
+				items[n++] = (popover_item_t){"add_to_playlist", browse_add_menu, NULL, false};
+			popover_show(p->menus[i], items, n);
 			return;
 		}
 }
@@ -598,11 +732,13 @@ void navidromebrowse_init(gui_config_t *cfg) {
 		p->screen = lv_obj_create(NULL);
 		lv_obj_add_style(p->screen, &theme_style_screen, 0);
 		p->title = settingsrow_title(p->screen, cfg, "navidrome");
-		settingsrow_title_corner_slots(p->title, cfg, 2);
+		settingsrow_title_corner_slots(p->title, cfg, 3);
 		p->session = 2000 + level;
-		for (int slot = 0; slot < 2; slot++) {
+		for (int slot = 0; slot < 3; slot++) {
 			lv_obj_t *button = lv_btn_create(p->screen);
-			if (slot)
+			if (slot == 2)
+				p->select_favorite = button;
+			else if (slot == 1)
 				p->select_add = button;
 			else
 				p->select_close = button;
@@ -613,7 +749,7 @@ void navidromebrowse_init(gui_config_t *cfg) {
 			lv_obj_set_style_shadow_width(button, 0, 0);
 			lv_obj_set_style_pad_all(button, 0, 0);
 			lv_obj_t *glyph = lv_image_create(button);
-			lv_image_set_src(glyph, slot ? &icon_list_plus : &icon_close);
+			lv_image_set_src(glyph, slot == 2 ? &icon_star_plus : slot == 1 ? &icon_list_plus : &icon_close);
 			lv_obj_add_style(glyph, &theme_style_icon, 0);
 			lv_obj_center(glyph);
 			lv_obj_add_event_cb(button, browse_selection_button, LV_EVENT_CLICKED, p);

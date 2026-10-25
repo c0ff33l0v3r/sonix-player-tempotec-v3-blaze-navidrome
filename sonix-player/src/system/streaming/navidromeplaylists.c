@@ -44,15 +44,17 @@ static bool toggle(nd_playlist_store_t *s, const nd_pl_request_t *q) {
 	if (q->action == NDPL_SELECT_ONLY && !nd_pl_sql(s, "DELETE FROM selection"))
 		return false;
 	sqlite3_stmt *st = NULL;
-	if (!nd_pl_prepare(s, &st, "DELETE FROM selection WHERE session=? AND ordinal=?"))
+	if (!nd_pl_prepare(s, &st, q->occurrence ? "DELETE FROM selection WHERE session=? AND ordinal=?" : "DELETE FROM selection WHERE session=? AND kind=? AND track=?"))
 		return false;
 	sqlite3_bind_int64(st, 1, q->session);
-	sqlite3_bind_int(st, 2, q->ordinal);
+	sqlite3_bind_int(st, 2, q->occurrence ? q->ordinal : (int)q->kind);
+	if (!q->occurrence)
+		nd_pl_bind(st, 3, q->track);
 	bool ok = sqlite3_step(st) == SQLITE_DONE;
 	int removed = sqlite3_changes(s->db);
 	sqlite3_finalize(st);
 	if (ok && !removed) {
-		if (!nd_pl_prepare(s, &st, "INSERT INTO selection(session,ordinal,kind,track,occurrence) VALUES(?,?,?,?,?)"))
+		if (!nd_pl_prepare(s, &st, "INSERT INTO selection(session,ordinal,kind,track,occurrence) VALUES(?1,CASE WHEN EXISTS(SELECT 1 FROM selection WHERE session=?1 AND ordinal=?2) THEN (SELECT coalesce(max(ordinal),-1)+1 FROM selection WHERE session=?1) ELSE ?2 END,?3,?4,?5)"))
 			return false;
 		sqlite3_bind_int64(st, 1, q->session);
 		sqlite3_bind_int(st, 2, q->ordinal);
@@ -70,7 +72,7 @@ static bool add_selected(nd_playlist_store_t *s, const nd_pl_request_t *q, const
 		return false;
 	}
 	nd_store_t source = {0};
-	if (!nd_store_open(&source, lib->path, lib->scope, false, false)) {
+	if (!nd_store_open_source(&source, lib->path, lib->scope, false, false, lib->favorites)) {
 		nd_store_close(&source);
 		return false;
 	}
@@ -89,7 +91,7 @@ static bool add_selected(nd_playlist_store_t *s, const nd_pl_request_t *q, const
 			nd_row_t row;
 			ok = nd_store_track(&source, lib->generation, id, &row) && nd_pl_append(s, q->id, &row, true, &out->added, &out->skipped);
 		} else if (sqlite3_column_int(st, 0) == ND_ALBUMS) {
-			nd_query_t query = {.kind = ND_TRACKS, .filter_kind = ND_ALBUMS};
+			nd_query_t query = {.kind = ND_TRACKS, .filter_kind = ND_ALBUMS, .favorites = lib->favorites};
 			snprintf(query.filter, sizeof(query.filter), "%s", id);
 			ok = nd_store_contains(&source, lib->generation, ND_ALBUMS, id);
 			int first = 0, total = 0, count = 0;
@@ -726,7 +728,10 @@ bool navidrome_playlists_submit(const nd_pl_request_t *q, void (*done)(nd_pl_res
 	navidrome_poll_network();
 	bool ok = job->result && navidrome_context(&job->c, network);
 	if (ok) {
-		navidrome_library_snapshot(&job->lib);
+		if (q->favorites)
+			navidrome_favorites_snapshot(&job->lib);
+		else
+			navidrome_library_snapshot(&job->lib);
 		ok = navidrome_external_begin(&job->c, network);
 	}
 	if (!ok) {

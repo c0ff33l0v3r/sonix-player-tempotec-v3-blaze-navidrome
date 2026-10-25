@@ -13,8 +13,12 @@ extern const lv_font_t lv_font_unscii_8;
 lv_style_t theme_style_icon;
 static const uint8_t fixture_pixel[4] = {255, 255, 255, 255};
 #define FIXTURE_ICON {.header = {.magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_ARGB8888, .w = 1, .h = 1, .stride = 4}, .data = fixture_pixel, .data_size = 4}
-const lv_image_dsc_t icon_close = FIXTURE_ICON, icon_list_plus = FIXTURE_ICON, icon_ellipsis_vertical = FIXTURE_ICON, icon_check = FIXTURE_ICON;
+const lv_image_dsc_t icon_star_plus = FIXTURE_ICON, icon_close = FIXTURE_ICON, icon_list_plus = FIXTURE_ICON, icon_ellipsis_vertical = FIXTURE_ICON, icon_check = FIXTURE_ICON;
 #ifndef NAVIDROME_PLAYLIST_UI
+void navidromeplaylists_pick_source(int64_t session, int64_t generation, lv_obj_t *origin, bool favorites) {
+	(void)favorites;
+	navidromeplaylists_pick(session, generation, origin);
+}
 void navidromeplaylists_pick(int64_t session, int64_t generation, lv_obj_t *origin) {
 	(void)session;
 	(void)generation;
@@ -46,6 +50,9 @@ static const uint8_t fixture_note_pixels[128 * 128 * 4];
 const lv_image_dsc_t icon_music_note = {.header = {.magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_ARGB8888, .w = 128, .h = 128, .stride = 512}, .data = fixture_note_pixels, .data_size = sizeof(fixture_note_pixels)};
 lv_style_t theme_style_screen, theme_style_card, theme_style_card_pressed, theme_style_text, theme_style_text_dim;
 lv_obj_t *navidrome_screen;
+#ifndef NAVIDROME_STAR_UI
+lv_obj_t *navidromefavorites_page(void) { return navidrome_screen; }
+#endif
 static bool dragging;
 #ifndef NAVIDROME_COORDINATOR_TEST
 static unsigned playback_selections;
@@ -65,7 +72,14 @@ const char *tr(const char *key) {
 #endif
 	return key;
 }
-void gui_notify_popup(const char *key) { (void)key; }
+static unsigned fixture_notices;
+void gui_notify_popup(const char *key) {
+	(void)key;
+	fixture_notices++;
+}
+#ifndef NAVIDROME_STAR_UI
+void toast_success(const char *key) { (void)key; }
+#endif
 bool switcher_back_drag_active(void) { return dragging; }
 bool player_sheet_drag_active(void) { return dragging; }
 bool coverflow_drag_active(void) { return dragging; }
@@ -132,11 +146,11 @@ static struct {
 	void *data;
 } posts[64];
 static unsigned post_read, post_write;
-#ifdef NAVIDROME_COORDINATOR_TEST
+#if defined(NAVIDROME_COORDINATOR_TEST) || defined(NAVIDROME_STAR_UI)
 static atomic_bool fixture_reject_posts;
 #endif
 bool gui_post(void (*cb)(void *), void *data) {
-#ifdef NAVIDROME_COORDINATOR_TEST
+#if defined(NAVIDROME_COORDINATOR_TEST) || defined(NAVIDROME_STAR_UI)
 	if (atomic_load(&fixture_reject_posts))
 		return false;
 #endif
@@ -186,12 +200,12 @@ static void seed(const nd_library_t *library) {
 	}
 	assert(!mkdir(dir, 0700) || errno == EEXIST);
 	nd_store_t store;
-	assert(nd_store_open(&store, library->path, library->scope, true, false));
+	assert(nd_store_open_source(&store, library->path, library->scope, true, false, library->favorites));
 	assert(nd_store_begin(&store));
 	assert(sqlite3_exec(store.db, "BEGIN", NULL, NULL, NULL) == SQLITE_OK);
 	sqlite3_stmt *st;
 	assert(sqlite3_prepare_v2(store.db, "INSERT INTO entity VALUES(?,?,?,?,'Fixture',?,'',120,?,?,?)", -1, &st, NULL) == SQLITE_OK);
-	for (int kind = 0; kind < 4; kind++) {
+	for (int kind = 0; kind < (library->favorites ? 2 : 4); kind++) {
 		int total = kind == ND_TRACKS ? 17000 : kind == ND_ALBUMS ? 1700 : 1;
 		for (int i = 0; i < total; i++) {
 			char id[64], title[64], album[64] = "";
@@ -217,17 +231,22 @@ static void seed(const nd_library_t *library) {
 		}
 	}
 	sqlite3_finalize(st);
-	for (int i = 0; i < 1700; i++) {
+	for (int i = 0; !library->favorites && i < 1700; i++) {
 		char text[256];
 		snprintf(text, sizeof(text), "INSERT INTO rel VALUES(%lld,'album-%05d',2,'artist-00000'); INSERT INTO rel VALUES(%lld,'album-%05d',3,'genre-00000');", (long long)store.generation, i, (long long)store.generation, i);
 		assert(sqlite3_exec(store.db, text, NULL, NULL, NULL) == SQLITE_OK);
 	}
 	assert(sqlite3_exec(store.db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK);
+	if (library->favorites) {
+		char text[512];
+		snprintf(text, sizeof(text), "INSERT INTO favorite_album SELECT gen,id,10 FROM entity WHERE gen=%lld AND kind=0; INSERT INTO favorite_song SELECT gen,id,1 FROM entity WHERE gen=%lld AND kind=1", (long long)store.generation, (long long)store.generation);
+		assert(sqlite3_exec(store.db, text, NULL, NULL, NULL) == SQLITE_OK);
+	}
 	assert(nd_store_validate(&store) && nd_store_publish(&store));
 	nd_store_close(&store);
 }
 
-#if !defined(NAVIDROME_COORDINATOR_TEST) && !defined(NAVIDROME_PLAYLIST_UI)
+#if !defined(NAVIDROME_COORDINATOR_TEST) && !defined(NAVIDROME_PLAYLIST_UI) && !defined(NAVIDROME_STAR_UI)
 int main(void) {
 	alarm(60);
 	setvbuf(stdout, NULL, _IONBF, 0);
@@ -331,7 +350,10 @@ int main(void) {
 		assert(pages[1].total == 1700 && pages[1].index->enabled);
 		assert(pages[1].letters[1] == 0); // The full matching artist/genre album query.
 		lv_obj_send_event(pages[1].menus[0], LV_EVENT_CLICKED, NULL);
-		assert(fixture_menu_count == 1 && !strcmp(fixture_menu[0].label, "add_to_playlist"));
+		bool has_playlist_action = false;
+		for (int menu = 0; menu < fixture_menu_count; menu++)
+			has_playlist_action |= !strcmp(fixture_menu[menu].label, "add_to_playlist");
+		assert(has_playlist_action);
 		lv_obj_send_event(pages[1].rows[0], LV_EVENT_CLICKED, NULL);
 		window_wait(2);
 		assert(pages[2].total == 10 && !pages[2].index->enabled);

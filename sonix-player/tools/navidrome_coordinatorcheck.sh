@@ -16,7 +16,7 @@ ${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -Wno-unused-function -O1 -g \
     src/system/streaming/streamturn.c src/system/streaming/navidromedebug.c \
     src/system/streaming/navidrome.c src/system/streaming/navidromeapi.c \
     src/system/streaming/navidromeplaylists.c src/system/streaming/navidromeplayliststore.c src/system/core/sha256.c \
-    src/system/streaming/navidromestore.c src/system/streaming/navidromelibrary.c \
+    src/system/streaming/navidromestars.c src/system/streaming/navidromestore.c src/system/streaming/navidromelibrary.c \
     src/system/streaming/navidromecrypto.c src/system/streaming/navidromevault.c \
     src/system/core/json.c src/system/core/md5.c build_host/system/db/sqlite3_impl.o \
     src/system/streaming/navidromebatch.c src/system/net/http.c src/system/net/tls.c \

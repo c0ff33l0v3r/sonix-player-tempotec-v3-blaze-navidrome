@@ -22,7 +22,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-typedef enum { JOB_SAVE, JOB_UNLOCK, JOB_CHANGE, JOB_CONNECT, JOB_FORGET, JOB_CACHE, JOB_SYNC, JOB_ENCRYPT, JOB_PLAIN } job_kind_t;
+typedef enum { JOB_SAVE, JOB_UNLOCK, JOB_CHANGE, JOB_CONNECT, JOB_FORGET, JOB_CACHE, JOB_SYNC, JOB_ENCRYPT, JOB_PLAIN, JOB_FAVORITES } job_kind_t;
 typedef struct {
 	job_kind_t kind;
 	unsigned generation, card_epoch, local_epoch;
@@ -42,7 +42,7 @@ static struct {
 	unsigned generation, revision, local_epoch, card_epoch, offer, profile_epoch, playback_network_epoch;
 	bool cache_pending, sync_cancel;
 	char root[1024];
-	nd_library_t library;
+	nd_library_t library, favorites;
 	char path[1024], password[ND_SECRET_MAX];
 	uint8_t key[32];
 	nd_record_t record;
@@ -159,6 +159,7 @@ static int commit(const job_t *job, const nd_record_t *r, const uint8_t key[32],
 			g.local_epoch++;
 			g.offer = 0;
 			memset(&g.library, 0, sizeof(g.library));
+			memset(&g.favorites, 0, sizeof(g.favorites));
 		}
 		g.record = *r;
 		memcpy(g.key, key, 32);
@@ -182,25 +183,27 @@ static void cache_refresh(const job_t *job, const nd_record_t *record) {
 	pthread_mutex_lock(&lock);
 	bool allowed = current(job) && g.unlocked && job->card_epoch == g.card_epoch;
 	unsigned epoch = g.local_epoch;
-	bool migrate_legacy = !g.library.path[0];
+	bool migrate_legacy = !g.library.path[0] && !g.favorites.path[0];
 	pthread_mutex_unlock(&lock);
 	if (!allowed) {
 		pthread_mutex_lock(&lock);
 		if (job->card_epoch == g.card_epoch)
-			g.library.loading = false;
+			g.library.loading = g.favorites.loading = false;
 		pthread_mutex_unlock(&lock);
 		return;
 	}
-	nd_library_t result;
+	nd_library_t result, favorites;
 	if (!navidrome_cache_begin(epoch, job->card_epoch))
 		return;
 	nd_cache_load(job->root, g.path, record->host, record->user, migrate_legacy, &result);
+	nd_cache_load_source(job->root, g.path, record->host, record->user, migrate_legacy, &favorites, true);
 	navidrome_cache_end();
 	pthread_mutex_lock(&lock);
 	if (current(job) && g.unlocked && job->card_epoch == g.card_epoch) {
-		if (g.library.generation != result.generation || strcmp(g.library.scope, result.scope) || strcmp(g.library.path, result.path))
+		if (g.library.generation != result.generation || g.favorites.generation != favorites.generation || strcmp(g.library.scope, result.scope) || strcmp(g.library.path, result.path))
 			g.local_epoch++;
 		g.library = result;
+		g.favorites = favorites;
 	}
 	pthread_mutex_unlock(&lock);
 	notify();
@@ -285,7 +288,9 @@ static void *sync_fetch(void *arg) {
 		if (atomic_load(&p->stop))
 			break;
 		pthread_mutex_unlock(&p->mutex);
-		slot->error = nd_batch_init(&slot->batch, slot->kind) ? nd_api_page(slot->session, p->record->host, p->record->user, p->password, slot->kind, slot->offset, slot->amount, p->gzip, p->reuse, &slot->batch) : "nd_json_memory";
+		bool initialized = nd_batch_init(&slot->batch, slot->kind);
+		slot->batch.favorites = p->job->kind == JOB_FAVORITES;
+		slot->error = initialized ? nd_api_page(slot->session, p->record->host, p->record->user, p->password, slot->kind, slot->offset, slot->amount, p->gzip, p->reuse, &slot->batch) : "nd_json_memory";
 		pthread_mutex_lock(&p->mutex);
 		slot->state = 2;
 		pthread_cond_broadcast(&p->ready);
@@ -419,9 +424,12 @@ static void sync_dispatch(sync_pool_t *p, sync_slot_t *slot, nd_kind_t kind, int
 	pthread_cond_broadcast(&p->ready);
 }
 static void sync_run(const job_t *job, const nd_record_t *record, const char *password) {
+	bool favorites = job->kind == JOB_FAVORITES;
+	nd_library_t *state = favorites ? &g.favorites : &g.library;
+	const char *operation = favorites ? "favorites" : "sync";
 	double start = sync_now(), validation_seconds = 0, publish_seconds = 0, cleanup_seconds = 0;
 	pthread_mutex_lock(&lock);
-	nd_library_t result = g.library;
+	nd_library_t result = *state;
 	sync_owners++;
 	pthread_mutex_unlock(&lock);
 	struct stat card = {0};
@@ -445,7 +453,7 @@ static void sync_run(const job_t *job, const nd_record_t *record, const char *pa
 		if (!sync_pool_start(&pool, job, record, password))
 			error = "nd_worker_error";
 	}
-	for (int kind = 0; !error && kind < 4; kind++) {
+	for (int kind = 0; !error && kind < (favorites ? 2 : 4); kind++) {
 		int offset = 0, next = 0, amount = ND_BATCH_ITEMS;
 		bool bootstrap = true;
 #ifdef NAVIDROME_TEST
@@ -453,6 +461,9 @@ static void sync_run(const job_t *job, const nd_record_t *record, const char *pa
 		if (size && atoi(size) > 0 && atoi(size) <= ND_BATCH_ITEMS)
 			amount = atoi(size);
 #endif
+		// getAlbumList2 has a protocol maximum of 500 albums per page.
+		if (favorites && kind == ND_ALBUMS && amount > 500)
+			amount = 500;
 		for (;;) {
 			if (!sync_current(job) || !nd_cache_card_same(job->root, card.st_dev, card.st_ino)) {
 				error = "nd_sync_cancelled";
@@ -550,15 +561,15 @@ static void sync_run(const job_t *job, const nd_record_t *record, const char *pa
 			offset += count;
 			pthread_mutex_lock(&lock);
 			if (current(job) && job->card_epoch == g.card_epoch) {
-				g.library.stage = kind;
-				g.library.fetched = offset;
+				state->stage = kind;
+				state->fetched = offset;
 			}
 			pthread_mutex_unlock(&lock);
 			notify();
 			bootstrap = false;
 			if (kind == ND_GENRES || count < amount) {
 				error = sync_retire(&pool);
-				nd_log("navidrome: sync stage kind=%d fetched=%d\n", kind, offset);
+				nd_log("navidrome: %s stage kind=%d fetched=%d\n", operation, kind, offset);
 				break;
 			}
 		}
@@ -568,7 +579,7 @@ static void sync_run(const job_t *job, const nd_record_t *record, const char *pa
 	if (!error)
 		error = scan_status(job, record, password, after);
 	if (!error && strcmp(before, after)) {
-		nd_log("navidrome: sync scan reason=marker_changed\n");
+		nd_log("navidrome: %s scan reason=marker_changed\n", operation);
 		error = "nd_sync_inconsistent";
 	}
 	bool leased = navidrome_cache_begin(job->local_epoch, job->card_epoch);
@@ -595,21 +606,29 @@ static void sync_run(const job_t *job, const nd_record_t *record, const char *pa
 	if (published && !nd_store_status(&store, &result))
 		error = "nd_cache_error";
 	phase = sync_now();
-	if (leased && store.db)
+	if (leased && store.db && (!published || !error))
 		nd_store_cleanup(&store);
 	nd_store_close(&store);
 	cleanup_seconds = sync_now() - phase;
 	if (leased)
 		navidrome_cache_end();
+	if (favorites && error) {
+		if (!strcmp(error, "nd_cache_error"))
+			error = "nd_favorites_cache_error";
+		else if (!strcmp(error, "nd_sync_cancelled"))
+			error = "nd_favorites_cancelled";
+		else if (!strcmp(error, "nd_sync_inconsistent"))
+			error = "nd_favorites_inconsistent";
+	}
 	pthread_mutex_lock(&lock);
 	sync_owners--;
 	pthread_cond_broadcast(&io_drained);
 	if (current(job)) {
 		if (job->card_epoch == g.card_epoch) {
 			if (published)
-				g.library = result;
-			g.library.syncing = false;
-			g.library.error = error;
+				*state = result;
+			state->syncing = false;
+			state->error = error;
 		}
 		if (error && (!strcmp(error, "nd_auth_error") || !strcmp(error, "nd_network_error") || !strcmp(error, "nd_tls_error"))) {
 			g.connected = false;
@@ -619,10 +638,10 @@ static void sync_run(const job_t *job, const nd_record_t *record, const char *pa
 	}
 	pthread_mutex_unlock(&lock);
 	if (initialized) {
-		nd_log("navidrome: sync metrics requests=%zu reductions=%zu discarded=%zu commits=%zu opens=%zu reuses=%zu encoded_bytes=%zu decoded_bytes=%zu slot_peak=%d buffer_peak=%zu album_pages=%zu track_pages=%zu artist_pages=%zu genre_pages=%zu accepted_rows=%zu\n", pool.requests, pool.reductions, pool.discarded, pool.commits, pool.opens, pool.reuses, pool.encoded, pool.decoded, pool.workers, pool.buffer_peak * pool.workers, pool.accepted_pages[0], pool.accepted_pages[1], pool.accepted_pages[2], pool.accepted_pages[3], pool.accepted_rows);
-		nd_log("navidrome: sync timing elapsed_ms=%.3f connect_worker_ms=%.3f transfer_decode_worker_ms=%.3f parse_worker_ms=%.3f wait_ms=%.3f import_ms=%.3f validation_ms=%.3f publication_ms=%.3f cleanup_ms=%.3f tls_separate=unavailable commit_separate=unavailable\n", (sync_now() - start) * 1000, pool.connect_seconds * 1000, pool.transfer_seconds * 1000, pool.parse_seconds * 1000, pool.wait_seconds * 1000, pool.import_seconds * 1000, validation_seconds * 1000, publish_seconds * 1000, cleanup_seconds * 1000);
+		nd_log("navidrome: %s metrics requests=%zu reductions=%zu discarded=%zu commits=%zu opens=%zu reuses=%zu encoded_bytes=%zu decoded_bytes=%zu slot_peak=%d buffer_peak=%zu album_pages=%zu track_pages=%zu artist_pages=%zu genre_pages=%zu accepted_rows=%zu\n", operation, pool.requests, pool.reductions, pool.discarded, pool.commits, pool.opens, pool.reuses, pool.encoded, pool.decoded, pool.workers, pool.buffer_peak * pool.workers, pool.accepted_pages[0], pool.accepted_pages[1], pool.accepted_pages[2], pool.accepted_pages[3], pool.accepted_rows);
+		nd_log("navidrome: %s timing elapsed_ms=%.3f connect_worker_ms=%.3f transfer_decode_worker_ms=%.3f parse_worker_ms=%.3f wait_ms=%.3f import_ms=%.3f validation_ms=%.3f publication_ms=%.3f cleanup_ms=%.3f tls_separate=unavailable commit_separate=unavailable\n", operation, (sync_now() - start) * 1000, pool.connect_seconds * 1000, pool.transfer_seconds * 1000, pool.parse_seconds * 1000, pool.wait_seconds * 1000, pool.import_seconds * 1000, validation_seconds * 1000, publish_seconds * 1000, cleanup_seconds * 1000);
 	}
-	nd_log("navidrome: sync finish published=%d result=%s\n", published, error ? error : "ok");
+	nd_log("navidrome: %s finish published=%d result=%s\n", operation, published, error ? error : "ok");
 }
 
 static void *work(void *unused) {
@@ -657,9 +676,11 @@ static void *work(void *unused) {
 		memcpy(password, g.password, sizeof(password));
 		bool configured = g.configured;
 		pthread_mutex_unlock(&lock);
-		if (job.kind == JOB_CACHE || job.kind == JOB_SYNC) {
+		if (job.kind == JOB_CACHE || job.kind == JOB_SYNC || job.kind == JOB_FAVORITES) {
 			if (job.kind == JOB_CACHE)
 				cache_refresh(&job, &r);
+			else if (job.kind == JOB_FAVORITES)
+				sync_run(&job, &r, password);
 			else
 				sync_run(&job, &r, password);
 			nd_wipe(&job, sizeof(job));
@@ -998,7 +1019,7 @@ static void clear_secrets(void) {
 	g.generation++;
 	g.local_epoch++;
 	g.offer = 0;
-	g.library.syncing = false;
+	g.library.syncing = g.favorites.syncing = false;
 	g.unlocked = g.connected = g.checking = g.busy = g.pending = false;
 	nd_wipe(&g.job, sizeof(g.job));
 	nd_wipe(g.key, sizeof(g.key));
@@ -1040,7 +1061,7 @@ void navidrome_poll_network(void) {
 			g.stop_playback_network();
 		g.generation++;
 		g.connected = g.checking = g.busy = false;
-		g.library.syncing = false;
+		g.library.syncing = g.favorites.syncing = false;
 		g.error = "nd_wifi_error";
 	}
 	pthread_mutex_unlock(&lock);
@@ -1113,15 +1134,16 @@ void navidrome_set_root(const char *root) {
 	while (cache_users || sync_owners)
 		pthread_cond_wait(&io_drained, &lock);
 	memset(&g.library, 0, sizeof(g.library));
+	memset(&g.favorites, 0, sizeof(g.favorites));
 	g.cache_pending = true;
-	g.library.loading = true;
+	g.library.loading = g.favorites.loading = true;
 	if (!g.started && g.initialized && !g.stop) {
 		if (pthread_create(&worker, NULL, work, NULL) == 0)
 			g.started = true;
 		else {
 			g.cache_pending = false;
-			g.library.loading = false;
-			g.library.error = "nd_worker_error";
+			g.library.loading = g.favorites.loading = false;
+			g.library.error = g.favorites.error = "nd_worker_error";
 		}
 	}
 	pthread_cond_signal(&ready);
@@ -1129,12 +1151,13 @@ void navidrome_set_root(const char *root) {
 	notify();
 }
 
-void navidrome_library_snapshot(nd_library_t *out) {
+static void source_snapshot(nd_library_t *out, bool favorites) {
 	pthread_mutex_lock(&lock);
-	*out = g.library;
+	*out = favorites ? g.favorites : g.library;
+	out->favorites = favorites;
 	out->epoch = g.local_epoch;
 	out->card_epoch = g.card_epoch;
-	out->offer = g.offer;
+	out->offer = favorites ? 0 : g.offer;
 	if (!g.unlocked) {
 		out->ready = false;
 		out->offer = 0;
@@ -1143,6 +1166,46 @@ void navidrome_library_snapshot(nd_library_t *out) {
 		out->finished = 0;
 	}
 	pthread_mutex_unlock(&lock);
+}
+
+void navidrome_library_snapshot(nd_library_t *out) { source_snapshot(out, false); }
+void navidrome_favorites_snapshot(nd_library_t *out) { source_snapshot(out, true); }
+
+bool navidrome_favorites_refresh(void) {
+	navidrome_poll_network();
+	job_t job = {.kind = JOB_FAVORITES};
+	pthread_mutex_lock(&lock);
+	bool ok = g.unlocked && g.connected && g.favorites.writable && *g.favorites.path && *g.favorites.scope && submit(&job);
+	if (ok) {
+		g.sync_cancel = false;
+		g.favorites.syncing = true;
+		g.favorites.stage = g.favorites.fetched = 0;
+		g.favorites.error = NULL;
+	}
+	pthread_mutex_unlock(&lock);
+	notify();
+	return ok;
+}
+
+bool navidrome_favorites_adopt(const nd_context_t *c, const nd_library_t *cache) {
+	pthread_mutex_lock(&lock);
+	bool ok = !g.stop && g.unlocked && c->profile_epoch == g.profile_epoch && c->epoch == g.local_epoch && c->card_epoch == g.card_epoch && !strcmp(cache->path, g.favorites.path) && !strcmp(cache->scope, g.favorites.scope);
+	if (ok) {
+		g.favorites = *cache;
+		g.revision++;
+	}
+	pthread_mutex_unlock(&lock);
+	if (ok)
+		notify();
+	return ok;
+}
+
+void navidrome_favorites_cancel(void) {
+	pthread_mutex_lock(&lock);
+	if (g.favorites.syncing)
+		g.sync_cancel = true;
+	pthread_mutex_unlock(&lock);
+	notify();
 }
 
 bool navidrome_sync(void) {
@@ -1252,7 +1315,7 @@ bool navidrome_playback_publish(const nd_context_t *c, const char *temp, const c
 
 bool navidrome_playback_pin(const nd_library_t *library) {
 	pthread_mutex_lock(&lock);
-	bool ok = !g.stop && g.unlocked && library->ready && library->epoch == g.local_epoch && library->card_epoch == g.card_epoch && library->generation == g.library.generation && !strcmp(library->scope, g.library.scope) && nd_store_retain(library->scope, library->generation);
+	bool ok = !g.stop && g.unlocked && library->ready && library->epoch == g.local_epoch && library->card_epoch == g.card_epoch && library->generation == (library->favorites ? g.favorites.generation : g.library.generation) && !strcmp(library->scope, library->favorites ? g.favorites.scope : g.library.scope) && nd_store_retain(library->scope, library->generation);
 	pthread_mutex_unlock(&lock);
 	return ok;
 }

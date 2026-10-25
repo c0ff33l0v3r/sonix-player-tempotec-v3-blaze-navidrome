@@ -70,6 +70,8 @@
 #include "src/gui/shell/uiscale.h"
 #include "src/gui/streaming/navidromeart.h"
 #include "src/system/streaming/navidromeplay.h"
+#include "src/system/streaming/navidromestars.h"
+#include "src/gui/streaming/navidromestar.h"
 
 lv_obj_t *player_screen;
 
@@ -4189,7 +4191,11 @@ static void update_fav_button(void) {
 	device_state_t source_state;
 	device_state_get(&source_state);
 	if (fav_btn_obj)
-		lv_obj_set_state(fav_btn_obj, LV_STATE_DISABLED, nd_audio_owns(source_state.current_file));
+		lv_obj_set_state(fav_btn_obj, LV_STATE_DISABLED, false);
+	if (fav_btn_icon)
+		lv_obj_set_style_opa(fav_btn_icon, LV_OPA_COVER, 0);
+	if (navidromestar_player_update(fav_btn_obj, fav_btn_icon, source_state.current_file, layout_alt_now ? alt_ink() : lv_color_make(150, 150, 150)))
+		return;
 	if (!fav_btn_icon) {
 		return;
 	}
@@ -4282,7 +4288,7 @@ static void fav_btn_event_cb(lv_event_t *e) {
 	(void)e;
 	device_state_t source_state;
 	device_state_get(&source_state);
-	if (nd_audio_owns(source_state.current_file))
+	if (navidromestar_player_toggle(source_state.current_file, update_fav_button))
 		return;
 
 	radio_station_t station;
@@ -4611,6 +4617,7 @@ static const char *const PROF_UP_REMEMBER = "up_remember_note";
 
 static void update_progress(void) {
 	navidromeplay_tick();
+	navidrome_star_poll();
 	// Auto-advance or loop the folder when the track has played through.
 	if (device_state_take_completion()) {
 		handle_track_finished();
@@ -4618,6 +4625,8 @@ static void update_progress(void) {
 
 	device_state_t state;
 	device_state_get(&state);
+	if (nd_audio_owns(state.current_file))
+		update_fav_button();
 
 	// The live source moves under the player: the station's own name comes
 	// with the connection, the on-air title arrives later and keeps changing,
@@ -5266,6 +5275,10 @@ void player_refresh_artist(void) {
 	scrolltext_set(song_artist_label, metadata_shown_artist(&state.metadata));
 	lyrics_head_sync();
 	alt_pills_sync();
+}
+
+void player_refresh_favorite(void) {
+	update_fav_button();
 }
 
 // Public face of refresh_now_playing, for callers that started playback

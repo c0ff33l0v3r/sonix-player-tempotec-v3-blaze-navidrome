@@ -39,6 +39,11 @@ const char *navidrome_feedback(const navidrome_snapshot_t *snapshot);
 
 void navidrome_set_root(const char *root);
 void navidrome_library_snapshot(nd_library_t *out);
+void navidrome_favorites_snapshot(nd_library_t *out);
+bool navidrome_favorites_refresh(void);
+void navidrome_favorites_cancel(void);
+// Adopt a committed incremental revision without revoking playback/action lifetimes.
+bool navidrome_favorites_adopt(const nd_context_t *context, const nd_library_t *cache);
 bool navidrome_sync(void);
 void navidrome_sync_cancel(void);
 void navidrome_sync_offer_consume(unsigned offer);

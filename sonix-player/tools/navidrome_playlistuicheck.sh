@@ -20,7 +20,7 @@ ${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -O1 -g \
     tools/navidrome_playlistuicheck.c tools/navidrome_test_support.c lvgl/src/font/lv_font_unscii_8.c \
     src/system/streaming/navidromedebug.c src/system/streaming/navidrome.c src/system/streaming/navidromeapi.c src/system/streaming/navidromebatch.c \
     src/system/streaming/navidromeplaylists.c src/system/streaming/navidromeplayliststore.c src/system/core/sha256.c \
-    src/system/streaming/navidromestore.c src/system/streaming/navidromelibrary.c \
+    src/system/streaming/navidromestars.c src/system/streaming/navidromestore.c src/system/streaming/navidromelibrary.c \
     src/system/streaming/navidromecrypto.c src/system/streaming/navidromevault.c \
     src/system/net/gzip.c src/system/image/png_scaled.c src/gb/miniz/miniz.c src/system/net/http.c src/system/net/tls.c src/system/core/json.c src/system/core/md5.c "$check_sqlite" \
     @"$check_dir/lvgl-objects" -pthread -ldl -lm $(pkg-config --libs freetype2 sdl2) \

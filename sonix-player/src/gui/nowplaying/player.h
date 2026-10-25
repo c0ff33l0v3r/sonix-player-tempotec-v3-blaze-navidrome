@@ -21,6 +21,9 @@ void player_play_file(const char *filepath);
 // playback).
 void player_refresh_now_playing(void);
 
+// Repaints only the favourite control on the GUI thread, preserving progress.
+void player_refresh_favorite(void);
+
 // Redraws only the artist line, after "Use track artist" has been switched.
 void player_refresh_artist(void);
 

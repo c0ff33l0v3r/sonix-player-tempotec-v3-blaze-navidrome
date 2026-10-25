@@ -164,16 +164,49 @@ into `.local/navidrome/.cache/` when the card is writable. Read-only legacy card
 remain usable until they can migrate. Credentials and diagnostic logs retain
 their existing locations.
 
+**Favorites** opens cached **Albums** and **Tracks** lists. Album, track, and artist
+favorites are independent: starring an album does not star its tracks. Successful
+Add/Remove actions update the corresponding saved list and count automatically;
+there is no extra Refresh step for changes made on this player. Use **Refresh**
+to discover favorites changed through the server web interface or other devices.
+Refresh keeps its own last-successful time and uses the same bounded parallel
+fetch pipeline, compressed responses and reused connections as Sync Library.
+It may inspect the accessible song catalogue; it downloads no audio or bulk art.
+
+Favorites works without a prior Sync Library. Items saved by this player can be
+browsed before the first full Refresh, with guidance that other server favorites
+have not been enumerated yet. Saved changes and complete album contents remain
+available offline after restart once credentials are available. Newly favorited
+albums reuse available metadata or show a loading state while their track details
+are fetched. Unavailable details offer **Retry cache update** in the album menu.
+A failed/cancelled Refresh preserves saved player changes and the previous base.
+
+Favorite controls follow Music: long-press tracks or albums and use the star-plus
+selection button, or use the single **Add to favorites / Remove from favorites**
+action in a row's three-dot menu. Album and artist actions favorite that exact
+item. Now Playing acts directly on the current track and updates its star silently;
+list/selection success uses Music's green check. Writes need available credentials
+and an existing connection, and only confirmed items acquire saved favorite state.
+Selected-item failures stop further submissions without retrying successful writes.
+An uncertain server response is resolved on the next deliberate favorite action.
+
+If the server saves a favorite but card/cache storage fails, the confirmed star
+remains and separate cache feedback explains what was not saved locally. Retry
+updates only the cache/details; it does not resend the successful favorite request.
+Browsing, playback and captured queues remain independent. Artist state is saved
+without adding an Artists category. Disposable Favorites data lives in
+`.local/navidrome/.cache/favorites.db` alongside other caches.
+
 Show album opens the exact Navidrome album. Show artist is unavailable when the
-snapshot has no authoritative primary artist ID. Server favourites,
-search results, lyrics integration, and listening reports remain deferred.
+snapshot has no authoritative primary artist ID. Search results, lyrics
+integration, and listening reports remain deferred.
 
 Navidrome → **Playlists** stores playlists of Navidrome track references on the
 selected card. Like Music’s Playlists page, it starts with a **New playlist** row
 and shows playlist icons and track counts; **Import from Navidrome** is in the header.
 Local copies open and can be renamed or edited offline with available credentials. They
-remain available without a library snapshot; adding library tracks needs a
-complete snapshot. Read-only cards permit browsing but cannot save edits.
+remain available without a library snapshot; adding tracks uses a complete
+matching library or Favorites snapshot. Read-only cards permit browsing but cannot save edits.
 
 Track and album menus offer **Add to playlist**. Long press a track or album to
 select several, then use the list-plus action. Albums append their individual

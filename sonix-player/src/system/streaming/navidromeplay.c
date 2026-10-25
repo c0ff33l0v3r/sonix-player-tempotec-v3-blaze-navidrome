@@ -55,6 +55,13 @@ static source_t *queue_source, *meta_source;
 static int meta_entry;
 static char current_path[512], current_ref[80], ahead_refs[2][80], ahead_paths[2][512];
 static nd_playrow_t current_track;
+typedef struct {
+	source_t *source;
+	nd_playrow_t row;
+	int64_t generation;
+} annotation_t;
+static annotation_t *annotation_pending, *annotation_fallback;
+static int64_t annotation_revision;
 static unsigned prefetch_revision;
 static char failed_refs[4][80];
 static unsigned failed_next;
@@ -185,6 +192,7 @@ static void result_done(void *user) {
 	snprintf(current_path, sizeof(current_path), "%s", r->path);
 	snprintf(current_ref, sizeof(current_ref), "%s", job->ref);
 	current_track = r->row;
+	annotation_revision = -1;
 	protections();
 	song_metadata_t meta = r->metadata;
 	metadata(&r->row, &meta);
@@ -212,6 +220,22 @@ static void deliver_result(result_t *r) {
 		free(old);
 	}
 }
+// Called with a short playback storage lease, never on the GUI thread.
+static void cached_favorite(source_t *s, nd_playrow_t *row) {
+	if (!row->row.id[0])
+		return;
+	row->row.favorite = false;
+	row->row.favorite_known = false;
+	nd_library_t favorites;
+	navidrome_favorites_snapshot(&favorites);
+	if (!favorites.ready || favorites.card_epoch != s->context.card_epoch || strcmp(favorites.scope, s->library.scope))
+		return;
+	nd_store_t store = {0};
+	if (nd_store_open_source(&store, favorites.path, favorites.scope, false, false, true))
+		row->row.favorite_known = nd_store_annotation(&store, favorites.generation, ND_TRACKS, row->row.id, &row->row.favorite);
+	nd_store_close(&store);
+}
+
 static void ready(const char *path, void *user) {
 	job_t *job = user;
 	result_t *r = calloc(1, sizeof(*r));
@@ -223,9 +247,10 @@ static void ready(const char *path, void *user) {
 	source_t *s = job->source;
 	if (navidrome_playback_begin(&s->context)) {
 		nd_store_t store;
-		if (nd_store_open(&store, s->library.path, s->library.scope, false, false))
+		if (nd_store_open_source(&store, s->library.path, s->library.scope, false, false, s->library.favorites))
 			nd_store_play_row(&store, s->library.generation, s->handles[job->entry], &r->row);
 		nd_store_close(&store);
+		cached_favorite(s, &r->row);
 		metadata_read(path, &r->metadata);
 		navidrome_cache_end();
 	}
@@ -237,8 +262,10 @@ static bool read_row(source_t *s, int entry, nd_playrow_t *row) {
 	if (entry < 0 || entry >= s->count || !navidrome_playback_begin(&s->context))
 		return false;
 	nd_store_t store;
-	bool ok = nd_store_open(&store, s->library.path, s->library.scope, false, false) && nd_store_play_row(&store, s->library.generation, s->handles[entry], row);
+	bool ok = nd_store_open_source(&store, s->library.path, s->library.scope, false, false, s->library.favorites) && nd_store_play_row(&store, s->library.generation, s->handles[entry], row);
 	nd_store_close(&store);
+	if (ok)
+		cached_favorite(s, row);
 	navidrome_cache_end();
 	return ok;
 }
@@ -317,7 +344,7 @@ static void *work(void *unused) {
 				error = "nd_audio_cancelled";
 			else {
 				nd_store_t store;
-				bool ok = nd_store_open(&store, s->library.path, s->library.scope, false, false) && nd_store_play_index(&store, s->library.generation, &s->query, s->selected, &s->handles, &s->count, &s->start);
+				bool ok = nd_store_open_source(&store, s->library.path, s->library.scope, false, false, s->library.favorites) && nd_store_play_index(&store, s->library.generation, &s->query, s->selected, &s->handles, &s->count, &s->start);
 				nd_store_close(&store);
 				navidrome_cache_end();
 				if (!ok)
@@ -362,16 +389,48 @@ static void *work(void *unused) {
 	}
 	return NULL;
 }
+static void annotation_done(void *data) {
+	annotation_t *a = data;
+	nd_library_t favorites;
+	navidrome_favorites_snapshot(&favorites);
+	if (queue_source == a->source && favorites.generation == a->generation && navidrome_playback_current(&a->source->context, false) && !strcmp(current_track.row.id, a->row.row.id)) {
+		current_track.row.favorite = a->row.row.favorite;
+		current_track.row.favorite_known = a->row.row.favorite_known;
+		player_refresh_favorite();
+	}
+	release(a->source);
+	free(a);
+}
 static void *metadata_work(void *unused) {
 	(void)unused;
 	thread_be_background("navidrome queue metadata");
 	for (;;) {
 		pthread_mutex_lock(&lock);
-		while (!meta_source && !quitting)
+		while (!meta_source && !annotation_pending && !quitting)
 			pthread_cond_wait(&meta_wake, &lock);
 		if (quitting) {
 			pthread_mutex_unlock(&lock);
 			break;
+		}
+		if (annotation_pending) {
+			annotation_t *a = annotation_pending;
+			annotation_pending = NULL;
+			pthread_mutex_unlock(&lock);
+			if (navidrome_playback_begin(&a->source->context)) {
+				cached_favorite(a->source, &a->row);
+				navidrome_cache_end();
+			}
+			if (!gui_post(annotation_done, a)) {
+				pthread_mutex_lock(&lock);
+				annotation_t *old = annotation_fallback;
+				annotation_fallback = a;
+				pthread_mutex_unlock(&lock);
+				if (old) {
+					release(old->source);
+					free(old);
+				}
+			}
+			continue;
 		}
 		source_t *s = meta_source;
 		int first = meta_entry > ND_WINDOW / 2 ? meta_entry - ND_WINDOW / 2 : 0;
@@ -528,7 +587,7 @@ bool navidromeplay_next_ready(char *path, size_t cap) {
 	return false;
 }
 bool navidromeplay_track(const char *path, nd_playrow_t *track, nd_library_t *library) {
-	if (!path || !current_path[0] || strcmp(path, current_path) || !queue_source)
+	if (!path || !current_path[0] || strcmp(path, current_path) || !queue_source || !navidrome_playback_current(&queue_source->context, false))
 		return false;
 	if (track)
 		*track = current_track;
@@ -546,9 +605,36 @@ void navidromeplay_tick(void) {
 	pthread_mutex_lock(&lock);
 	result_t *result = fallback_result;
 	fallback_result = NULL;
+	annotation_t *annotation = annotation_fallback;
+	annotation_fallback = NULL;
 	pthread_mutex_unlock(&lock);
 	if (result)
 		result_done(result);
+	if (annotation)
+		annotation_done(annotation);
+	if (queue_source && current_track.row.id[0]) {
+		nd_library_t favorites;
+		navidrome_favorites_snapshot(&favorites);
+		if (favorites.generation != annotation_revision) {
+			annotation_t *a = calloc(1, sizeof(*a));
+			if (a) {
+				a->source = queue_source;
+				retain(a->source);
+				a->row = current_track;
+				a->generation = favorites.generation;
+				annotation_revision = favorites.generation;
+				pthread_mutex_lock(&lock);
+				annotation_t *old = annotation_pending;
+				annotation_pending = a;
+				pthread_cond_signal(&meta_wake);
+				pthread_mutex_unlock(&lock);
+				if (old) {
+					release(old->source);
+					free(old);
+				}
+			}
+		}
+	}
 	trackmenu_source_metadata_ready(NULL);
 	pthread_mutex_lock(&lock);
 	bool revoked = invalidated;
@@ -663,6 +749,16 @@ void navidromeplay_shutdown(void) {
 		release(next_job.source);
 	release(meta_source);
 	meta_source = NULL;
+	if (annotation_pending) {
+		release(annotation_pending->source);
+		free(annotation_pending);
+		annotation_pending = NULL;
+	}
+	if (annotation_fallback) {
+		release(annotation_fallback->source);
+		free(annotation_fallback);
+		annotation_fallback = NULL;
+	}
 	pending = false;
 	if (fallback_result) {
 		release(fallback_result->job.source);

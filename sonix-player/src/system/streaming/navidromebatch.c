@@ -206,7 +206,7 @@ static bool object(page_parser_t *p, int role) {
 			if (!once(p, SEEN_STATUS) || !token(p) || !string(p, p->status, sizeof(p->status)))
 				return false;
 			goto member_done;
-		} else if (role == WRAPPER && !strcmp(key, p->batch->kind == ND_GENRES ? "genres" : "searchResult3")) {
+		} else if (role == WRAPPER && !strcmp(key, p->batch->favorites && p->batch->kind == ND_ALBUMS ? "albumList2" : p->batch->kind == ND_GENRES ? "genres" : "searchResult3")) {
 			if (!once(p, SEEN_RESULT))
 				return false;
 			child = RESULT;
