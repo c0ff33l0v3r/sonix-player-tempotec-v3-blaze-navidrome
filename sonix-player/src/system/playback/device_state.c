@@ -30,12 +30,14 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include "src/system/streaming/navidromeplay.h"
 
 // Cache of the currently loaded track's metadata, refreshed whenever a new
 // file is loaded via device_state_play_file(). Only ever touched from the
 // LVGL/UI thread (same as the rest of player.c today), so no lock needed.
 static song_metadata_t current_metadata;
 static char current_metadata_file[512] = {0};
+static double prepared_duration;
 
 // ---------------------------------------------------------------------------
 // "Remember track": where playback was, kept across a power cycle
@@ -149,10 +151,7 @@ static bool remember_enabled(void) { return config_get_int("player", "remember_t
 
 // A track this player must not offer to come back to: a live stream has no
 // position, and a streaming cache file will not exist at the next boot.
-static bool remember_worth_saving(const device_state_t *state) {
-	return !state->live && state->current_file[0] && !qobuzcache_owns(state->current_file) &&
-		   !tidalcache_owns(state->current_file);
-}
+static bool remember_worth_saving(const device_state_t *state) { return !playlist_has_source() && !nd_audio_owns(state->current_file) && !state->live && state->current_file[0] && !qobuzcache_owns(state->current_file) && !tidalcache_owns(state->current_file); }
 
 void device_state_remember_restored(const char *path, double position) {
 	snprintf(remember.file, sizeof(remember.file), "%s", path ? path : "");
@@ -274,6 +273,8 @@ void device_state_get(device_state_t *out) {
 		out->status = audio_get_status();
 		audio_get_current_file(out->current_file, sizeof(out->current_file));
 		audio_get_progress(&out->progress_current_secs, &out->progress_total_secs);
+		if (nd_audio_owns(out->current_file) && out->progress_total_secs <= 0)
+			out->progress_total_secs = prepared_duration;
 
 		// While a skip button is held the position shown is the one the thumb
 		// has run to, not the one the decoder is at: the seek itself happens
@@ -549,9 +550,7 @@ static prefetch_slot_t *prefetch_find(const char *path) {
 
 // Files that are still being written (a streaming cache) or that are not
 // files at all must never be read ahead of time.
-static bool prefetch_allowed(const char *path) {
-	return path[0] == '/' && !qobuzcache_owns(path) && !tidalcache_owns(path) && !podcastcache_is_episode(path);
-}
+static bool prefetch_allowed(const char *path) { return path[0] == '/' && !nd_audio_owns(path) && !qobuzcache_owns(path) && !tidalcache_owns(path) && !podcastcache_is_episode(path); }
 
 static void *prefetch_thread(void *arg) {
 	(void)arg;
@@ -734,6 +733,8 @@ static void queue_save_query_form(const library_index_spec_t *spec) {
 }
 
 static void queue_persist(void) {
+	if (playlist_has_source() || nd_audio_owns(current_metadata_file))
+		return;
 	int count = playlist_count();
 	int current = playlist_current_index();
 	if (count <= 0 || current < 0) {
@@ -904,7 +905,7 @@ static void history_leave_for(const char *next, double position) {
 // pressed.
 static void note_started(bool restored) {
 	snprintf(started_file, sizeof(started_file), "%s", current_metadata_file);
-	bool kept_out = audiobook_is_playing() || podcastcache_is_episode(current_metadata_file) || dlna_owns_path(current_metadata_file);
+	bool kept_out = playlist_has_source() || nd_audio_owns(current_metadata_file) || audiobook_is_playing() || podcastcache_is_episode(current_metadata_file) || dlna_owns_path(current_metadata_file);
 	playhistory_started(current_metadata_file, current_metadata.title, metadata_shown_artist(&current_metadata), kept_out, restored);
 }
 
@@ -936,8 +937,15 @@ static const char *const PROF_BOOK = "play_audiobook_check";
 static const char *const PROF_RG = "play_replaygain";
 static const char *const PROF_START = "play_audio_start";
 static const char *const PROF_PERSIST = "play_queue_persist";
+static const song_metadata_t *prepared_metadata;
+static bool prepared_paused;
 
 static void load_and_play_at(const char *filepath, double position) {
+	if (!navidromeplay_prepare(filepath))
+		return;
+	navidromeplay_other(filepath);
+	if (!prepared_metadata)
+		prepared_duration = 0;
 	// A position picked on the outgoing track means nothing on this one, and
 	// the track can change under a held button -- the queue advances on its
 	// own when the outgoing one ends.
@@ -957,7 +965,9 @@ static void load_and_play_at(const char *filepath, double position) {
 	}
 
 	frameprof_begin(PROF_META);
-	if (!prefetch_take_meta(current_metadata_file, &current_metadata)) {
+	if (prepared_metadata)
+		current_metadata = *prepared_metadata;
+	else if (!prefetch_take_meta(current_metadata_file, &current_metadata)) {
 		metadata_read(current_metadata_file, &current_metadata);
 	}
 	frameprof_end(PROF_META);
@@ -989,7 +999,9 @@ static void load_and_play_at(const char *filepath, double position) {
 		position = podcast_resume(current_metadata_file);
 	}
 	frameprof_begin(PROF_START);
-	if (position > 0) {
+	if (prepared_metadata && prepared_paused) {
+		audio_play_paused(current_metadata_file, 0);
+	} else if (position > 0) {
 		audio_play_at(current_metadata_file, position);
 	} else {
 		audio_play(current_metadata_file);
@@ -1008,6 +1020,22 @@ static void load_and_play_at(const char *filepath, double position) {
 }
 
 static void load_and_play(const char *filepath) { load_and_play_at(filepath, -1.0); }
+
+void device_state_play_prepared(const char *path, const song_metadata_t *meta, bool paused, double duration) {
+	prepared_duration = duration;
+	prepared_metadata = meta;
+	prepared_paused = paused;
+	load_and_play(path);
+	prepared_metadata = NULL;
+	prepared_paused = false;
+}
+
+void device_state_clear_prepared(void) {
+	audio_stop();
+	current_metadata_file[0] = 0;
+	prepared_duration = 0;
+	memset(&current_metadata, 0, sizeof(current_metadata));
+}
 
 // The same without starting: the track comes up paused at its beginning, and
 // play starts it. The queue is left as it is.
@@ -1677,6 +1705,8 @@ static bool play_folder_beside(const char *file, bool forward) {
 // instruction to stay put; a key pressed on purpose is not the end of a queue
 // and does not.
 static bool chain_beside(bool forward) {
+	if (playlist_has_source())
+		return false;
 	const char *album = playlist_album();
 	if (album && album[0] && device_state_album_chaining()) {
 		char held[256];
@@ -1749,6 +1779,8 @@ bool device_state_advance_auto(char *out_path, size_t out_size) {
 		playhistory_left();
 		return false;
 	}
+	if (!navidromeplay_auto(path))
+		return false;
 
 	load_and_play(path);
 
@@ -1783,7 +1815,7 @@ void device_state_read_ahead(double position, double total) {
 	}
 
 	char next[512];
-	if (!playlist_peek_auto(next, sizeof(next)) || strcmp(next, current_metadata_file) == 0) {
+	if (!(playlist_has_source() ? navidromeplay_next_ready(next, sizeof(next)) : playlist_peek_auto(next, sizeof(next))) || strcmp(next, current_metadata_file) == 0) {
 		return; // nothing next, or this track again, which is already read
 	}
 	// Asked once per track: the poll comes round twice a second.
@@ -1801,6 +1833,8 @@ void device_state_read_ahead(double position, double total) {
 // only the second moves on. Cheap to check, and it makes every manual advance
 // immune to the drift instead of hunting each source of it.
 static void playlist_resync_to_current(void) {
+	if (playlist_has_source())
+		return; // the stable queue reference differs from the resolved audio path
 	if (!current_metadata_file[0]) {
 		return;
 	}
@@ -1895,9 +1929,18 @@ bool device_state_prev(char *out_path, size_t out_size) {
 	return true;
 }
 
-bool device_state_take_completion(void) { return audio_take_completion(); }
+bool device_state_take_completion(void) {
+	bool complete = audio_take_completion();
+	return complete && !nd_audio_failed(current_metadata_file);
+}
 
 audio_status_t device_state_toggle_play_pause(void) {
+	bool playing;
+	if (navidromeplay_toggle_pending(&playing)) {
+		if (!playing)
+			audio_pause();
+		return playing ? AUDIO_STATUS_PLAYING : AUDIO_STATUS_PAUSED;
+	}
 	// A live stream cannot be paused: there is no position to come back to,
 	// and starting again means reconnecting. Whoever pressed play/pause --
 	// the player's button, the control centre, the physical key -- means
@@ -1939,6 +1982,13 @@ audio_status_t device_state_toggle_play_pause(void) {
 		return AUDIO_STATUS_PLAYING;
 	case AUDIO_STATUS_STOPPED:
 	default:
+		if (nd_audio_owns(current_metadata_file) && playlist_has_source()) {
+			char reference[80];
+			if (playlist_current_path(reference, sizeof(reference)) && navidromeplay_reference(reference)) {
+				navidromeplay_prepare(reference);
+				return AUDIO_STATUS_PLAYING;
+			}
+		}
 		// Playback ended (or was stopped): restart the currently-loaded track
 		// from the beginning so pressing play always plays the shown song --
 		// unless the engine was stopped by the storage going away rather than
@@ -2063,7 +2113,10 @@ void device_state_seek(double seconds) {
 	audio_seek(seconds);
 }
 
-void device_state_stop(void) { audio_stop(); }
+void device_state_stop(void) {
+	navidromeplay_stop();
+	audio_stop();
+}
 
 void device_state_set_volume(long volume) { set_volume(volume); }
 

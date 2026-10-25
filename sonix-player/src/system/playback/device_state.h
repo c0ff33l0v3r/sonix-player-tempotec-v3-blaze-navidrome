@@ -198,6 +198,10 @@ void device_state_scrub_by(double delta);
 void device_state_scrub_commit(void);
 bool device_state_scrub_active(double *position_out);
 void device_state_stop(void);
+// GUI commit of worker-prepared audio; preserves the source-backed queue and
+// supplies metadata without opening tag files on the GUI thread.
+void device_state_play_prepared(const char *path, const song_metadata_t *metadata, bool paused, double duration);
+void device_state_clear_prepared(void);
 
 // Call just before stopping playback because the storage it is reading from is
 // being taken away -- the card removed, or exported to a computer. It notes

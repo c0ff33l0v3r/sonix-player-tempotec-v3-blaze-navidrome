@@ -46,3 +46,12 @@ void cover_free(cover_image_t *image) {
 	stbi_image_free(image->pixels);
 	memset(image, 0, sizeof(*image));
 }
+
+// This fixture validates cache decoding/ownership, not blur rendering.
+bool cover_blur_fill(const cover_image_t *src, int width, int height, cover_image_t *out) {
+	(void)src;
+	(void)width;
+	(void)height;
+	memset(out, 0, sizeof(*out));
+	return false;
+}

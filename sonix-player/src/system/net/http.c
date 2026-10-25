@@ -1,6 +1,7 @@
 #define _GNU_SOURCE 1
 
 #include "http.h"
+#include <ctype.h>
 
 #include "src/system/core/lang.h"
 #include "src/system/net/tls.h"
@@ -40,11 +41,14 @@ static __thread char last_final_url[2600];
 
 const char *http_last_final_url(void) { return last_final_url; }
 
+static void wipe_stream_request(void *data, size_t size) {
+	volatile unsigned char *p = data;
+	while (size--)
+		*p++ = 0;
+}
 void http_clear_request_metadata(void) {
-	volatile char *p = last_final_url;
-	for (size_t i = 0; i < sizeof(last_final_url); i++) p[i] = 0;
-	p = last_error;
-	for (size_t i = 0; i < sizeof(last_error); i++) p[i] = 0;
+	wipe_stream_request(last_final_url, sizeof(last_final_url));
+	wipe_stream_request(last_error, sizeof(last_error));
 }
 
 static void clear_last_error(void) {
@@ -299,7 +303,7 @@ static void conn_close(conn_t *c) {
 // the reason a handshake failed, which is worth carrying up: "expired
 // certificate" almost always means the device clock is wrong, and that is
 // something the user can fix.
-static bool conn_open(conn_t *c, const url_t *u, int timeout_secs, char *err, size_t err_size) {
+static bool conn_open(conn_t *c, const url_t *u, int timeout_secs, char *err, size_t err_size, bool sensitive) {
 	c->fd = -1;
 	c->tls = NULL;
 	if (err && err_size) {
@@ -308,8 +312,10 @@ static bool conn_open(conn_t *c, const url_t *u, int timeout_secs, char *err, si
 
 	c->fd = connect_to(u->host, u->port, timeout_secs);
 	if (c->fd < 0) {
-		fprintf(stderr, "http: cannot reach %s:%d (%s)\n", u->host, u->port,
-				http_last_error() ? http_last_error() : "?");
+		if (sensitive)
+			fprintf(stderr, "http: protected connection failed\n");
+		else
+			fprintf(stderr, "http: cannot reach %s:%d (%s)\n", u->host, u->port, http_last_error() ? http_last_error() : "?");
 		return false;
 	}
 
@@ -319,7 +325,10 @@ static bool conn_open(conn_t *c, const url_t *u, int timeout_secs, char *err, si
 
 	c->tls = tls_client(c->fd, u->host, err, err_size);
 	if (!c->tls) {
-		fprintf(stderr, "http: TLS to %s failed: %s\n", u->host, (err && err[0]) ? err : "?");
+		if (sensitive)
+			fprintf(stderr, "http: protected TLS failed\n");
+		else
+			fprintf(stderr, "http: TLS to %s failed: %s\n", u->host, (err && err[0]) ? err : "?");
 		if (err && err[0]) {
 			set_last_error("%s", err);
 		}
@@ -683,7 +692,7 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 	}
 
 	conn_t conn;
-	if (!conn_open(&conn, u, timeout_secs, err, err_size)) {
+	if (!conn_open(&conn, u, timeout_secs, err, err_size, req->sensitive_url)) {
 		return false;
 	}
 
@@ -964,7 +973,8 @@ static bool stream_open_once(http_stream_t *st, const char *url, int timeout_sec
 
 	conn_t conn;
 	char err[192] = "";
-	if (!conn_open(&conn, &u, timeout_secs, err, sizeof(err))) {
+	if (!conn_open(&conn, &u, timeout_secs, err, sizeof(err), st->finite)) {
+		wipe_stream_request(u.path, sizeof(u.path));
 		return false;
 	}
 
@@ -983,27 +993,33 @@ static bool stream_open_once(http_stream_t *st, const char *url, int timeout_sec
 					 "GET %s HTTP/1.0\r\n" // 1.0: no chunking, no keep-alive to argue about
 					 "Host: %s\r\n"
 					 "User-Agent: " HTTP_USER_AGENT "\r\n"
-					 "Icy-MetaData: 1\r\n"
+					 "%s"
 					 "Accept: */*\r\n"
 					 "\r\n",
-					 u.path, host_header);
+					 u.path, host_header, st->finite ? "" : "Icy-MetaData: 1\r\n");
 	// As above: snprintf returns what it would have written, not what it did.
 	if (n <= 0 || (size_t)n >= sizeof(request) || !conn_write_all(&conn, request, (size_t)n)) {
+		wipe_stream_request(request, sizeof(request));
 		conn_close(&conn);
 		return false;
 	}
+	wipe_stream_request(request, sizeof(request));
+	wipe_stream_request(u.path, sizeof(u.path));
 
 	char headers[HTTP_HEADER_BUFFER];
 	int status = read_headers(&conn, headers, sizeof(headers), st->lead, sizeof(st->lead), &st->lead_len);
 	*status_out = status;
+	st->status = status;
 
 	if (status >= 300 && status < 400) {
 		location[0] = '\0';
 		header_value(headers, "Location", location, location_size);
+		wipe_stream_request(headers, sizeof(headers));
 		conn_close(&conn);
 		return false;
 	}
 	if (status != 200) {
+		wipe_stream_request(headers, sizeof(headers));
 		conn_close(&conn);
 		return false;
 	}
@@ -1021,6 +1037,24 @@ static bool stream_open_once(http_stream_t *st, const char *url, int timeout_sec
 	st->content_length = header_value(headers, "Content-Length", length_text, sizeof(length_text))
 							 ? strtol(length_text, NULL, 10)
 							 : 0;
+	if (st->finite) {
+		char transfer[64] = "", encoding[64] = "", *end = NULL;
+		header_value(headers, "Transfer-Encoding", transfer, sizeof(transfer));
+		header_value(headers, "Content-Encoding", encoding, sizeof(encoding));
+		st->length_known = header_value(headers, "Content-Length", length_text, sizeof(length_text));
+		errno = 0;
+		long length = st->length_known ? strtol(length_text, &end, 10) : 0;
+		st->chunked = !strcasecmp(transfer, "chunked");
+		if ((encoding[0] && strcasecmp(encoding, "identity")) || (transfer[0] && !st->chunked && strcasecmp(transfer, "identity")) || (st->chunked && st->length_known) || (st->length_known && (errno || end == length_text || strspn(length_text, "0123456789") != strlen(length_text) || *end || length < 0 || st->lead_len > length))) {
+			wipe_stream_request(headers, sizeof(headers));
+			http_stream_close(st);
+			st->failed = true;
+			return false;
+		}
+		st->content_length = length;
+		wipe_stream_request(headers, sizeof(headers));
+		return true;
+	}
 
 	header_value(headers, "icy-name", st->icy_name, sizeof(st->icy_name));
 	header_value(headers, "icy-genre", st->icy_genre, sizeof(st->icy_genre));
@@ -1037,24 +1071,30 @@ static bool stream_open_once(http_stream_t *st, const char *url, int timeout_sec
 	return true;
 }
 
-bool http_stream_open(http_stream_t *st, const char *url, int timeout_secs) {
+static bool stream_open(http_stream_t *st, const char *url, int timeout_secs, bool finite) {
 	if (!st || !url) {
 		return false;
 	}
 	memset(st, 0, sizeof(*st));
 	st->fd = -1;
+	st->finite = finite;
 	clear_last_error();
 
 	char current[2600];
-	snprintf(current, sizeof(current), "%s", url);
+	if (snprintf(current, sizeof(current), "%s", url) >= (int)sizeof(current))
+		return false;
 
 	for (int hop = 0; hop <= HTTP_MAX_REDIRECTS; hop++) {
 		int status = 0;
 		char location[2048] = "";
 		if (stream_open_once(st, current, timeout_secs, &status, location, sizeof(location))) {
+			wipe_stream_request(current, sizeof(current));
+			wipe_stream_request(location, sizeof(location));
 			return true;
 		}
 		if (status < 300 || status >= 400 || !location[0]) {
+			wipe_stream_request(current, sizeof(current));
+			wipe_stream_request(location, sizeof(location));
 			return false;
 		}
 
@@ -1070,7 +1110,18 @@ bool http_stream_open(http_stream_t *st, const char *url, int timeout_secs) {
 			snprintf(current, sizeof(current), "%s", location);
 		}
 	}
+	wipe_stream_request(current, sizeof(current));
 	return false;
+}
+
+bool http_stream_open(http_stream_t *st, const char *url, int timeout_secs) { return stream_open(st, url, timeout_secs, false); }
+
+bool http_file_open(http_stream_t *st, const char *url, int timeout_secs) {
+	bool ok = stream_open(st, url, timeout_secs, true);
+	if (!ok && st)
+		wipe_stream_request(st->lead, sizeof(st->lead));
+	http_clear_request_metadata();
+	return ok;
 }
 
 // Reads exactly `len` raw bytes (lead buffer first, then the socket).
@@ -1097,6 +1148,84 @@ static bool read_raw(http_stream_t *st, char *buf, int len) {
 		got += n;
 	}
 	return true;
+}
+
+static bool file_line(http_stream_t *st, char *line, size_t cap) {
+	for (size_t i = 0; i + 1 < cap; i++) {
+		if (!read_raw(st, line + i, 1))
+			return false;
+		if (line[i] == '\n') {
+			if (!i || line[i - 1] != '\r')
+				return false;
+			line[i - 1] = 0;
+			return true;
+		}
+	}
+	return false;
+}
+
+static int file_read(http_stream_t *st, void *buf, int len) {
+	if (st->failed)
+		return -1;
+	if (st->ended)
+		return 0;
+	if (st->chunked && !st->chunk_left) {
+		char line[128], crlf[2];
+		if (st->chunk_crlf && (!read_raw(st, crlf, 2) || memcmp(crlf, "\r\n", 2)))
+			goto fail;
+		if (!file_line(st, line, sizeof(line)))
+			goto fail;
+		char *end = NULL;
+		errno = 0;
+		unsigned long chunk = strtoul(line, &end, 16);
+		if (errno || end == line || !isxdigit((unsigned char)line[0]) || (*end && *end != ';') || chunk > LONG_MAX)
+			goto fail;
+		st->chunk_left = (long)chunk;
+		st->chunk_crlf = true;
+		if (!chunk) {
+			size_t trailer = 0;
+			do {
+				if (!file_line(st, line, sizeof(line)))
+					goto fail;
+				trailer += strlen(line) + 2;
+				if (trailer > HTTP_HEADER_BUFFER)
+					goto fail;
+			} while (line[0]);
+			st->ended = true;
+			return 0;
+		}
+	}
+	long remaining = st->chunked ? st->chunk_left : st->length_known ? st->content_length - st->received : len;
+	if (remaining <= 0) {
+		st->ended = true;
+		return 0;
+	}
+	if (remaining < len)
+		len = (int)remaining;
+	int n;
+	if (st->lead_pos < st->lead_len) {
+		n = st->lead_len - st->lead_pos;
+		if (n > len)
+			n = len;
+		memcpy(buf, st->lead + st->lead_pos, (size_t)n);
+		st->lead_pos += n;
+	} else {
+		conn_t c = stream_conn(st);
+		n = conn_read(&c, buf, (size_t)len);
+	}
+	if (n < 0 || (!n && (st->length_known || st->chunked)))
+		goto fail;
+	if (!n)
+		st->ended = true;
+	if (st->received > LONG_MAX - n)
+		goto fail;
+	st->received += n;
+	if (st->chunked)
+		st->chunk_left -= n;
+	return n;
+fail:
+	st->failed = true;
+	return -1;
 }
 
 // One ICY metadata block: a length byte (in sixteens) then that many bytes of
@@ -1164,6 +1293,8 @@ int http_stream_read(http_stream_t *st, void *buf, int len) {
 	if (!st || st->fd < 0 || len <= 0) {
 		return -1;
 	}
+	if (st->finite)
+		return file_read(st, buf, len);
 
 	// Without ICY metadata every byte on the socket is audio.
 	if (st->icy_metaint <= 0) {

@@ -37,6 +37,14 @@ typedef struct {
 	char filter[ND_ID_MAX];
 } nd_query_t;
 
+typedef struct {
+	nd_row_t row;
+	char album_id[ND_ID_MAX], album[ND_TEXT_MAX], artist_id[ND_ID_MAX];
+} nd_playrow_t;
+// Worker-only compact queue index and bounded individual row resolution.
+bool nd_store_play_index(nd_store_t *store, int64_t generation, const nd_query_t *query, const char *selected, int64_t **handles, int *count, int *start);
+bool nd_store_play_row(nd_store_t *store, int64_t generation, int64_t handle, nd_playrow_t *out);
+
 // Blocking store boundary. Each worker owns its own handle. No GUI SQL calls.
 bool nd_store_open(nd_store_t *store, const char *path, const char *scope, bool write, bool rebuild);
 void nd_store_close(nd_store_t *store);
@@ -46,6 +54,9 @@ bool nd_store_import(nd_store_t *store, nd_kind_t kind, const nd_document_t *doc
 bool nd_store_validate(nd_store_t *store);
 bool nd_store_publish(nd_store_t *store);
 void nd_store_cleanup(nd_store_t *store);
+// Logical pins hold no SQLite handle or transaction. At most two generations.
+bool nd_store_retain(const char *scope, int64_t generation);
+void nd_store_release(const char *scope, int64_t generation);
 bool nd_store_query(nd_store_t *store, int64_t generation, const nd_query_t *query, int offset, nd_row_t rows[ND_WINDOW], int *count, int *total);
 bool nd_store_letters(nd_store_t *store, int64_t generation, const nd_query_t *query, int first[ND_LETTER_BUCKETS]);
 bool nd_store_contains(nd_store_t *store, int64_t generation, nd_kind_t kind, const char *id);

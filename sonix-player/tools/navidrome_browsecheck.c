@@ -16,6 +16,16 @@ const lv_image_dsc_t icon_music_note = {.header = {.magic = LV_IMAGE_HEADER_MAGI
 lv_style_t theme_style_screen, theme_style_card, theme_style_card_pressed, theme_style_text, theme_style_text_dim;
 lv_obj_t *navidrome_screen;
 static bool dragging;
+#ifndef NAVIDROME_COORDINATOR_TEST
+static unsigned playback_selections;
+static char selected_track[ND_ID_MAX];
+bool navidromeplay_select(const nd_library_t *library, const nd_query_t *query, const char *id, void *origin) {
+	assert(library->ready && query->kind == ND_TRACKS && origin == lv_screen_active());
+	snprintf(selected_track, sizeof(selected_track), "%s", id);
+	playback_selections++;
+	return true;
+}
+#endif
 const char *tr(const char *key) { return key; }
 void gui_notify_popup(const char *key) { (void)key; }
 bool switcher_back_drag_active(void) { return dragging; }
@@ -82,7 +92,14 @@ static struct {
 	void *data;
 } posts[64];
 static unsigned post_read, post_write;
+#ifdef NAVIDROME_COORDINATOR_TEST
+static atomic_bool fixture_reject_posts;
+#endif
 bool gui_post(void (*cb)(void *), void *data) {
+#ifdef NAVIDROME_COORDINATOR_TEST
+	if (atomic_load(&fixture_reject_posts))
+		return false;
+#endif
 	pthread_mutex_lock(&post_lock);
 	bool ok = post_write - post_read < 64;
 	if (ok) {
@@ -120,10 +137,13 @@ static void seed(const nd_library_t *library) {
 	char dir[1100];
 	snprintf(dir, sizeof(dir), "%s", library->path);
 	*strrchr(dir, '/') = 0;
-	char parent[1100];
-	snprintf(parent, sizeof(parent), "%s", dir);
-	*strrchr(parent, '/') = 0;
-	assert(!mkdir(parent, 0700) || errno == EEXIST);
+	for (char *p = dir + 1; *p; p++) {
+		if (*p != '/')
+			continue;
+		*p = 0;
+		assert(!mkdir(dir, 0700) || errno == EEXIST);
+		*p = '/';
+	}
 	assert(!mkdir(dir, 0700) || errno == EEXIST);
 	nd_store_t store;
 	assert(nd_store_open(&store, library->path, library->scope, true, false));
@@ -167,6 +187,7 @@ static void seed(const nd_library_t *library) {
 	nd_store_close(&store);
 }
 
+#ifndef NAVIDROME_COORDINATOR_TEST
 int main(void) {
 	alarm(60);
 	setvbuf(stdout, NULL, _IONBF, 0);
@@ -205,6 +226,13 @@ int main(void) {
 	assert(pages[0].first > 16980 && pages[0].first + pages[0].count == 17000);
 	assert(!strcmp(pages[0].data[pages[0].count - 1].title, "Z Track 16999"));
 	puts("real LVGL windowed scrolling reaches track 17000: passed");
+	dragging = true;
+	lv_obj_send_event(pages[0].rows[pages[0].count - 1], LV_EVENT_CLICKED, NULL);
+	assert(!playback_selections);
+	dragging = false;
+	lv_obj_send_event(pages[0].rows[pages[0].count - 1], LV_EVENT_CLICKED, NULL);
+	assert(playback_selections == 1 && !strcmp(selected_track, pages[0].data[pages[0].count - 1].id));
+	puts("real LVGL deliberate track selection and gesture guard: passed");
 	assert(pages[0].index->enabled && pages[0].letters[26] == 25 * 654);
 	assert(pages[0].index->row[0] == 0 && pages[0].index->row[27] == 25 * 654);
 	int before_strip_gesture = lv_obj_get_scroll_y(pages[0].list);
@@ -313,6 +341,8 @@ int main(void) {
 	lv_display_delete(display);
 	lv_deinit();
 	char path[1200];
+	snprintf(path, sizeof(path), "%s/.local/navidrome/.cache", dir);
+	assert(!rmdir(path));
 	snprintf(path, sizeof(path), "%s/.local/navidrome", dir);
 	assert(!rmdir(path));
 	snprintf(path, sizeof(path), "%s/.local", dir);
@@ -320,3 +350,4 @@ int main(void) {
 	assert(!chdir("/") && !rmdir(dir));
 	return 0;
 }
+#endif

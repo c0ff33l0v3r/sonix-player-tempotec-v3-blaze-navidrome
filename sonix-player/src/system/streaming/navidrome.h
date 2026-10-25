@@ -15,7 +15,7 @@ typedef struct {
 
 typedef struct {
 	char host[ND_HOST_MAX], user[ND_USER_MAX], password[ND_SECRET_MAX];
-	unsigned epoch, card_epoch, network_epoch;
+	unsigned epoch, card_epoch, network_epoch, profile_epoch, playback_network_epoch;
 } nd_context_t;
 
 void navidrome_init(void);
@@ -48,6 +48,16 @@ bool navidrome_cache_begin(unsigned epoch, unsigned card_epoch);
 void navidrome_cache_end(void);
 bool navidrome_context_publish(const nd_context_t *context, const char *temp, const char *path);
 bool navidrome_context_current(const nd_context_t *context, bool network);
+
+// Playback lifetime excludes ordinary metadata publication. No network work.
+bool navidrome_playback_current(const nd_context_t *context, bool network);
+bool navidrome_playback_begin(const nd_context_t *context);
+bool navidrome_playback_publish(const nd_context_t *context, const char *temp, const char *path);
+bool navidrome_playback_pin(const nd_library_t *library);
+void navidrome_network_failed(const nd_context_t *context);
+// Called under service mutex: callback may only wake/cancel workers or post.
+void navidrome_set_playback_invalidator(void (*invalidate)(void));
+void navidrome_set_playback_network_stop(void (*cancel)(void));
 
 // Blocking protocol boundary, also used by the focused fixture checks.
 const char *navidrome_ping(const char *host, const char *user, const char *password);

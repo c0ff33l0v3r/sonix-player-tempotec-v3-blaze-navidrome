@@ -2698,9 +2698,11 @@ uint64_t decoder_seekable_limit(decoder_t *dec) {
 	}
 
 	long done = 0, total = 0;
-	if (!growfile_span(dec->growing, &done, &total) || total <= 0) {
+	if (!growfile_span(dec->growing, &done, &total)) {
 		return dec->total_pcm_frames; // no longer growing: it is all there
 	}
+	if (total <= 0)
+		return 0; // Unknown byte-to-time ratio: do not invent a seek range.
 
 	// The ratio of bytes to time on a FLAC is not exact -- blocks compress
 	// differently -- so a margin is kept: better to stop a little short and
@@ -2716,7 +2718,7 @@ bool decoder_is_growing(const decoder_t *dec) {
 	// `growing` stays attached even once the download has finished: what
 	// matters is whether it is still growing now.
 	long done = 0, total = 0;
-	return growfile_span((growfile_t *)dec->growing, &done, &total) && total > 0;
+	return growfile_span((growfile_t *)dec->growing, &done, &total);
 }
 
 bool decoder_grow_span(decoder_t *dec, long *done, long *total) {

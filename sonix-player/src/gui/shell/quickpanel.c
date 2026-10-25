@@ -50,6 +50,7 @@
 #include "src/system/remote/sonixlink.h"
 #include "src/system/net/wifi.h"
 #include "src/gui/shell/uiscale.h"
+#include "src/system/streaming/navidromeaudio.h"
 
 #define PANEL_ANIM_MS 180
 #define PANEL_POLL_MS 700
@@ -379,7 +380,7 @@ static void refresh_now_playing_card(void) {
 		}
 	}
 	if (np_star_btn) {
-		if (book) {
+		if (book || nd_audio_owns(state.current_file)) {
 			lv_obj_set_hidden(np_star_btn, true);
 		} else {
 			lv_obj_set_hidden(np_star_btn, false);
@@ -423,7 +424,7 @@ static void refresh_now_playing_card(void) {
 		// the one a tap fills.
 		fav = qobuzsync_is_favorite(qobuz_id);
 	} else {
-		fav = state.current_file[0] && library_fav_contains(state.current_file);
+		fav = state.current_file[0] && !nd_audio_owns(state.current_file) && library_fav_contains(state.current_file);
 	}
 	lv_image_set_src(np_star_icon, fav ? &icon_star_filled : &icon_star);
 	lv_obj_set_style_image_recolor(np_star_icon, fav ? lv_color_make(246, 211, 45) : lv_color_make(150, 150, 150), 0);
@@ -919,7 +920,7 @@ static void star_cb(lv_event_t *e) {
 
 	device_state_t state;
 	device_state_get(&state);
-	if (!state.current_file[0]) {
+	if (!state.current_file[0] || nd_audio_owns(state.current_file)) {
 		return;
 	}
 

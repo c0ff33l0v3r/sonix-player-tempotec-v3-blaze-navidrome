@@ -33,6 +33,21 @@ static const char *request_url(const char *host, const char *user, const char *p
 	return NULL;
 }
 
+const char *nd_api_stream(const char *host, const char *user, const char *password, const char *id, http_stream_t *stream) {
+	char encoded[ND_ID_MAX * 3 + 1], query[ND_ID_MAX * 3 + 32], url[2500];
+	if (!id || !*id || strlen(id) >= ND_ID_MAX)
+		return "nd_response_error";
+	http_url_encode(id, encoded, sizeof(encoded));
+	snprintf(query, sizeof(query), "id=%s&format=raw", encoded);
+	const char *error = request_url(host, user, password, "stream", query, url, sizeof(url));
+	if (!error && !http_file_open(stream, url, 8))
+		error = stream->status == 401 || stream->status == 403 ? "nd_auth_error" : "nd_network_error";
+	nd_wipe(url, sizeof(url));
+	http_clear_request_metadata();
+	nd_log("navidrome: stream open status=%d accepted=%d\n", stream->status, !error);
+	return error;
+}
+
 const char *nd_api_json(const char *host, const char *user, const char *password, const char *method, const char *query, size_t limit, nd_document_t *out) {
 	memset(out, 0, sizeof(*out));
 	char url[2500];

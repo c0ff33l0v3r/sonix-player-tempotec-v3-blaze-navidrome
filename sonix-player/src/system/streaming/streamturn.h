@@ -1,5 +1,6 @@
 #ifndef STREAMTURN_H
 #define STREAMTURN_H
+#include <stdbool.h>
 
 // The download turn: one download at a time, across all services.
 //
@@ -18,6 +19,7 @@
 
 // Takes the turn, waiting until it is free. Call from a worker thread.
 void streamturn_acquire(void);
+bool streamturn_acquire_current(bool (*current)(void *), void *user);
 
 // Releases it and wakes a waiter.
 void streamturn_release(void);
@@ -38,7 +40,7 @@ void streamturn_wait_idle(void);
 // to ask for the turn calls them all: whatever is downloading gives way to what
 // the user just asked for, whichever service it belongs to.
 typedef void (*streamturn_abandon_fn)(void);
-void streamturn_register_abandon(streamturn_abandon_fn fn);
+bool streamturn_register_abandon(streamturn_abandon_fn fn);
 
 // Abandons everything in flight, for every service.
 void streamturn_abandon_all(void);

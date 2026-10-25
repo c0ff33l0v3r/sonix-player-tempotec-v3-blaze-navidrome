@@ -2,6 +2,7 @@
 #define NAVIDROMEAPI_H
 
 #include "src/system/core/json.h"
+#include "src/system/net/http.h"
 
 #define ND_API_BYTES (256 * 1024)
 #define ND_API_TOKENS 16384
@@ -16,5 +17,6 @@ typedef struct {
 const char *nd_api_json(const char *host, const char *user, const char *password, const char *method, const char *query, size_t limit, nd_document_t *out);
 const char *nd_api_artwork(const char *host, const char *user, const char *password, const char *id, int pixels, char **body, size_t *size);
 void nd_api_free(nd_document_t *doc);
+const char *nd_api_stream(const char *host, const char *user, const char *password, const char *id, http_stream_t *stream);
 
 #endif

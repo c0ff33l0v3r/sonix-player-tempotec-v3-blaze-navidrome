@@ -17,13 +17,15 @@
 #define ART_BUDGET (32 * 1024 * 1024)
 typedef struct {
 	unsigned serial;
-	bool pending, done, found;
+	bool pending, done, found, player;
+	unsigned profile_epoch;
 	nd_library_t library;
 	char id[ND_ID_MAX];
 	int size;
-	cover_image_t image;
+	int backdrop_w, backdrop_h;
+	cover_image_t image, backdrop;
 } art_slot_t;
-static art_slot_t slots[ND_WINDOW];
+static art_slot_t slots[ND_WINDOW + 1];
 static pthread_mutex_t art_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t wake = PTHREAD_COND_INITIALIZER;
 static bool started;
@@ -72,7 +74,7 @@ static bool load(const art_slot_t *job, cover_image_t *out) {
 	nd_context_t context;
 	if (!navidrome_context(&context, false))
 		return false;
-	bool valid = context.epoch == job->library.epoch && context.card_epoch == job->library.card_epoch;
+	bool valid = (job->player ? context.profile_epoch == job->profile_epoch : context.epoch == job->library.epoch) && context.card_epoch == job->library.card_epoch;
 	char dir[1100], path[1200], key[33], input[ND_ID_MAX + 100];
 	snprintf(dir, sizeof(dir), "%s", job->library.path);
 	char *slash = strrchr(dir, '/');
@@ -85,7 +87,7 @@ static bool load(const art_slot_t *job, cover_image_t *out) {
 	md5_hex(input, strlen(input), key);
 	snprintf(path, sizeof(path), "%s/%s.img", dir, key);
 	bool found = false;
-	if (navidrome_cache_begin(context.epoch, context.card_epoch)) {
+	if ((job->player ? navidrome_playback_begin(&context) : navidrome_cache_begin(context.epoch, context.card_epoch))) {
 		int fd = open(path, O_RDONLY | O_NOFOLLOW);
 		struct stat st;
 		char *cached = NULL;
@@ -113,7 +115,7 @@ static bool load(const art_slot_t *job, cover_image_t *out) {
 		free(cached);
 	}
 	if (found) {
-		valid = navidrome_context_current(&context, false);
+		valid = (job->player ? navidrome_playback_current(&context, false) : navidrome_context_current(&context, false));
 		nd_wipe(&context, sizeof(context));
 		if (!valid)
 			cover_free(out);
@@ -123,16 +125,16 @@ static bool load(const art_slot_t *job, cover_image_t *out) {
 	for (int i = 0; i < ND_WINDOW; i++)
 		if (!strcmp(failures[i].key, key) && failures[i].until > time(NULL))
 			cooldown = true;
-	if (!cooldown && job->library.writable && navidrome_context_current(&context, true)) {
+	if (!cooldown && job->library.writable && (job->player ? navidrome_playback_current(&context, true) : navidrome_context_current(&context, true))) {
 		char *body = NULL;
 		size_t length = 0;
 		const char *error = nd_api_artwork(context.host, context.user, context.password, job->id, job->size, &body, &length);
 		int w = 0, h = 0, components = 0;
-		if (!error && stbi_info_from_memory((const stbi_uc *)body, (int)length, &w, &h, &components) && w > 0 && h > 0 && w <= 512 && h <= 512 && navidrome_context_current(&context, true) && cover_load_image_memory(body, length, job->size, job->size, COVER_FIT_COVER, out)) {
-			bool leased = navidrome_cache_begin(context.epoch, context.card_epoch);
+		if (!error && stbi_info_from_memory((const stbi_uc *)body, (int)length, &w, &h, &components) && w > 0 && h > 0 && w <= 512 && h <= 512 && (job->player ? navidrome_playback_current(&context, true) : navidrome_context_current(&context, true)) && cover_load_image_memory(body, length, job->size, job->size, COVER_FIT_COVER, out)) {
+			bool leased = (job->player ? navidrome_playback_begin(&context) : navidrome_cache_begin(context.epoch, context.card_epoch));
 			if (leased)
 				mkdir(dir, 0700);
-			if (leased && trim(dir, length) && navidrome_context_current(&context, true)) {
+			if (leased && trim(dir, length) && (job->player ? navidrome_playback_current(&context, true) : navidrome_context_current(&context, true))) {
 				char temp[1220];
 				snprintf(temp, sizeof(temp), "%s.tmp", path);
 				int fd = open(temp, O_CREAT | O_WRONLY | O_TRUNC | O_NOFOLLOW, 0600);
@@ -148,12 +150,12 @@ static bool load(const art_slot_t *job, cover_image_t *out) {
 				if (fd >= 0 && close(fd))
 					ok = false;
 				if (ok)
-					navidrome_context_publish(&context, temp, path);
+					job->player ? navidrome_playback_publish(&context, temp, path) : navidrome_context_publish(&context, temp, path);
 				unlink(temp);
 			}
 			if (leased)
 				navidrome_cache_end();
-			found = navidrome_context_current(&context, true);
+			found = (job->player ? navidrome_playback_current(&context, true) : navidrome_context_current(&context, true));
 			if (!found)
 				cover_free(out);
 		}
@@ -176,23 +178,27 @@ static void *art_worker(void *unused) {
 	pthread_mutex_lock(&art_lock);
 	for (;;) {
 		int i;
-		for (i = 0; i < ND_WINDOW && !slots[i].pending; i++) {
+		for (i = 0; i < ND_WINDOW + 1 && !slots[i].pending; i++) {
 		}
-		if (i == ND_WINDOW) {
+		if (i == ND_WINDOW + 1) {
 			pthread_cond_wait(&wake, &art_lock);
 			continue;
 		}
 		art_slot_t job = slots[i];
 		slots[i].pending = false;
 		pthread_mutex_unlock(&art_lock);
-		cover_image_t image = {0};
+		cover_image_t image = {0}, backdrop = {0};
 		bool found = load(&job, &image);
+		if (found && job.player && job.backdrop_w > 0 && job.backdrop_w <= 512 && job.backdrop_h > 0 && job.backdrop_h <= 1024)
+			cover_blur_fill(&image, job.backdrop_w, job.backdrop_h, &backdrop);
 		pthread_mutex_lock(&art_lock);
 		if (job.serial != slots[i].serial) {
 			if (found)
 				cover_free(&image);
+			cover_free(&backdrop);
 		} else {
 			slots[i].image = image;
+			slots[i].backdrop = backdrop;
 			slots[i].found = found;
 			slots[i].done = true;
 		}
@@ -201,7 +207,7 @@ static void *art_worker(void *unused) {
 }
 
 void navidromeart_release(int i) {
-	if (i < 0 || i >= ND_WINDOW)
+	if (i < 0 || i >= ND_WINDOW + 1)
 		return;
 	pthread_mutex_lock(&art_lock);
 	art_slot_t *slot = &slots[i];
@@ -209,19 +215,27 @@ void navidromeart_release(int i) {
 	slot->pending = slot->done = false;
 	if (slot->found)
 		cover_free(&slot->image);
+	cover_free(&slot->backdrop);
 	slot->found = false;
 	pthread_mutex_unlock(&art_lock);
 }
 
-void navidromeart_request(int i, const nd_library_t *library, const char *id, int size) {
-	if (i < 0 || i >= ND_WINDOW)
+static void request(int i, const nd_library_t *library, const char *id, int size, int backdrop_w, int backdrop_h) {
+	if (i < 0 || i >= ND_WINDOW + 1)
 		return;
 	navidromeart_release(i);
 	pthread_mutex_lock(&art_lock);
 	art_slot_t *slot = &slots[i];
 	slot->library = *library;
+	slot->player = i == ND_WINDOW;
+	nd_context_t context;
+	if (navidrome_context(&context, false))
+		slot->profile_epoch = context.profile_epoch;
+	nd_wipe(&context, sizeof(context));
 	snprintf(slot->id, sizeof(slot->id), "%s", id);
 	slot->size = size;
+	slot->backdrop_w = backdrop_w;
+	slot->backdrop_h = backdrop_h;
 	slot->pending = id && *id;
 	slot->done = !slot->pending;
 	if (!started) {
@@ -239,8 +253,20 @@ void navidromeart_request(int i, const nd_library_t *library, const char *id, in
 }
 
 bool navidromeart_take(int i, cover_image_t *out, bool *finished) {
+	if (i < 0 || i > ND_WINDOW) {
+		*finished = true;
+		return false;
+	}
 	pthread_mutex_lock(&art_lock);
 	art_slot_t *slot = &slots[i];
+	nd_context_t context;
+	bool current = navidrome_context(&context, false) && context.card_epoch == slot->library.card_epoch && (slot->player ? context.profile_epoch == slot->profile_epoch : context.epoch == slot->library.epoch);
+	nd_wipe(&context, sizeof(context));
+	if (slot->done && slot->found && !current) {
+		cover_free(&slot->image);
+		cover_free(&slot->backdrop);
+		slot->found = false;
+	}
 	*finished = slot->done;
 	bool found = slot->done && slot->found;
 	if (found) {
@@ -249,5 +275,19 @@ bool navidromeart_take(int i, cover_image_t *out, bool *finished) {
 		slot->found = false;
 	}
 	pthread_mutex_unlock(&art_lock);
+	return found;
+}
+
+void navidromeart_request(int i, const nd_library_t *library, const char *id, int size) { request(i, library, id, size, 0, 0); }
+void navidromeart_request_player(const nd_library_t *library, const char *id, int size, int w, int h) { request(ND_ART_PLAYER_SLOT, library, id, size, w, h); }
+bool navidromeart_take_player(cover_image_t *out, cover_image_t *backdrop, bool *finished) {
+	memset(backdrop, 0, sizeof(*backdrop));
+	bool found = navidromeart_take(ND_ART_PLAYER_SLOT, out, finished);
+	if (found) {
+		pthread_mutex_lock(&art_lock);
+		*backdrop = slots[ND_ART_PLAYER_SLOT].backdrop;
+		memset(&slots[ND_ART_PLAYER_SLOT].backdrop, 0, sizeof(*backdrop));
+		pthread_mutex_unlock(&art_lock);
+	}
 	return found;
 }

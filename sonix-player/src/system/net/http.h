@@ -142,6 +142,10 @@ bool http_request(const char *url, const http_req_t *req, char **out, size_t *ou
 // A stream whose body is read a piece at a time.
 typedef struct {
 	int fd;
+	// Opt-in finite protected streams. Legacy radio callers remain unchanged.
+	bool finite, chunked, ended, failed, chunk_crlf, length_known;
+	long received, chunk_left;
+	int status;
 
 	// The TLS session riding on that fd, or NULL for a plain http:// stream.
 	// Opaque here on purpose: http.h is included in places that have no
@@ -186,6 +190,7 @@ typedef struct {
 // https://, the host does not resolve, the connection or the TLS handshake
 // fails, or the status is not 200.
 bool http_stream_open(http_stream_t *st, const char *url, int timeout_secs);
+bool http_file_open(http_stream_t *st, const char *url, int timeout_secs);
 
 // Reads up to `len` bytes of *audio* into buf: any ICY metadata blocks in the
 // way are consumed and parsed out, never handed to the caller. Returns the

@@ -3,9 +3,12 @@
 
 #include "src/gui/nowplaying/cover.h"
 #include "src/system/streaming/navidromestore.h"
+#define ND_ART_PLAYER_SLOT ND_WINDOW
 
 void navidromeart_request(int slot, const nd_library_t *library, const char *id, int size);
 void navidromeart_release(int slot);
 bool navidromeart_take(int slot, cover_image_t *out, bool *finished);
+void navidromeart_request_player(const nd_library_t *library, const char *id, int size, int backdrop_w, int backdrop_h);
+bool navidromeart_take_player(cover_image_t *out, cover_image_t *backdrop, bool *finished);
 
 #endif

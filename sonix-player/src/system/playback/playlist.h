@@ -2,6 +2,7 @@
 #define PLAYLIST_H
 
 #include "src/system/library/library.h"
+#include "src/system/library/metadata.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -19,6 +20,20 @@ typedef enum {
 	// are saved under do not move.
 	PLAYBACK_MODE_SHUFFLE_REPEAT,
 } playback_mode_t;
+
+// GUI-owned queue source. path() returns an immediate stable reference, not a
+// blocking database lookup. metadata() may request an asynchronous window.
+typedef struct {
+	void *user;
+	int count;
+	bool (*path)(void *user, size_t entry, char *out, size_t size);
+	bool (*metadata)(void *user, size_t entry, song_metadata_t *out);
+	void (*close)(void *user);
+} playlist_source_t;
+// Takes ownership only on success; allocation failure preserves the old queue.
+bool playlist_load_source(const playlist_source_t *source, int start);
+bool playlist_has_source(void);
+bool playlist_metadata_at(int index, song_metadata_t *out);
 
 // Builds the queue from every playable file in `folder`, ordered the same way
 // the browser lists them (case-insensitive alphabetical). `selected_filename`

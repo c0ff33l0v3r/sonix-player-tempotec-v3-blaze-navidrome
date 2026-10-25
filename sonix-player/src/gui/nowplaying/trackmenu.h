@@ -28,5 +28,6 @@ void trackmenu_details_open(const char *path);
 // carries it now. The rows themselves do not change -- the queue is the same
 // list -- so nothing here rebinds or re-reads anything.
 void trackmenu_notify_now_playing(void);
+void trackmenu_source_metadata_ready(void *unused);
 
 #endif /* TRACKMENU_H */

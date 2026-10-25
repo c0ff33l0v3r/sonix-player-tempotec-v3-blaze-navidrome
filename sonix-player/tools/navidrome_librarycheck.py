@@ -173,7 +173,7 @@ def main():
                        'reason=missing_relation_entity', 'reason=duplicate_entity', 'field=name reason=wrong_type', 'reason=token_limit', 'reason=depth_limit'):
             assert reason in result.stderr, f'missing safe sync diagnostic: {reason}'
         assert not Fixture.failures and Fixture.reduced
-        assert Fixture.art_requests.get('red') == 1 and Fixture.art_requests.get('bad') == 1
+        assert Fixture.art_requests.get('red') == 2 and Fixture.art_requests.get('bad') == 1
         assert Fixture.art_requests.get('blue') == 1 and 'uncached-offline' not in Fixture.art_requests
         print('real HTTP fixture authentication, paging, request exclusions and redaction: passed')
 

@@ -2,6 +2,7 @@
 #include "src/gui/streaming/navidromeart.h"
 #include "src/system/net/http.h"
 #include "src/system/streaming/navidrome.h"
+#include "src/system/streaming/navidromelibrary.h"
 #include <assert.h>
 #include <dirent.h>
 #include <fcntl.h>
@@ -58,12 +59,33 @@ static nd_library_t library(void) {
 }
 
 static nd_library_t sync_ok(int tracks, int albums) {
+	nd_library_t previous = library();
+	nd_context_t playback_context;
+	bool retained = previous.ready && navidrome_context(&playback_context, true) && navidrome_playback_pin(&previous);
 	assert(navidrome_sync());
 	assert(!navidrome_reconnect()); // Conflicting operations cannot enter the worker.
 	idle();
 	nd_library_t result = library();
 	assert(result.ready && !result.syncing && !result.error);
 	assert(result.counts[ND_TRACKS] == tracks && result.counts[ND_ALBUMS] == albums);
+	if (retained) {
+		assert(navidrome_playback_current(&playback_context, true));
+		nd_store_t pinned;
+		assert(nd_store_open(&pinned, result.path, result.scope, true, false));
+		sqlite3_stmt *st;
+		assert(sqlite3_prepare_v2(pinned.db, "SELECT count(*) FROM snapshot WHERE id=? AND complete=1", -1, &st, NULL) == SQLITE_OK);
+		sqlite3_bind_int64(st, 1, previous.generation);
+		assert(sqlite3_step(st) == SQLITE_ROW && sqlite3_column_int(st, 0) == 1);
+		sqlite3_finalize(st);
+		nd_store_release(previous.scope, previous.generation);
+		nd_store_cleanup(&pinned);
+		assert(sqlite3_prepare_v2(pinned.db, "SELECT count(*) FROM snapshot WHERE id=?", -1, &st, NULL) == SQLITE_OK);
+		sqlite3_bind_int64(st, 1, previous.generation);
+		assert(sqlite3_step(st) == SQLITE_ROW && sqlite3_column_int(st, 0) == (previous.generation == result.generation));
+		sqlite3_finalize(st);
+		nd_store_close(&pinned);
+		nd_wipe(&playback_context, sizeof(playback_context));
+	}
 	return result;
 }
 
@@ -76,6 +98,14 @@ static void query_checks(nd_library_t lib) {
 	assert(nd_store_query(&store, lib.generation, &q, 16984, rows, &count, &total));
 	assert(total == 17000 && count == ND_WINDOW);
 	assert(!strcmp(rows[15].title, "Track 17000"));
+	int64_t *handles;
+	int entries, start;
+	assert(nd_store_play_index(&store, lib.generation, &q, rows[15].id, &handles, &entries, &start));
+	assert(entries == 17000 && start == 16999);
+	nd_playrow_t playing;
+	assert(nd_store_play_row(&store, lib.generation, handles[start], &playing));
+	assert(!strcmp(playing.row.id, rows[15].id) && playing.album_id[0] && playing.album[0]);
+	free(handles);
 	q.kind = ND_ALBUMS;
 	assert(nd_store_query(&store, lib.generation, &q, 0, rows, &count, &total));
 	assert(total == 1700 && !strcmp(rows[0].id, "album-01699"));
@@ -84,6 +114,13 @@ static void query_checks(nd_library_t lib) {
 	snprintf(q.filter, sizeof(q.filter), "album-00000");
 	assert(nd_store_query(&store, lib.generation, &q, 0, rows, &count, &total));
 	assert(total == 10 && count == 10);
+	assert(nd_store_play_index(&store, lib.generation, &q, rows[4].id, &handles, &entries, &start));
+	assert(entries == 10 && start == 4);
+	for (int i = 0; i < entries; i++) {
+		assert(nd_store_play_row(&store, lib.generation, handles[i], &playing));
+		assert(!strcmp(playing.row.id, rows[i].id));
+	}
+	free(handles);
 	for (int i = 1; i < count; i++)
 		assert(rows[i - 1].disc <= rows[i].disc);
 	q.kind = ND_ALBUMS;
@@ -169,6 +206,13 @@ static void artwork_checks(nd_library_t lib) {
 	cover_free(&image);
 	for (int i = 0; i < ND_WINDOW; i++)
 		navidromeart_release(i);
+	navidromeart_request_player(&lib, "red", 128, 128, 128);
+	for (int i = 0; i < ND_WINDOW; i++)
+		navidromeart_release(i);
+	image = art_wait(ND_ART_PLAYER_SLOT, true);
+	assert(image.pixels[0] == 255 && image.pixels[2] == 0);
+	cover_free(&image);
+	navidromeart_release(ND_ART_PLAYER_SLOT);
 	puts("artwork decode/cache reuse/coalescing/cooldown/budget/stale rows: passed");
 }
 
@@ -253,6 +297,105 @@ static void label_checks(nd_library_t lib) {
 	nd_store_close(&store);
 }
 
+static nd_library_t reload_card(const char *card) {
+	navidrome_set_root(card);
+	nd_library_t lib;
+	for (int i = 0; i < 10000; i++) {
+		lib = library();
+		if (!lib.loading)
+			return lib;
+		usleep(1000);
+	}
+	assert(!"cache reload timeout");
+	return lib;
+}
+
+static void layout_check(nd_library_t lib, const char *card) {
+	assert(strstr(lib.path, "/.local/navidrome/.cache/library.db"));
+	(void)reload_card(NULL); // no admitted card readers while staging the legacy layout
+	char base[1200], legacy[1300], old_art[1300], new_art[1300], old_audio[1300], new_audio[1300], leaf[1400];
+	assert(snprintf(base, sizeof(base), "%s/.local/navidrome", card) < (int)sizeof(base));
+	snprintf(legacy, sizeof(legacy), "%s/library.db", base);
+	assert(!rename(lib.path, legacy));
+	snprintf(old_art, sizeof(old_art), "%s/art", base);
+	snprintf(new_art, sizeof(new_art), "%s/.cache/art", base);
+	assert(!rename(new_art, old_art));
+	snprintf(old_audio, sizeof(old_audio), "%s/audio", base);
+	snprintf(new_audio, sizeof(new_audio), "%s/.cache/audio", base);
+	assert(!mkdir(old_audio, 0700));
+	snprintf(leaf, sizeof(leaf), "%s/fixture.bin", old_audio);
+	int fd = open(leaf, O_CREAT | O_WRONLY, 0600);
+	assert(fd >= 0 && write(fd, "audio", 5) == 5);
+	close(fd);
+	char unrelated[1300];
+	snprintf(unrelated, sizeof(unrelated), "%s/user.txt", base);
+	fd = open(unrelated, O_CREAT | O_WRONLY, 0600);
+	assert(fd >= 0);
+	close(fd);
+	// An old read-only card remains browsable, without creating a new database.
+	assert(!chmod(card, 0500));
+	nd_library_t old = reload_card(card);
+	assert(old.ready && !old.writable && !strcmp(old.path, legacy) && old.counts[ND_TRACKS] == 17000);
+	assert(access(lib.path, F_OK));
+	assert(!chmod(card, 0700));
+	assert(navidrome_reconnect());
+	idle();
+	assert(library().ready && !library().writable && !strcmp(library().path, legacy) && access(lib.path, F_OK));
+	// A stale staging file is replaceable; publication keeps rowids/counts and moves art/audio.
+	(void)reload_card(NULL);
+	assert(!chmod(card, 0700));
+	snprintf(leaf, sizeof(leaf), "%s/.cache/library.db.migrating", base);
+	assert(!mkdir(leaf, 0700)); // do not replace a non-file staging obstruction
+	nd_library_t failed = reload_card(card);
+	assert(failed.ready && !failed.writable && !strcmp(failed.path, legacy) && failed.error && !strcmp(failed.error, "nd_cache_storage"));
+	assert(access(lib.path, F_OK) && !access(legacy, F_OK));
+	(void)reload_card(NULL);
+	assert(!rmdir(leaf));
+	fd = open(leaf, O_CREAT | O_WRONLY, 0600);
+	assert(fd >= 0);
+	close(fd);
+	nd_library_t moved = reload_card(card);
+	assert(moved.ready && moved.writable && !strcmp(moved.path, lib.path));
+	assert(moved.generation == lib.generation && !strcmp(moved.scope, lib.scope));
+	assert(moved.counts[ND_TRACKS] == 17000 && access(legacy, F_OK) && access(old_art, F_OK) && access(old_audio, F_OK));
+	assert(!access(new_art, F_OK) && !access(unrelated, F_OK) && access(leaf, F_OK));
+	snprintf(leaf, sizeof(leaf), "%s/fixture.bin", new_audio);
+	char audio[5];
+	fd = open(leaf, O_RDONLY);
+	assert(fd >= 0 && read(fd, audio, sizeof(audio)) == 5 && !memcmp(audio, "audio", 5));
+	close(fd);
+	// Conflicting old/new layouts prefer the new cache without overwriting either.
+	(void)reload_card(NULL);
+	fd = open(legacy, O_CREAT | O_WRONLY, 0600);
+	assert(fd >= 0 && write(fd, "older", 5) == 5);
+	close(fd);
+	assert(!mkdir(old_art, 0700) && !mkdir(old_audio, 0700));
+	nd_library_t both = reload_card(card);
+	assert(both.ready && both.writable && !strcmp(both.path, lib.path) && both.generation == lib.generation);
+	fd = open(legacy, O_RDONLY);
+	assert(fd >= 0 && read(fd, audio, sizeof(audio)) == 5 && !memcmp(audio, "older", 5));
+	close(fd);
+	assert(!access(old_art, F_OK) && !access(old_audio, F_OK) && !access(new_art, F_OK) && !access(leaf, F_OK));
+	assert(!unlink(legacy) && !rmdir(old_art) && !rmdir(old_audio));
+	assert(!unlink(leaf) && !rmdir(new_audio) && !unlink(unrelated));
+	query_checks(both);
+	// Corrupt legacy bytes still reach the existing explicit-Sync recovery path.
+	(void)reload_card(NULL);
+	char saved[1100], invalid[1100];
+	snprintf(saved, sizeof(saved), "%s.fixture", lib.path); snprintf(invalid, sizeof(invalid), "%s.invalid", lib.path);
+	assert(!rename(lib.path, saved));
+	fd = open(legacy, O_CREAT | O_WRONLY, 0600); assert(fd >= 0 && write(fd, "broken", 6) == 6); close(fd);
+	nd_library_t corrupt = reload_card(card);
+	assert(!corrupt.ready && corrupt.writable && corrupt.error && !strcmp(corrupt.error, "nd_cache_error") && !strcmp(corrupt.path, lib.path));
+	nd_store_t recovery;
+	assert(nd_cache_open_sync(&corrupt, &recovery)); nd_store_close(&recovery);
+	assert(!access(invalid, F_OK));
+	(void)reload_card(NULL);
+	assert(!unlink(lib.path) && !unlink(invalid) && !rename(saved, lib.path));
+	query_checks(reload_card(card));
+	puts("nested cache layout: read-only legacy reuse, worker migration, metadata/order/art/audio preservation, failed/stale staging recovery, destination conflicts, corrupt-store recovery and unrelated-file preservation: passed");
+}
+
 int main(int argc, char **argv) {
 	assert(argc == 3 || argc == 4);
 	alarm(120);
@@ -291,6 +434,7 @@ int main(int argc, char **argv) {
 	query_checks(full);
 	artwork_checks(full);
 	disk_full_check(full);
+	layout_check(full, card);
 	mode("reject");
 	pid_t child = fork();
 	assert(child >= 0);

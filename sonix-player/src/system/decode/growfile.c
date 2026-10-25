@@ -334,7 +334,7 @@ bool growfile_span(growfile_t *g, long *done, long *total) {
 	}
 	pthread_mutex_lock(&lock);
 	slot_t *slot = find_locked(g->path);
-	bool growing = slot != NULL && slot->total > 0;
+	bool growing = slot != NULL;
 	if (growing) {
 		if (done) {
 			*done = slot->done;

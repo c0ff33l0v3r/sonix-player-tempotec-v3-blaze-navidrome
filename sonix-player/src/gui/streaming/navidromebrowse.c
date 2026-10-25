@@ -13,6 +13,7 @@
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
 #include "src/system/streaming/navidrome.h"
+#include "src/system/streaming/navidromeplay.h"
 #include <limits.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -224,7 +225,7 @@ static void row_clicked(lv_event_t *e) {
 	lv_obj_t *row = lv_event_get_target(e);
 	for (int level = 0; level < 3; level++) {
 		browse_page_t *p = &pages[level];
-		if (lv_screen_active() != p->screen || p->query.kind == ND_TRACKS || level == 2)
+		if (lv_screen_active() != p->screen)
 			continue;
 		nd_library_t current;
 		navidrome_library_snapshot(&current);
@@ -233,6 +234,13 @@ static void row_clicked(lv_event_t *e) {
 		for (int i = 0; i < p->count; i++) {
 			if (p->rows[i] != row)
 				continue;
+			if (p->query.kind == ND_TRACKS) {
+				if (!navidromeplay_select(&p->library, &p->query, p->data[i].id, p->screen))
+					gui_notify_popup("nd_audio_unavailable");
+				return;
+			}
+			if (level == 2)
+				return;
 			browse_page_t *next = &pages[level + 1];
 			next->map_ready = next->map_bound = false;
 			memset(&next->query, 0, sizeof(next->query));
@@ -332,6 +340,24 @@ void navidromebrowse_open(nd_kind_t kind) {
 		submit_window(p);
 	} else
 		switch_screen(p->screen);
+}
+
+bool navidromebrowse_album(const char *id, const char *title) {
+	nd_library_t library;
+	navidrome_library_snapshot(&library);
+	if (!library.ready || !id || !*id || strlen(id) >= ND_ID_MAX)
+		return false;
+	browse_page_t *p = &pages[0];
+	memset(&p->query, 0, sizeof(p->query));
+	p->query.kind = ND_TRACKS;
+	p->query.filter_kind = ND_ALBUMS;
+	lv_snprintf(p->query.filter, sizeof(p->query.filter), "%s", id);
+	lv_label_set_text(p->title, title && *title ? title : tr("albums"));
+	p->count = p->total = 0;
+	lv_obj_set_height(p->extent, 1);
+	lv_obj_scroll_to_y(p->list, 0, LV_ANIM_OFF);
+	switch_screen(p->screen);
+	return true;
 }
 
 static void letter_jump(void) {

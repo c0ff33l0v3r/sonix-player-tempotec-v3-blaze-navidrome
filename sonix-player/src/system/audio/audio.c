@@ -1024,18 +1024,27 @@ static bool pcm_is_bluetooth(snd_pcm_t *pcm) {
 // bluealsa's client alive with its transport acquired so the headphones cannot
 // re-establish it either.
 //
-// So over Bluetooth the waiting is done here instead: ask how much is still
-// queued, sleep, ask again, and give up at the deadline. snd_pcm_delay() reads
-// the stream's pointer and cannot block. On a real card the ordinary drain is
+// Host default outputs can also be virtual ALSA plugins whose blocking drain
+// never returns after EOF. Bound those waits too, so the queued next track can
+// reach the playback thread. Device hardware keeps its existing drain path.
+//
+// So over Bluetooth and on the host the waiting is done here instead: ask how
+// much is still queued, sleep, ask again, and give up at the deadline.
+// snd_pcm_delay() reads the stream's pointer and cannot block. On a real card the ordinary drain is
 // used, bounded by a clock that always runs.
 static void pcm_drain_bounded(snd_pcm_t *pcm) {
 	if (!pcm) {
 		return;
 	}
+#ifndef HOST_BUILD
 	if (!pcm_is_bluetooth(pcm)) {
 		snd_pcm_drain(pcm);
 		return;
 	}
+#endif
+#ifdef HOST_BUILD
+	fprintf(stderr, "audio[%ld]: bounded host drain begin\n", log_ms());
+#endif
 
 	long waited_ms = 0;
 	long stalled_ms = 0;
@@ -1062,7 +1071,7 @@ static void pcm_drain_bounded(snd_pcm_t *pcm) {
 		previous = left;
 
 		if (stalled_ms >= DRAIN_STALL_MS || waited_ms >= DRAIN_TIMEOUT_MS) {
-			fprintf(stderr, "audio[%ld]: the Bluetooth PCM will not drain (%ld frames left after %ld ms): letting it go\n",
+			fprintf(stderr, "audio[%ld]: the PCM will not drain (%ld frames left after %ld ms): letting it go\n",
 					log_ms(), (long)left, waited_ms);
 			break;
 		}
@@ -1072,6 +1081,9 @@ static void pcm_drain_bounded(snd_pcm_t *pcm) {
 	// Either it played out or it never will; in both cases the stream stops
 	// here rather than in a wait with no end.
 	snd_pcm_drop(pcm);
+#ifdef HOST_BUILD
+	fprintf(stderr, "audio[%ld]: bounded host drain done waited_ms=%ld\n", log_ms(), waited_ms);
+#endif
 }
 
 // Closes the held PCM, letting it play out what it still has queued. Playback
@@ -3843,7 +3855,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			// seek: the last touch always wins).
 			uint64_t reachable = decoder_seekable_limit(dec);
 			bool dropped_while_waiting = false;
-			if (reachable > 0 && target_frame > reachable && decoder_is_growing(dec)) {
+			if (target_frame > reachable && decoder_is_growing(dec)) {
 				fprintf(stderr, "audio[%ld]: the requested point has not downloaded yet: waiting for it\n", log_ms());
 				// Silence while waiting, when there is a stream to silence: a
 				// seek can arrive with the device handed back.

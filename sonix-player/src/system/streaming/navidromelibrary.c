@@ -61,7 +61,135 @@ static bool scope_load(const char *vault, const char *host, const char *user, ch
 	return ok;
 }
 
-void nd_cache_load(const char *root, const char *vault, const char *host, const char *user, nd_library_t *out) {
+static bool directory(const char *path) {
+	struct stat st;
+	return (!mkdir(path, 0700) || errno == EEXIST) && !lstat(path, &st) && S_ISDIR(st.st_mode);
+}
+
+static bool copy_invalid_database(const char *old, const char *temp) {
+	int in = open(old, O_RDONLY | O_NOFOLLOW), out = open(temp, O_WRONLY | O_TRUNC | O_NOFOLLOW);
+	bool ok = in >= 0 && out >= 0;
+	char buffer[16384];
+	while (ok) {
+		ssize_t n = read(in, buffer, sizeof(buffer));
+		if (!n)
+			break;
+		if (n < 0) {
+			ok = false;
+			break;
+		}
+		ssize_t at = 0;
+		while (at < n) {
+			ssize_t wrote = write(out, buffer + at, (size_t)(n - at));
+			if (wrote <= 0) {
+				ok = false;
+				break;
+			}
+			at += wrote;
+		}
+	}
+	if (in >= 0 && close(in))
+		ok = false;
+	if (out >= 0 && close(out))
+		ok = false;
+	return ok;
+}
+
+// The service calls this only before admitting readers on this card. SQLite's
+// backup API includes committed WAL data and leaves the old DB intact on failure.
+static bool migrate_database(const char *old, const char *path) {
+	char temp[1100];
+	if (snprintf(temp, sizeof(temp), "%s.migrating", path) >= (int)sizeof(temp))
+		return false;
+	struct stat st;
+	if (!lstat(temp, &st) && (!S_ISREG(st.st_mode) || unlink(temp)))
+		return false;
+	int fd = open(temp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+	if (fd < 0)
+		return false;
+	bool ok = close(fd) == 0;
+	sqlite3 *source = NULL, *target = NULL;
+	if (ok)
+		ok = sqlite3_open_v2(old, &source, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOFOLLOW, NULL) == SQLITE_OK;
+	if (ok)
+		ok = sqlite3_open_v2(temp, &target, SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOFOLLOW, NULL) == SQLITE_OK;
+	if (ok)
+		ok = sqlite3_exec(source, "PRAGMA cache_size=-256", NULL, NULL, NULL) == SQLITE_OK && sqlite3_exec(target, "PRAGMA cache_size=-256", NULL, NULL, NULL) == SQLITE_OK;
+	if (ok) {
+		sqlite3_backup *backup = sqlite3_backup_init(target, "main", source, "main");
+		ok = backup && sqlite3_backup_step(backup, -1) == SQLITE_DONE;
+		if (backup && sqlite3_backup_finish(backup) != SQLITE_OK)
+			ok = false;
+	}
+	int source_error = source ? sqlite3_errcode(source) : SQLITE_OK;
+	int target_error = target ? sqlite3_errcode(target) : SQLITE_OK;
+	bool invalid = source_error == SQLITE_CORRUPT || source_error == SQLITE_NOTADB || target_error == SQLITE_CORRUPT || target_error == SQLITE_NOTADB;
+	if (target && sqlite3_close(target) != SQLITE_OK)
+		ok = false;
+	if (source && sqlite3_close(source) != SQLITE_OK)
+		ok = false;
+	// Preserve unreadable bytes in the new location so explicit Sync can still
+	// perform its existing corrupt-store recovery. Never raw-copy a busy valid DB.
+	if (!ok && invalid)
+		ok = copy_invalid_database(old, temp);
+	fd = ok ? open(temp, O_RDONLY | O_NOFOLLOW) : -1;
+	if (ok)
+		ok = fd >= 0 && fsync(fd) == 0;
+	if (fd >= 0 && close(fd))
+		ok = false;
+	if (ok)
+		ok = rename(temp, path) == 0 && nd_vault_sync(path);
+	if (!ok) {
+		unlink(temp);
+		return false;
+	}
+	// Remove the retired database only after the new durable copy is published.
+	// Failed cleanup leaves recoverable legacy data, never replaces new data.
+	if (unlink(old) && errno != ENOENT)
+		return false;
+	const char *sidecars[] = {"-journal", "-wal", "-shm"};
+	for (int i = 0; i < 3; i++) {
+		char leaf[1100];
+		if (snprintf(leaf, sizeof(leaf), "%s%s", old, sidecars[i]) >= (int)sizeof(leaf))
+			continue;
+		if (unlink(leaf) && errno != ENOENT)
+			return false;
+	}
+	return true;
+}
+
+static bool migrate_cache(const char *base, const char *path) {
+	char dir[1100], old[1100], dest[1100];
+	if (snprintf(dir, sizeof(dir), "%s/.cache", base) >= (int)sizeof(dir) || !directory(dir))
+		return false;
+	if (snprintf(old, sizeof(old), "%s/library.db", base) >= (int)sizeof(old))
+		return false;
+	struct stat st;
+	if (lstat(old, &st) == 0 && access(path, F_OK) != 0) {
+		if (!S_ISREG(st.st_mode) || !migrate_database(old, path))
+			return false;
+	}
+	const char *names[] = {"art", "audio", "library.db.invalid"};
+	for (int i = 0; i < 3; i++) {
+		if (snprintf(old, sizeof(old), "%s/%s", base, names[i]) >= (int)sizeof(old) || snprintf(dest, sizeof(dest), "%s/%s", dir, names[i]) >= (int)sizeof(dest))
+			return false;
+		if (lstat(old, &st)) {
+			if (errno != ENOENT)
+				return false;
+			continue;
+		}
+		if ((i < 2 && !S_ISDIR(st.st_mode)) || (i == 2 && !S_ISREG(st.st_mode)))
+			return false;
+		struct stat target;
+		if (!lstat(dest, &target))
+			continue; // never overwrite an existing new cache
+		if (errno != ENOENT || rename(old, dest))
+			return false;
+	}
+	return nd_vault_sync(path);
+}
+
+void nd_cache_load(const char *root, const char *vault, const char *host, const char *user, bool migrate_legacy, nd_library_t *out) {
 	memset(out, 0, sizeof(*out));
 	out->error = "nd_cache_storage";
 	if (!*host || !scope_load(vault, host, user, out->scope)) {
@@ -71,14 +199,28 @@ void nd_cache_load(const char *root, const char *vault, const char *host, const 
 	struct stat st;
 	if (!root || !*root || stat(root, &st) || !S_ISDIR(st.st_mode))
 		return;
-	int n = snprintf(out->path, sizeof(out->path), "%s/.local/navidrome/library.db", root);
+	int n = snprintf(out->path, sizeof(out->path), "%s/" ND_CACHE_RELATIVE "/library.db", root);
 	if (n < 0 || (size_t)n >= sizeof(out->path)) {
 		out->path[0] = 0;
 		return;
 	}
 	struct statvfs fs;
 	out->writable = access(root, W_OK) == 0 && (st.st_mode & 0222) && statvfs(root, &fs) == 0 && !(fs.f_flag & ST_RDONLY);
-	out->error = out->writable ? NULL : "nd_cache_readonly";
+	char base[1024], legacy[1100];
+	if (snprintf(base, sizeof(base), "%s/.local/navidrome", root) >= (int)sizeof(base) || snprintf(legacy, sizeof(legacy), "%s/library.db", base) >= (int)sizeof(legacy))
+		return;
+	// Never relocate a path already captured by an in-session queue. A writable
+	// reinsertion/restart retries migration; read-only old cards remain readable.
+	bool moved = true;
+	if (out->writable && migrate_legacy && !lstat(base, &st))
+		moved = S_ISDIR(st.st_mode) && migrate_cache(base, out->path);
+	if (access(out->path, F_OK) && !access(legacy, F_OK)) {
+		if (snprintf(out->path, sizeof(out->path), "%s", legacy) >= (int)sizeof(out->path))
+			return;
+		out->writable = false;
+	} else if (!moved)
+		out->writable = false;
+	out->error = !moved ? "nd_cache_storage" : out->writable ? NULL : "nd_cache_readonly";
 	if (access(out->path, F_OK))
 		return;
 	nd_store_t store;
@@ -142,8 +284,8 @@ bool nd_cache_retire(const char *root, const char *vault) {
 	// All names here are generated by this feature; do not follow directories
 	// supplied by server metadata. Scope retirement remains effective with no card.
 	if (root && *root) {
-		const char *dirs[] = {".local/navidrome/art", ".local/navidrome"};
-		for (int i = 0; i < 2; i++) {
+		const char *dirs[] = {ND_CACHE_RELATIVE "/art", ND_CACHE_RELATIVE, ".local/navidrome/art", ".local/navidrome"};
+		for (int i = 0; i < 4; i++) {
 			char dir[1100];
 			if (snprintf(dir, sizeof(dir), "%s/%s", root, dirs[i]) >= (int)sizeof(dir))
 				continue;

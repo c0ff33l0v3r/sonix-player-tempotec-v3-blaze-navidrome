@@ -38,6 +38,8 @@
 #include "src/system/device/system.h"
 #include "lvgl/src/core/lv_obj_scroll_private.h"
 #include "src/gui/shell/uiscale.h"
+#include "src/gui/streaming/navidromebrowse.h"
+#include "src/system/streaming/navidromeplay.h"
 
 lv_obj_t *queue_screen;
 lv_obj_t *details_screen;
@@ -405,7 +407,7 @@ static void queue_file_title(const char *path, char *title, size_t size) {
 // Points a pool row at row `vindex` of the page and resolves its title on the
 // spot; an indexed lookup is cheap enough to do during a scroll.
 static void queue_row_bind(queue_row_t *row, int vindex) {
-	if (row->vindex == vindex) {
+	if (row->vindex == vindex && !playlist_has_source()) {
 		return;
 	}
 
@@ -450,7 +452,13 @@ static void queue_row_bind(queue_row_t *row, int vindex) {
 		return;
 	}
 
-	if (!library_track_title(path, title, sizeof(title))) {
+	if (navidromeplay_reference(path)) {
+		song_metadata_t meta;
+		if (playlist_metadata_at(index, &meta))
+			snprintf(title, sizeof(title), "%.250s", meta.title);
+		else
+			snprintf(title, sizeof(title), "%s", tr("nd_working"));
+	} else if (!library_track_title(path, title, sizeof(title))) {
 		// Not in the library: it may be a Qobuz track, which is kept out of the
 		// library on purpose. The title is still there, in the sidecar file next
 		// to the track. Without this the queue showed a column of numbers, which
@@ -552,6 +560,12 @@ static void queue_window_update(void) {
 		int vindex = first + i;
 		queue_row_bind(&queue_rows[vindex % QUEUE_ROW_POOL], vindex < count ? vindex : -1);
 	}
+}
+
+void trackmenu_source_metadata_ready(void *unused) {
+	(void)unused;
+	if (queue_list && lv_screen_active() == queue_screen && playlist_has_source())
+		queue_window_update();
 }
 
 // Reads the history again and works out where its rows and headings go.
@@ -1538,7 +1552,7 @@ static void details_fill(const char *file, const song_metadata_t *tags, int bits
 	// which may still be downloading -- a number that grows on screen by itself
 	// and describes the download, not the track.
 	struct stat st;
-	if (!qobuzcache_owns(file) && !tidalcache_owns(file) && stat(file, &st) == 0) {
+	if (!nd_audio_owns(file) && !qobuzcache_owns(file) && !tidalcache_owns(file) && stat(file, &st) == 0) {
 		snprintf(buffer, sizeof(buffer), "%.1f MB", st.st_size / (1024.0 * 1024.0));
 		details_add_row("trackmenu_size", buffer);
 	}
@@ -1546,7 +1560,9 @@ static void details_fill(const char *file, const song_metadata_t *tags, int bits
 	// The path, except for a streamed track: that lives in a cache directory
 	// nobody chose, under a numeric name, and showing it implies a file of the
 	// user's own that does not exist. The source service is shown instead.
-	if (qobuzcache_owns(file)) {
+	if (nd_audio_owns(file)) {
+		details_add_row("trackmenu_source", tr("navidrome"));
+	} else if (qobuzcache_owns(file)) {
 		details_add_row("trackmenu_source", "qobuz");
 	} else if (tidalcache_owns(file)) {
 		details_add_row("trackmenu_source", "tidal");
@@ -1717,6 +1733,12 @@ static void open_details_cb(void *user) {
 // library lists open, on the playing file.
 static void add_to_playlist_cb(void *user) {
 	(void)user;
+	device_state_t source_state;
+	device_state_get(&source_state);
+	if (nd_audio_owns(source_state.current_file)) {
+		gui_notify_popup("nd_audio_unavailable");
+		return;
+	}
 	device_state_t state;
 	device_state_get(&state);
 	if (!state.current_file[0]) {
@@ -1734,6 +1756,15 @@ static void open_album_cb(void *user) {
 
 	device_state_t state;
 	device_state_get(&state);
+	nd_playrow_t navidrome;
+	if (navidromeplay_track(state.current_file, &navidrome, NULL)) {
+		player_sheet_close(false);
+		if (!navidromebrowse_album(navidrome.album_id, navidrome.album))
+			gui_notify_popup("nd_audio_unavailable");
+		else
+			switcher_set_player_return(lv_screen_active());
+		return;
+	}
 	if (!state.current_file[0]) {
 		return;
 	}
@@ -1817,6 +1848,10 @@ static void open_artist_cb(void *user) {
 
 	device_state_t state;
 	device_state_get(&state);
+	if (nd_audio_owns(state.current_file)) {
+		gui_notify_popup("nd_audio_unavailable");
+		return;
+	}
 	if (!state.current_file[0]) {
 		return;
 	}

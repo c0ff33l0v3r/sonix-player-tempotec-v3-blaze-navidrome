@@ -2,6 +2,7 @@
 
 #include <pthread.h>
 #include <stdbool.h>
+#include <time.h>
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
@@ -14,6 +15,28 @@ void streamturn_acquire(void) {
 	}
 	busy = true;
 	pthread_mutex_unlock(&lock);
+}
+
+bool streamturn_acquire_current(bool (*current)(void *), void *user) {
+	for (;;) {
+		if (!current(user))
+			return false;
+		pthread_mutex_lock(&lock);
+		if (!busy) {
+			busy = true;
+			pthread_mutex_unlock(&lock);
+			return true;
+		}
+		struct timespec deadline;
+		clock_gettime(CLOCK_REALTIME, &deadline);
+		deadline.tv_nsec += 100000000;
+		if (deadline.tv_nsec >= 1000000000) {
+			deadline.tv_sec++;
+			deadline.tv_nsec -= 1000000000;
+		}
+		pthread_cond_timedwait(&changed, &lock, &deadline);
+		pthread_mutex_unlock(&lock);
+	}
 }
 
 void streamturn_release(void) {
@@ -38,20 +61,22 @@ static pthread_mutex_t abandon_lock = PTHREAD_MUTEX_INITIALIZER;
 static streamturn_abandon_fn abandon_fns[ABANDON_MAX];
 static int abandon_count;
 
-void streamturn_register_abandon(streamturn_abandon_fn fn) {
+bool streamturn_register_abandon(streamturn_abandon_fn fn) {
 	if (!fn) {
-		return;
+		return false;
 	}
 	pthread_mutex_lock(&abandon_lock);
-	bool known = abandon_count >= ABANDON_MAX;
+	bool known = false;
 	for (int i = 0; i < abandon_count && !known; i++) {
 		known = abandon_fns[i] == fn;
 	}
-	if (!known) {
+	bool ok = known || abandon_count < ABANDON_MAX;
+	if (!known && ok) {
 		abandon_fns[abandon_count] = fn;
 		abandon_count++;
 	}
 	pthread_mutex_unlock(&abandon_lock);
+	return ok;
 }
 
 void streamturn_abandon_all(void) {

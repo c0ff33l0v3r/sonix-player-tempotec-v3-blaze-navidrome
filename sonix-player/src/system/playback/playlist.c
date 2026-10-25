@@ -49,6 +49,8 @@
 // for a queue nobody is looking at.
 static char **paths; // full path per entry, each its own allocation
 static library_index_t *source_ix;
+static playlist_source_t source;
+static uint32_t *source_map;
 // How many entries the handle serves. The rest -- what "add to queue" put
 // there after the fact -- are in `paths`, starting at zero, so a library queue
 // can still be added to without materialising the library.
@@ -100,6 +102,10 @@ static const char *entry_path(size_t entry) {
 	if (entry >= ix_count) {
 		size_t appended = entry - ix_count;
 		return paths ? paths[appended] : NULL;
+	}
+	if (source.path) {
+		static char ref[512];
+		return source.path(source.user, source_map[entry], ref, sizeof(ref)) ? ref : NULL;
 	}
 
 	int oldest = 0;
@@ -310,6 +316,11 @@ void playlist_clear(void) {
 	free(paths);
 	free(order);
 	library_index_close(source_ix);
+	if (source.close)
+		source.close(source.user);
+	memset(&source, 0, sizeof(source));
+	free(source_map);
+	source_map = NULL;
 	source_ix = NULL;
 	ix_count = 0;
 	path_cache_clear();
@@ -373,6 +384,11 @@ static void order_identity(size_t start_entry) {
 		entry_count = 0;
 		ix_count = 0;
 		library_index_close(source_ix);
+		if (source.close)
+			source.close(source.user);
+		memset(&source, 0, sizeof(source));
+		free(source_map);
+		source_map = NULL;
 		source_ix = NULL;
 		path_cache_clear();
 		return;
@@ -867,6 +883,66 @@ static bool rebuild_as_paths(uint8_t *gone) {
 	return true;
 }
 
+static bool remove_source_entries(uint8_t *gone) {
+	size_t n = entry_count, appended = appended_count();
+	size_t *map = malloc(n * sizeof(*map)), *fresh_order = malloc(n * sizeof(*fresh_order));
+	uint32_t *fresh_source = malloc(ix_count * sizeof(*fresh_source));
+	char **fresh_paths = calloc(appended ? appended : 1, sizeof(*fresh_paths));
+	if (!map || !fresh_order || (ix_count && !fresh_source) || !fresh_paths) {
+		free(map);
+		free(fresh_order);
+		free(fresh_source);
+		free(fresh_paths);
+		free(gone);
+		return false;
+	}
+	size_t kept = 0, kept_source = 0, kept_paths = 0;
+	for (size_t i = 0; i < n; i++) {
+		map[i] = SIZE_MAX;
+		if (gone[i])
+			continue;
+		map[i] = kept++;
+		if (i < ix_count)
+			fresh_source[kept_source++] = source_map[i];
+		else
+			fresh_paths[kept_paths++] = paths[i - ix_count];
+	}
+	size_t at = 0, fresh_pos = 0;
+	for (size_t i = 0; i < n; i++) {
+		if (map[order[i]] == SIZE_MAX)
+			continue;
+		if (i == pos)
+			fresh_pos = at;
+		fresh_order[at++] = map[order[i]];
+	}
+	for (size_t i = 0; i < appended; i++)
+		if (gone[ix_count + i])
+			free(paths[i]);
+	free(paths);
+	free(order);
+	free(source_map);
+	free(map);
+	free(gone);
+	paths = fresh_paths;
+	order = fresh_order;
+	source_map = fresh_source;
+	ix_count = kept_source;
+	if (!kept_source) {
+		if (source.close)
+			source.close(source.user);
+		memset(&source, 0, sizeof(source));
+		free(source_map);
+		source_map = NULL;
+	}
+	entry_count = kept;
+	capacity = appended;
+	pos = fresh_pos;
+	chain_valid = false;
+	custom_queue = true;
+	revision++;
+	return true;
+}
+
 bool playlist_remove(const int *indices, int count) {
 	if (!indices || count <= 0 || !order || entry_count == 0) {
 		return false;
@@ -892,7 +968,7 @@ bool playlist_remove(const int *indices, int count) {
 		return false;
 	}
 
-	return rebuild_as_paths(gone);
+	return source.path ? remove_source_entries(gone) : rebuild_as_paths(gone);
 }
 
 bool playlist_move(int from, int to) {
@@ -909,7 +985,7 @@ bool playlist_move(int from, int to) {
 
 	// An order of its own is something the query a library list is kept as
 	// cannot say: the queue becomes the paths, as a removal makes it.
-	if (ix_count > 0) {
+	if (ix_count > 0 && !source.path) {
 		size_t before = entry_count;
 		uint8_t *none = calloc(entry_count, 1);
 		if (!none || !rebuild_as_paths(none)) {
@@ -988,7 +1064,43 @@ bool playlist_load_index(library_index_t *ix, int start) {
 	return true;
 }
 
-bool playlist_is_library_backed(void) { return source_ix != NULL; }
+bool playlist_is_library_backed(void) { return source_ix != NULL || source.path != NULL; }
+
+bool playlist_has_source(void) { return source.path != NULL; }
+
+bool playlist_load_source(const playlist_source_t *fresh, int start) {
+	if (!fresh || !fresh->path || fresh->count <= 0 || (size_t)fresh->count > SIZE_MAX / sizeof(size_t))
+		return false;
+	size_t n = (size_t)fresh->count;
+	uint32_t *map = malloc(n * sizeof(*map));
+	size_t *fresh_order = malloc(n * sizeof(*fresh_order));
+	if (!map || !fresh_order) {
+		free(map);
+		free(fresh_order);
+		return false;
+	}
+	for (size_t i = 0; i < n; i++) {
+		map[i] = (uint32_t)i;
+		fresh_order[i] = i;
+	}
+	playlist_clear();
+	source = *fresh;
+	source_map = map;
+	order = fresh_order;
+	ix_count = entry_count = n;
+	pos = start >= 0 && (size_t)start < n ? (size_t)start : 0;
+	custom_queue = true;
+	if (shuffling())
+		order_shuffle_from(pos);
+	revision++;
+	return true;
+}
+
+bool playlist_metadata_at(int index, song_metadata_t *out) {
+	if (!out || !source.metadata || !order || index < 0 || (size_t)index >= entry_count || order[index] >= ix_count)
+		return false;
+	return source.metadata(source.user, source_map[order[index]], out);
+}
 
 size_t playlist_current_entry(void) { return (order && entry_count) ? order[pos] : 0; }
 
@@ -1055,7 +1167,7 @@ bool playlist_locate(const char *path) {
 		return false;
 	}
 
-	if (!source_ix) {
+	if (!source_ix && !source.path) {
 		for (size_t i = 0; i < entry_count; i++) {
 			if (strcmp(paths[order[i]], path) == 0) {
 				pos = i;

@@ -99,7 +99,7 @@ The full list is the commit history of the
 [`blaze-port`](https://github.com/carmine-bin/sonix-player-tempotec-v3-blaze/commits/blaze-port)
 branch.
 
-## Navidrome library browsing
+## Navidrome browsing and playback
 
 Open Streaming → Navidrome → Settings → **Navidrome server** to edit Host,
 Username, and Password, save/connect, or Forget Server. Host is the complete
@@ -125,7 +125,7 @@ once credentials are available (after unlock in encrypted mode). Settings shows
 connection status separately from the last sync time and library counts.
 Thumbnails download as they become visible and cached thumbnails remain
 available offline. The metadata and artwork cache lives under
-`.local/navidrome/` on the card; credentials remain in the separate internal
+`.local/navidrome/.cache/` on the card; credentials remain in the separate internal
 credential record in the selected protection mode. Name-sorted lists of at least
 30 entries show a letter strip while scrolling: tap or slide to jump, then it
 hides after inactivity. Album track lists retain disc/track order.
@@ -137,8 +137,36 @@ five retained; disabling stops recording and keeps the files. Passwords, usernam
 tokens, full request URLs, and raw responses are excluded. It operates independently
 of the debug launcher's full-player `navidrome.log`.
 
-Track lists currently provide read-only browsing. Playback, playlist browsing
-and synchronization, and search results are deferred to later changes.
+Tap a track to play it in the existing Now Playing screen. Album selections
+queue the complete album in disc/track order; Tracks selections queue the whole
+Tracks list, starting at the selected entry. Next/Previous, repeat, shuffle, and
+queue edits use the existing Music behavior. Browsing away or refreshing the
+library preserves the captured queue. Queues containing Navidrome entries are
+session-only and are not restored after restart.
+
+Playback requests the original audio without transcoding. MP3 and FLAC can start
+during download; other supported local formats finish downloading first. Seeking
+while downloading stays within confirmed available audio; unknown final lengths
+use conservative seek limits. Startup time and buffering depend on the format,
+tags, server, and network. No range-based remote seeking is provided.
+
+Original audio is retained under `.local/navidrome/.cache/audio/` on the selected card,
+with a 1 GiB budget and a 16 MiB free-space reserve. Only the current track and up
+to two upcoming tracks are prepared ahead. Eligible old entries and abandoned
+partials are reclaimed; these are disposable cache files, not pinned downloads.
+Complete matching files can play offline, including from a read-only card, once
+credentials and the matching library are available. Cache misses require an
+explicit existing connection and writable card; selecting a track does not
+reconnect automatically. Lock/Forget, credential replacement, and card changes
+cancel inappropriate playback or preparation. Audio on the card is not encrypted
+by Encrypt Credentials. Existing metadata, artwork, and audio caches move
+into `.local/navidrome/.cache/` when the card is writable. Read-only legacy cards
+remain usable until they can migrate. Credentials and diagnostic logs retain
+their existing locations.
+
+Show album opens the exact Navidrome album. Show artist is unavailable when the
+snapshot has no authoritative primary artist ID. Server favourites, playlists,
+search results, lyrics integration, and listening reports remain deferred.
 
 ### Blaze simulator
 

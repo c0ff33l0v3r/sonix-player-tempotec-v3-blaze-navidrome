@@ -2,6 +2,7 @@
 #include "navidromedebug.h"
 #include "src/system/library/library.h"
 #include <limits.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -334,9 +335,62 @@ bool nd_store_publish(nd_store_t *s) {
 	return false;
 }
 
+static pthread_mutex_t pin_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct {
+	char scope[33];
+	int64_t generation;
+	unsigned users;
+} pins[2];
+
+bool nd_store_retain(const char *scope, int64_t generation) {
+	pthread_mutex_lock(&pin_lock);
+	int free_slot = -1;
+	bool ok = false;
+	for (int i = 0; i < 2; i++) {
+		if (!pins[i].users)
+			free_slot = i;
+		else if (pins[i].generation == generation && !strcmp(pins[i].scope, scope)) {
+			pins[i].users++;
+			ok = true;
+			break;
+		}
+	}
+	if (!ok && free_slot >= 0) {
+		pins[free_slot].generation = generation;
+		snprintf(pins[free_slot].scope, sizeof(pins[free_slot].scope), "%s", scope);
+		pins[free_slot].users = 1;
+		ok = true;
+	}
+	pthread_mutex_unlock(&pin_lock);
+	return ok;
+}
+
+void nd_store_release(const char *scope, int64_t generation) {
+	pthread_mutex_lock(&pin_lock);
+	for (int i = 0; i < 2; i++)
+		if (pins[i].users && pins[i].generation == generation && !strcmp(pins[i].scope, scope)) {
+			pins[i].users--;
+			break;
+		}
+	pthread_mutex_unlock(&pin_lock);
+}
+
 void nd_store_cleanup(nd_store_t *s) {
-	// Readers use a read transaction, so SQLite protects any existing window.
-	sql(s, "DELETE FROM snapshot WHERE id NOT IN (SELECT gen FROM active)");
+	// The pin mutex serializes admission with deletion, not with playback I/O.
+	pthread_mutex_lock(&pin_lock);
+	sqlite3_stmt *st = NULL;
+	if (prepare(s, &st,
+				"DELETE FROM snapshot WHERE id NOT IN (SELECT gen FROM active) "
+				"AND NOT(id=?1 AND scope=?2) AND NOT(id=?3 AND scope=?4)")) {
+		for (int i = 0; i < 2; i++) {
+			sqlite3_bind_int64(st, 1 + 2 * i, pins[i].users ? pins[i].generation : -1);
+			bind(st, 2 + 2 * i, pins[i].scope);
+		}
+		if (sqlite3_step(st) != SQLITE_DONE)
+			s->error = "nd_cache_error";
+		sqlite3_finalize(st);
+	}
+	pthread_mutex_unlock(&pin_lock);
 }
 
 bool nd_store_contains(nd_store_t *s, int64_t gen, nd_kind_t kind, const char *id) {
@@ -438,4 +492,90 @@ bool nd_store_query(nd_store_t *s, int64_t gen, const nd_query_t *q, int offset,
 	}
 	bool ended = sql(s, ok ? "COMMIT" : "ROLLBACK");
 	return ok && ended;
+}
+
+bool nd_store_play_index(nd_store_t *s, int64_t gen, const nd_query_t *q, const char *selected, int64_t **handles, int *count, int *start) {
+	*handles = NULL;
+	*count = 0;
+	*start = -1;
+	if (q->kind != ND_TRACKS || !sql(s, "BEGIN"))
+		return false;
+	char text[768];
+	snprintf(text, sizeof(text),
+			 "SELECT e.rowid,e.id FROM entity e JOIN snapshot s ON s.id=e.gen "
+			 "WHERE e.gen=?1 AND e.kind=1 AND s.scope=?2 AND s.complete=1 %s ORDER BY %s",
+			 q->filter[0] ? "AND e.album=?3" : "", q->filter[0] ? "e.disc,e.track,e.sortkey,e.id" : "e.sortkey,e.id");
+	sqlite3_stmt *st = NULL;
+	bool ok = prepare(s, &st, text);
+	int64_t *entries = NULL;
+	size_t used = 0, cap = 0;
+	if (ok) {
+		sqlite3_bind_int64(st, 1, gen);
+		bind(st, 2, s->scope);
+		if (q->filter[0])
+			bind(st, 3, q->filter);
+		int rc;
+		while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+			if (used == cap) {
+				size_t more = cap ? cap * 2 : 128;
+				if (more > INT_MAX || more > SIZE_MAX / sizeof(*entries)) {
+					ok = false;
+					break;
+				}
+				int64_t *grown = realloc(entries, more * sizeof(*entries));
+				if (!grown) {
+					ok = false;
+					break;
+				}
+				entries = grown;
+				cap = more;
+			}
+			entries[used] = sqlite3_column_int64(st, 0);
+			const char *id = (const char *)sqlite3_column_text(st, 1);
+			if (id && !strcmp(id, selected))
+				*start = (int)used;
+			used++;
+		}
+		ok = ok && rc == SQLITE_DONE && used && *start >= 0;
+		sqlite3_finalize(st);
+	}
+	bool ended = sql(s, ok ? "COMMIT" : "ROLLBACK");
+	if (!ok || !ended) {
+		free(entries);
+		return false;
+	}
+	int64_t *compact = realloc(entries, used * sizeof(*entries));
+	if (compact)
+		entries = compact;
+	*handles = entries;
+	*count = (int)used;
+	return true;
+}
+
+bool nd_store_play_row(nd_store_t *s, int64_t gen, int64_t handle, nd_playrow_t *out) {
+	memset(out, 0, sizeof(*out));
+	sqlite3_stmt *st = NULL;
+	if (!prepare(s, &st,
+				 "SELECT e.id,e.title,e.artist,e.cover,e.duration,e.disc,e.track,e.album,a.title "
+				 "FROM entity e JOIN snapshot s ON s.id=e.gen LEFT JOIN entity a ON a.gen=e.gen AND a.kind=0 AND a.id=e.album "
+				 "WHERE e.rowid=?1 AND e.gen=?2 AND e.kind=1 AND s.scope=?3 AND s.complete=1"))
+		return false;
+	sqlite3_bind_int64(st, 1, handle);
+	sqlite3_bind_int64(st, 2, gen);
+	bind(st, 3, s->scope);
+	bool ok = sqlite3_step(st) == SQLITE_ROW;
+	if (ok) {
+		char *fields[] = {out->row.id, out->row.title, out->row.artist, out->row.cover, out->album_id, out->album};
+		size_t caps[] = {sizeof(out->row.id), sizeof(out->row.title), sizeof(out->row.artist), sizeof(out->row.cover), sizeof(out->album_id), sizeof(out->album)};
+		int columns[] = {0, 1, 2, 3, 7, 8};
+		for (int i = 0; i < 6; i++) {
+			const char *value = (const char *)sqlite3_column_text(st, columns[i]);
+			snprintf(fields[i], caps[i], "%s", value ? value : "");
+		}
+		out->row.duration = sqlite3_column_int(st, 4);
+		out->row.disc = sqlite3_column_int(st, 5);
+		out->row.track = sqlite3_column_int(st, 6);
+	}
+	sqlite3_finalize(st);
+	return ok;
 }

@@ -68,6 +68,8 @@
 #include "src/gui/shell/unchanged.h"
 #include "lvgl/lvgl.h"
 #include "src/gui/shell/uiscale.h"
+#include "src/gui/streaming/navidromeart.h"
+#include "src/system/streaming/navidromeplay.h"
 
 lv_obj_t *player_screen;
 
@@ -228,6 +230,7 @@ static lv_obj_t *live_badge;	   // live indicator, top right over the artwork
 static lv_obj_t *qobuz_badge;	   // the Qobuz mark, in the same corner
 static lv_obj_t *tidal_badge;	   // and the Tidal one, over it: only one ever shows
 static lv_obj_t *podcast_badge;	   // and the podcast one, third in the same place
+static lv_obj_t *navidrome_badge;
 static bool live_mode;
 static bool live_transport_hidden; // prev/next taken away on a stream
 static bool live_custom_nav;	   // on a station from a list, where they change station
@@ -1308,8 +1311,7 @@ static bool playing_local_file(const device_state_t *state) {
 		return false;
 	}
 	const char *f = state->current_file;
-	return !qobuzcache_owns(f) && !tidalcache_owns(f) && !podcastcache_is_episode(f) && !dlna_owns_path(f) &&
-		   !dlna_owns_playback();
+	return !nd_audio_owns(f) && !qobuzcache_owns(f) && !tidalcache_owns(f) && !podcastcache_is_episode(f) && !dlna_owns_path(f) && !dlna_owns_playback();
 }
 
 // Puts the progress slider over the waveform, or back where it belongs.
@@ -2758,7 +2760,7 @@ static int studio_cover_geometry(int *top_out) {
 // `parent` of NULL leaves them where they are and only re-places them, which
 // is what studio_place() wants on a relayout.
 static void studio_badges_move(lv_obj_t *parent, int y) {
-	lv_obj_t *const marks[] = {live_badge, qobuz_badge, tidal_badge, podcast_badge};
+	lv_obj_t *const marks[] = {live_badge, qobuz_badge, tidal_badge, podcast_badge, navidrome_badge};
 	for (size_t i = 0; i < sizeof(marks) / sizeof(marks[0]); i++) {
 		if (!marks[i]) {
 			continue;
@@ -2930,7 +2932,7 @@ static void studio_take_back(void) {
 		}
 		// The marks go back to the corner of the artwork they share with every
 		// other arrangement.
-		lv_obj_t *const marks[] = {live_badge, qobuz_badge, tidal_badge, podcast_badge};
+		lv_obj_t *const marks[] = {live_badge, qobuz_badge, tidal_badge, podcast_badge, navidrome_badge};
 		for (size_t i = 0; i < sizeof(marks) / sizeof(marks[0]); i++) {
 			if (marks[i]) {
 				lv_obj_set_parent(marks[i], cover_panel);
@@ -3471,9 +3473,26 @@ static void reload_cover(const char *filepath) {
 // and only an answer that differs from what is on screen costs anything. When
 // it does differ the old cover stays up for the one poll that takes, which
 // still reads better than a placeholder in the gap.
+static bool navidrome_cover_requested;
 static void refresh_cover(const char *filepath) {
 	if (!cover_img)
 		return;
+	navidromeart_release(ND_ART_PLAYER_SLOT);
+	navidrome_cover_requested = false;
+	nd_playrow_t track;
+	nd_library_t library;
+	if (navidromeplay_track(filepath, &track, &library)) {
+		cover_id_state = COVER_ID_IDLE;
+		cover_shown_id = cover_incoming_id = 0;
+		snprintf(cover_shown_path, sizeof(cover_shown_path), "%s", filepath);
+		int w, h;
+		cover_request_size(&w, &h);
+		navidromeart_request_player(&library, track.row.cover, w > 512 ? 512 : w, backdrop_w, layout_studio_now ? backdrop_studio_h : backdrop_h);
+		navidrome_cover_requested = cover_request_outstanding = true;
+		lv_timer_resume(progress_slider_timer);
+		cover_poll_start();
+		return;
+	}
 
 	snprintf(cover_shown_path, sizeof(cover_shown_path), "%s", filepath ? filepath : "");
 
@@ -3688,6 +3707,8 @@ static void glyph_warm_request(const char *const *paths, int count) {
 // decode. At the sizes of the last request, which is what the next one will
 // ask for.
 static void warm_next_cover(void) {
+	if (playlist_has_source())
+		return;
 	// The tags and the star of the same tracks are read ahead too
 	// (device_state_prefetch), whether or not there is a cover to warm, and
 	// their text gets its glyphs ready once the tags are in.
@@ -3761,9 +3782,9 @@ static void apply_cover_result(void) {
 		return;
 	}
 
-	cover_image_t new_cover, new_backdrop;
+	cover_image_t new_cover = {0}, new_backdrop = {0};
 	bool finished = false;
-	bool has_cover = coverloader_take_player(&new_cover, &new_backdrop, &finished);
+	bool has_cover = navidrome_cover_requested ? navidromeart_take_player(&new_cover, &new_backdrop, &finished) : coverloader_take_player(&new_cover, &new_backdrop, &finished);
 
 	if (!finished) {
 		return; // still decoding; what was on screen stays up
@@ -3784,7 +3805,7 @@ static void apply_cover_result(void) {
 		// loader is asked, because working the id out reads the file and this
 		// is the interface thread.
 		cover_shown_id = cover_incoming_id;
-		if (cover_shown_id == 0 && cover_shown_path[0]) {
+		if (!navidrome_cover_requested && cover_shown_id == 0 && cover_shown_path[0]) {
 			cover_id_state = COVER_ID_MEASURE;
 			coverloader_request_player_id(cover_shown_path);
 			cover_poll_start();
@@ -3842,6 +3863,7 @@ static void apply_cover_result(void) {
 		lyrics_look(true); // Studio's backdrop has arrived, or there is none
 	}
 	cover_incoming_id = 0;
+	navidrome_cover_requested = false;
 
 	warm_next_cover();
 
@@ -4121,6 +4143,12 @@ static long current_tidal_track(void) {
 // The question is the star's own -- is the file in the Qobuz cache? -- so
 // there is no extra state to keep in step.
 static void update_qobuz_badge(void) {
+	device_state_t source;
+	device_state_get(&source);
+	if (navidrome_badge) {
+		lv_obj_set_hidden(navidrome_badge, !nd_audio_owns(source.current_file));
+		lv_obj_move_foreground(navidrome_badge);
+	}
 	// The marks share one corner and can never appear together: a track comes
 	// from one service only. So which one shows is decided here, rather than
 	// leaving each badge to hide itself -- which is how they would eventually
@@ -4158,6 +4186,10 @@ static void update_qobuz_badge(void) {
 // Repaints the star from the database: filled yellow when the loaded track
 // is a favourite, quiet outline otherwise.
 static void update_fav_button(void) {
+	device_state_t source_state;
+	device_state_get(&source_state);
+	if (fav_btn_obj)
+		lv_obj_set_state(fav_btn_obj, LV_STATE_DISABLED, nd_audio_owns(source_state.current_file));
 	if (!fav_btn_icon) {
 		return;
 	}
@@ -4196,7 +4228,7 @@ static void update_fav_button(void) {
 		device_state_get(&state);
 		// Read ahead while the previous track played when it can be (see
 		// device_state_prefetch); the database otherwise.
-		if (!state.current_file[0]) {
+		if (!state.current_file[0] || nd_audio_owns(state.current_file)) {
 			starred = false;
 		} else if (!device_state_prefetched_fav(state.current_file, &starred)) {
 			starred = library_fav_contains(state.current_file);
@@ -4248,6 +4280,10 @@ static void tidal_fav_done(bool ok, const char *error, void *user) {
 
 static void fav_btn_event_cb(lv_event_t *e) {
 	(void)e;
+	device_state_t source_state;
+	device_state_get(&source_state);
+	if (nd_audio_owns(source_state.current_file))
+		return;
 
 	radio_station_t station;
 	if (radio_current_station(&station)) {
@@ -4307,6 +4343,10 @@ static void fav_btn_event_cb(lv_event_t *e) {
 
 // The format line, the way the stock player writes it: "16/44.1 FLAC".
 static void update_format_label(const device_state_t *state) {
+	if (navidromeplay_preparing()) {
+		gui_label_set_text(format_label, tr("nd_audio_preparing"));
+		return;
+	}
 	// The mark beside it in Studio, which is the same question asked of the
 	// stream rather than of the library. Here because this is where the format
 	// line is worked out, and the two say one thing between them.
@@ -4399,8 +4439,7 @@ static void update_format_label(const device_state_t *state) {
 		// AAC) the real average stands in -- but only once the download has
 		// finished, for the reason just given.
 		struct stat st;
-		if (kbps <= 0 && !qobuzcache_owns(state->current_file) && !tidalcache_owns(state->current_file) &&
-			state->progress_total_secs > 0.5 && stat(state->current_file, &st) == 0 && st.st_size > 0) {
+		if (kbps <= 0 && !nd_audio_owns(state->current_file) && !qobuzcache_owns(state->current_file) && !tidalcache_owns(state->current_file) && state->progress_total_secs > 0.5 && stat(state->current_file, &st) == 0 && st.st_size > 0) {
 			kbps = (int)((double)st.st_size * 8.0 / state->progress_total_secs / 1000.0 + 0.5);
 		}
 
@@ -4571,6 +4610,7 @@ static const char *const PROF_UP_LED = "up_led";
 static const char *const PROF_UP_REMEMBER = "up_remember_note";
 
 static void update_progress(void) {
+	navidromeplay_tick();
 	// Auto-advance or loop the folder when the track has played through.
 	if (device_state_take_completion()) {
 		handle_track_finished();
@@ -5342,7 +5382,7 @@ void player_set_statusbar_always(bool on) {
 	// The marks in the artwork's corner, and everything lined up with the
 	// chevron, follow it down or back up.
 	if (!studio_up) {
-		lv_obj_t *const marks[] = {live_badge, qobuz_badge, tidal_badge, podcast_badge};
+		lv_obj_t *const marks[] = {live_badge, qobuz_badge, tidal_badge, podcast_badge, navidrome_badge};
 		for (size_t i = 0; i < sizeof(marks) / sizeof(marks[0]); i++) {
 			if (marks[i]) {
 				lv_obj_align(marks[i], LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
@@ -6049,6 +6089,15 @@ void player_init(gui_config_t *cfg) {
 	lv_image_set_src(podcast_badge, &icon_podcast_badge);
 	lv_obj_align(podcast_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
 	lv_obj_set_hidden(podcast_badge, true);
+	navidrome_badge = lv_label_create(cover_panel);
+	lv_label_set_text(navidrome_badge, tr("navidrome"));
+	lv_obj_set_style_text_font(navidrome_badge, &font_ui_18, 0);
+	lv_obj_set_style_text_color(navidrome_badge, lv_color_white(), 0);
+	lv_obj_set_style_bg_color(navidrome_badge, lv_color_black(), 0);
+	lv_obj_set_style_bg_opa(navidrome_badge, LV_OPA_70, 0);
+	lv_obj_set_style_pad_all(navidrome_badge, ui_px(4), 0);
+	lv_obj_align(navidrome_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
+	lv_obj_set_hidden(navidrome_badge, true);
 
 	// Shown while there is no artwork for the current track.
 	cover_placeholder_icon = lv_image_create(cover_panel);

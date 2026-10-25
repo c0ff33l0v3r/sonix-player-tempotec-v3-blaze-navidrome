@@ -1,6 +1,8 @@
 #include "navidromepage.h"
 #include "navidromebrowse.h"
 #include "navidromesettings.h"
+#include "src/system/streaming/navidromeplay.h"
+#include <stdlib.h>
 #include <string.h>
 
 #include "src/gui/nowplaying/coverflow.h"
@@ -145,6 +147,8 @@ static void corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *gly
 }
 
 void navidromepage_init(gui_config_t *cfg) {
+	navidromeplay_init();
+	atexit(navidromeplay_shutdown);
 	navidrome_screen = lv_obj_create(NULL);
 
 	const grid_entry_t entries[] = {
