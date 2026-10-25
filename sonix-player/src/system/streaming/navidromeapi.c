@@ -2,6 +2,7 @@
 #include "navidrome.h"
 #include "navidromebatch.h"
 #include "navidromedebug.h"
+#include "navidromeplayliststore.h"
 #include "src/system/core/md5.h"
 #include "src/system/net/http.h"
 #include <ctype.h>
@@ -49,7 +50,7 @@ const char *nd_api_stream(const char *host, const char *user, const char *passwo
 	return error;
 }
 
-const char *nd_api_json(const char *host, const char *user, const char *password, const char *method, const char *query, size_t limit, nd_document_t *out) {
+static const char *json_request(const char *host, const char *user, const char *password, const char *method, const char *query, size_t limit, int tokens, const char *form, nd_document_t *out) {
 	memset(out, 0, sizeof(*out));
 	char url[2500];
 	const char *error = request_url(host, user, password, method, query, url, sizeof(url));
@@ -59,7 +60,7 @@ const char *nd_api_json(const char *host, const char *user, const char *password
 	size_t size = 0, received = 0;
 	int status = 0;
 	bool too_large = false;
-	http_req_t request = {.received_out = &received, .diagnostic = nd_debug_line, .body_limit_out = &too_large, .want_error_body = true, .sensitive_url = true, .require_complete_body = true};
+	http_req_t request = {.method = form ? "POST" : NULL, .body = form, .received_out = &received, .diagnostic = nd_debug_line, .body_limit_out = &too_large, .want_error_body = true, .sensitive_url = true, .require_complete_body = true};
 	nd_log("navidrome: %s start scheme=%s timeout_seconds=8 body_limit=%zu\n", method, !strncmp(host, "https://", 8) ? "https" : "http", limit);
 	bool ok = http_request(url, &request, &body, &size, limit, 8, &status);
 	bool diagnostic_error = http_last_error() != NULL;
@@ -72,7 +73,7 @@ const char *nd_api_json(const char *host, const char *user, const char *password
 		free(body);
 		nd_log("navidrome: %s rejected reason=%s\n", method, status >= 200 && status < 300 ? "incomplete_or_oversized_http_body" : "http_request_failed");
 		if (too_large && status >= 200 && status < 300 && strcmp(method, "ping"))
-			return "nd_page_large";
+			return tokens == ND_PL_TOKENS ? "nd_pl_too_large" : "nd_page_large";
 		if (status >= 200 && status < 300)
 			return "nd_response_error";
 		if (status >= 400)
@@ -91,10 +92,10 @@ const char *nd_api_json(const char *host, const char *user, const char *password
 	json_doc_t doc;
 	json_parse_result_t parsed = JSON_PARSE_SYNTAX;
 	if (size && size < limit && !memchr(body, 0, size))
-		parsed = json_parse_detailed(body, &doc, ND_API_TOKENS);
+		parsed = json_parse_detailed(body, &doc, tokens);
 	if (parsed == JSON_PARSE_TOKENS) {
 		reason = "token_limit";
-		error = status >= 400 ? "nd_api_error" : strcmp(method, "ping") ? "nd_page_large" : "nd_response_error";
+		error = status >= 400 ? "nd_api_error" : tokens == ND_PL_TOKENS ? "nd_pl_too_large" : strcmp(method, "ping") ? "nd_page_large" : "nd_response_error";
 	} else if (parsed == JSON_PARSE_DEPTH) {
 		reason = "depth_limit";
 		error = "nd_json_depth";
@@ -127,7 +128,7 @@ const char *nd_api_json(const char *host, const char *user, const char *password
 			} else if (!strcmp(result, "failed")) {
 				int failure = json_get(&doc, response, "error");
 				long code = json_obj_long(&doc, failure, "code", 0);
-				error = code == 40 ? "nd_auth_error" : "nd_api_error";
+				error = code == 40 ? "nd_auth_error" : tokens == ND_PL_TOKENS && code == 50 ? "nd_pl_readonly" : tokens == ND_PL_TOKENS && code == 70 ? "nd_pl_missing" : "nd_api_error";
 				reason = "subsonic_failed";
 				nd_log("navidrome: %s API error_code=%ld\n", method, code);
 			}
@@ -141,10 +142,20 @@ const char *nd_api_json(const char *host, const char *user, const char *password
 		}
 		json_free(&doc);
 	}
-	nd_log("navidrome: %s result=%s reason=%s bytes=%zu byte_limit=%zu token_limit=%d depth_limit=%d\n", method, error ? error : "connected", reason, size, limit, ND_API_TOKENS, JSON_MAX_DEPTH);
+	nd_log("navidrome: %s result=%s reason=%s bytes=%zu byte_limit=%zu token_limit=%d depth_limit=%d\n", method, error ? error : "connected", reason, size, limit, tokens, JSON_MAX_DEPTH);
 	nd_wipe(body, size);
 	free(body);
 	return error;
+}
+
+const char *nd_api_json(const char *host, const char *user, const char *password, const char *method, const char *query, size_t limit, nd_document_t *out) {
+	return json_request(host, user, password, method, query, limit, ND_API_TOKENS, NULL, out);
+}
+
+const char *nd_api_playlist(const char *host, const char *user, const char *password, const char *method, const char *query, const char *form, nd_document_t *out) {
+	if (form && strlen(form) > ND_PL_BYTES)
+		return "nd_pl_too_large";
+	return json_request(host, user, password, method, query, ND_PL_BYTES + 1, ND_PL_TOKENS, form, out);
 }
 
 void nd_api_free(nd_document_t *doc) {

@@ -4,6 +4,8 @@
 #include "src/gui/nowplaying/cover.h"
 #include "src/system/streaming/navidromestore.h"
 #define ND_ART_PLAYER_SLOT ND_WINDOW
+// Reference pixels, matching Music medialist thumbnails; scale with ui_px().
+#define ND_ART_THUMB_SIZE 72
 
 void navidromeart_request(int slot, const nd_library_t *library, const char *id, int size);
 void navidromeart_release(int slot);

@@ -6,6 +6,8 @@
 
 void navidromebrowse_init(gui_config_t *cfg);
 void navidromebrowse_open(nd_kind_t kind);
+// Playlist Add tracks entry: taps select tracks; album taps still drill down.
+void navidromebrowse_pick(nd_kind_t kind);
 void navidromebrowse_refresh(void);
 bool navidromebrowse_album(const char *id, const char *title);
 

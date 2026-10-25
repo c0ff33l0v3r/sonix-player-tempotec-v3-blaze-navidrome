@@ -58,6 +58,10 @@ void navidrome_network_failed(const nd_context_t *context);
 // Called under service mutex: callback may only wake/cancel workers or post.
 void navidrome_set_playback_invalidator(void (*invalidate)(void));
 void navidrome_set_playback_network_stop(void (*cancel)(void));
+// Serialized external playlist worker, sharing credential/card lifecycle with service jobs.
+bool navidrome_external_begin(const nd_context_t *context, bool network);
+void navidrome_external_end(void);
+bool navidrome_context_commit(const nd_context_t *context, sqlite3 *db);
 
 // Blocking protocol boundary, also used by the focused fixture checks.
 const char *navidrome_ping(const char *host, const char *user, const char *password);

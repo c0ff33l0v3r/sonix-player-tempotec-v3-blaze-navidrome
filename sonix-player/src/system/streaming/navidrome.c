@@ -35,7 +35,7 @@ typedef struct {
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t ready = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t io_drained = PTHREAD_COND_INITIALIZER;
-static unsigned cache_users, sync_owners;
+static unsigned cache_users, sync_owners, external_users;
 static pthread_t worker;
 static struct {
 	bool initialized, started, stop, pending, busy, configured, invalid, unlocked, checking, connected;
@@ -844,7 +844,7 @@ void navidrome_snapshot(navidrome_snapshot_t *out) {
 	out->unlocked = g.unlocked;
 	out->authenticated = g.unlocked && g.record.authenticated;
 	out->invalid = g.invalid;
-	out->busy = g.busy;
+	out->busy = g.busy || external_users;
 	out->revision = g.revision;
 	out->error = g.error;
 	out->state = !g.configured ? ND_UNCONFIGURED : !g.unlocked ? ND_LOCKED : g.checking ? ND_CONNECTING : g.connected ? ND_CONNECTED : ND_DISCONNECTED;
@@ -863,7 +863,7 @@ bool navidrome_password(char out[ND_SECRET_MAX]) {
 
 // lock must be held. One pending slot, with no secret-bearing backlog.
 static bool submit(job_t *job) {
-	if (g.busy || g.stop || !g.initialized)
+	if (g.busy || (external_users && job->kind != JOB_FORGET) || g.stop || !g.initialized)
 		return false;
 	if (!g.started) {
 		if (pthread_create(&worker, NULL, work, NULL)) {
@@ -1075,7 +1075,7 @@ void navidrome_shutdown(void) {
 	if (join)
 		pthread_join(worker, NULL);
 	pthread_mutex_lock(&lock);
-	while (cache_users || sync_owners)
+	while (cache_users || sync_owners || external_users)
 		pthread_cond_wait(&io_drained, &lock);
 	pthread_mutex_unlock(&lock);
 	nd_debug_shutdown();
@@ -1196,7 +1196,7 @@ bool navidrome_context(nd_context_t *out, bool network) {
 
 bool navidrome_context_current(const nd_context_t *context, bool network) {
 	pthread_mutex_lock(&lock);
-	bool ok = g.unlocked && context->epoch == g.local_epoch && context->card_epoch == g.card_epoch && (!network || (g.connected && context->network_epoch == g.generation));
+	bool ok = !g.stop && g.unlocked && context->epoch == g.local_epoch && context->card_epoch == g.card_epoch && (!network || (g.connected && context->network_epoch == g.generation));
 	pthread_mutex_unlock(&lock);
 	return ok;
 }
@@ -1280,4 +1280,28 @@ void navidrome_set_playback_network_stop(void (*cancel)(void)) {
 	pthread_mutex_lock(&lock);
 	g.stop_playback_network = cancel;
 	pthread_mutex_unlock(&lock);
+}
+
+bool navidrome_external_begin(const nd_context_t *context, bool network) {
+	pthread_mutex_lock(&lock);
+	bool ok = !g.stop && !g.busy && !external_users && g.unlocked && context->epoch == g.local_epoch && context->card_epoch == g.card_epoch && (!network || (g.connected && context->network_epoch == g.generation));
+	if (ok)
+		external_users++;
+	pthread_mutex_unlock(&lock);
+	return ok;
+}
+void navidrome_external_end(void) {
+	pthread_mutex_lock(&lock);
+	if (external_users)
+		external_users--;
+	pthread_cond_broadcast(&io_drained);
+	pthread_mutex_unlock(&lock);
+}
+bool navidrome_context_commit(const nd_context_t *context, sqlite3 *db) {
+	pthread_mutex_lock(&lock);
+	bool ok = !g.stop && g.unlocked && context->epoch == g.local_epoch && context->card_epoch == g.card_epoch;
+	if (ok)
+		ok = sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK;
+	pthread_mutex_unlock(&lock);
+	return ok;
 }

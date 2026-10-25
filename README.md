@@ -165,8 +165,62 @@ remain usable until they can migrate. Credentials and diagnostic logs retain
 their existing locations.
 
 Show album opens the exact Navidrome album. Show artist is unavailable when the
-snapshot has no authoritative primary artist ID. Server favourites, playlists,
+snapshot has no authoritative primary artist ID. Server favourites,
 search results, lyrics integration, and listening reports remain deferred.
+
+Navidrome → **Playlists** stores playlists of Navidrome track references on the
+selected card. Like Music’s Playlists page, it starts with a **New playlist** row
+and shows playlist icons and track counts; **Import from Navidrome** is in the header.
+Local copies open and can be renamed or edited offline with available credentials. They
+remain available without a library snapshot; adding library tracks needs a
+complete snapshot. Read-only cards permit browsing but cannot save edits.
+
+Track and album menus offer **Add to playlist**. Long press a track or album to
+select several, then use the list-plus action. Albums append their individual
+tracks in disc/track order; selections follow the displayed list order. Tracks
+already present by server ID, including repeats in the same batch, are skipped
+with added/skipped counts. Imported repetitions are preserved. In an opened
+playlist, long press selects entries for removal; removing an entry does not
+delete its audio. The header's list-plus action adds tracks/albums directly to
+that playlist. In this Add tracks flow, track taps select entries; album taps
+open their tracks for selection. Normal category browsing keeps playback taps.
+Rename is in its menu; linked playlists also offer Save as local copy. Saving a
+copy asks for its name (the original name is allowed) before creating an unlinked
+copy. The collection's row menu can delete only the local copy.
+
+**Upload to Navidrome** creates a server playlist and links the existing local
+copy. An imported or uploaded playlist has a header sync icon with **Pull from
+Navidrome** (replace the local name and entries) and **Publish to Navidrome**
+(replace the linked server name and entries). Local edits never publish
+automatically, and Sync Library does not synchronize playlists. Pull confirms
+before discarding local edits; Publish confirms replacement and flags a server
+version that changed since the last sync. Another server edit can still race
+the final check because this API has no conditional update. Readonly/shared
+server playlists can be edited locally, but server permissions control Publish.
+
+A write whose outcome is uncertain shows **Needs verification**. Use **Verify
+server version** for a known link. If an upload returned no server ID, **Find
+uploaded playlist** lists same-named candidates; selecting one verifies its
+contents before linking. Creating another playlist instead requires an explicit
+confirmation because the earlier upload may already exist. Failed multi-step
+updates preserve local edits and the previous successful sync time. No write is
+retried automatically. Missing server playlists retain their local copy/link;
+Save as local copy creates an unlinked copy for a deliberate new upload.
+
+Playlist definitions live in `.local/navidrome/playlists-<scope>.db`, independently
+of replaceable library snapshots. Cache rebuilds do not erase them. Older
+binaries ignore this separate database; unsupported/corrupt playlist stores
+report an error rather than being reset automatically. Forget/reset retains
+its existing explicit scope-removal behavior.
+
+Remote catalogue/content responses are limited to 2 MiB and 131,072 JSON tokens;
+encoded mutation forms are limited to 2 MiB, with an 8 MiB explicit response,
+parser, and request-buffer budget. Unsupported sizes fail without truncating a
+local playlist. Upload requires the server's OpenSubsonic form-POST support.
+
+Playback from saved playlists, search results, audio upload/download, SD-card file
+matching, mixed-source playlists, automatic merge/sync, server deletion, and
+manual drag reordering remain outside this feature.
 
 ### Blaze simulator
 

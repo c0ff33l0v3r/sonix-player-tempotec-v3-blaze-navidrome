@@ -12,7 +12,38 @@ lv_font_t font_ui_14, font_ui_18, font_ui_20, font_ui_64_bold;
 extern const lv_font_t lv_font_unscii_8;
 lv_style_t theme_style_icon;
 static const uint8_t fixture_pixel[4] = {255, 255, 255, 255};
-const lv_image_dsc_t icon_music_note = {.header = {.magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_ARGB8888, .w = 1, .h = 1, .stride = 4}, .data = fixture_pixel, .data_size = 4};
+#define FIXTURE_ICON {.header = {.magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_ARGB8888, .w = 1, .h = 1, .stride = 4}, .data = fixture_pixel, .data_size = 4}
+const lv_image_dsc_t icon_close = FIXTURE_ICON, icon_list_plus = FIXTURE_ICON, icon_ellipsis_vertical = FIXTURE_ICON, icon_check = FIXTURE_ICON;
+#ifndef NAVIDROME_PLAYLIST_UI
+void navidromeplaylists_pick(int64_t session, int64_t generation, lv_obj_t *origin) {
+	(void)session;
+	(void)generation;
+	(void)origin;
+}
+#endif
+void settingsrow_title_corner_slots(lv_obj_t *title, gui_config_t *cfg, int n) {
+	(void)title;
+	(void)cfg;
+	(void)n;
+}
+void switcher_set_back_guard(lv_obj_t *screen, bool (*handler)(void)) {
+	(void)screen;
+	(void)handler;
+}
+void switcher_set_back_guard_peek(lv_obj_t *screen, bool (*handler)(void)) {
+	(void)screen;
+	(void)handler;
+}
+popover_item_t fixture_menu[7];
+int fixture_menu_count;
+void popover_close(void) {}
+void popover_show(lv_obj_t *anchor, const popover_item_t *items, int count) {
+	(void)anchor;
+	fixture_menu_count = count;
+	memcpy(fixture_menu, items, (size_t)count * sizeof(*items));
+}
+static const uint8_t fixture_note_pixels[128 * 128 * 4];
+const lv_image_dsc_t icon_music_note = {.header = {.magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_ARGB8888, .w = 128, .h = 128, .stride = 512}, .data = fixture_note_pixels, .data_size = sizeof(fixture_note_pixels)};
 lv_style_t theme_style_screen, theme_style_card, theme_style_card_pressed, theme_style_text, theme_style_text_dim;
 lv_obj_t *navidrome_screen;
 static bool dragging;
@@ -26,7 +57,14 @@ bool navidromeplay_select(const nd_library_t *library, const nd_query_t *query, 
 	return true;
 }
 #endif
-const char *tr(const char *key) { return key; }
+const char *tr(const char *key) {
+#ifdef NAVIDROME_PLAYLIST_UI
+	if (!strcmp(key, "playlist_tracks")) return "%d tracks";
+	if (!strcmp(key, "playlist_track_2")) return "%d track";
+	if (!strcmp(key, "nd_pl_no_tracks")) return "No tracks yet.";
+#endif
+	return key;
+}
 void gui_notify_popup(const char *key) { (void)key; }
 bool switcher_back_drag_active(void) { return dragging; }
 bool player_sheet_drag_active(void) { return dragging; }
@@ -49,6 +87,7 @@ lv_obj_t *settingsrow_title(lv_obj_t *screen, gui_config_t *cfg, const char *tex
 	lv_label_set_text(label, text);
 	return label;
 }
+#ifndef NAVIDROME_PLAYLIST_UI
 void navidromeart_release(int slot) { (void)slot; }
 void navidromeart_request(int slot, const nd_library_t *library, const char *id, int size) {
 	(void)slot;
@@ -62,6 +101,7 @@ bool navidromeart_take(int slot, cover_image_t *image, bool *finished) {
 	*finished = true;
 	return false;
 }
+#endif
 void cover_free(cover_image_t *image) {
 	free(image->pixels);
 	memset(image, 0, sizeof(*image));
@@ -187,7 +227,7 @@ static void seed(const nd_library_t *library) {
 	nd_store_close(&store);
 }
 
-#ifndef NAVIDROME_COORDINATOR_TEST
+#if !defined(NAVIDROME_COORDINATOR_TEST) && !defined(NAVIDROME_PLAYLIST_UI)
 int main(void) {
 	alarm(60);
 	setvbuf(stdout, NULL, _IONBF, 0);
@@ -219,6 +259,14 @@ int main(void) {
 	navidromebrowse_open(ND_TRACKS);
 	window_wait(0);
 	assert(pages[0].total == 17000 && pages[0].count == ND_WINDOW);
+	assert(lv_obj_get_width(pages[0].images[0]) == ui_px(ND_ART_THUMB_SIZE));
+	assert(lv_image_get_inner_align(pages[0].images[0]) == LV_IMAGE_ALIGN_CONTAIN);
+	lv_area_t art_bounds, row_bounds, name_bounds;
+	lv_obj_get_coords(pages[0].images[0], &art_bounds);
+	lv_obj_get_coords(pages[0].rows[0], &row_bounds);
+	lv_obj_get_coords(pages[0].names[0], &name_bounds);
+	assert(art_bounds.y1 >= row_bounds.y1 && art_bounds.y2 <= row_bounds.y2);
+	assert(art_bounds.x2 < name_bounds.x1);
 	lv_obj_scroll_to_y(pages[0].list, 16995 * pitch, LV_ANIM_OFF);
 	lv_obj_update_layout(pages[0].screen);
 	lv_obj_send_event(pages[0].list, LV_EVENT_SCROLL, NULL);
@@ -282,6 +330,8 @@ int main(void) {
 		window_wait(1);
 		assert(pages[1].total == 1700 && pages[1].index->enabled);
 		assert(pages[1].letters[1] == 0); // The full matching artist/genre album query.
+		lv_obj_send_event(pages[1].menus[0], LV_EVENT_CLICKED, NULL);
+		assert(fixture_menu_count == 1 && !strcmp(fixture_menu[0].label, "add_to_playlist"));
 		lv_obj_send_event(pages[1].rows[0], LV_EVENT_CLICKED, NULL);
 		window_wait(2);
 		assert(pages[2].total == 10 && !pages[2].index->enabled);
@@ -319,7 +369,51 @@ int main(void) {
 	window_wait(0);
 	puts("real LVGL snapshot replacement and removed-selection recovery: passed");
 	assert(atomic_load(&calls) == requests_before);
-	puts("real LVGL four paths, parent scroll, gesture guards, no network/playback: passed");
+	puts("real LVGL four paths, parent scroll, gesture guards, no browsing-triggered network/playback: passed");
+	unsigned before_selection = playback_selections;
+	lv_obj_send_event(pages[0].rows[0], LV_EVENT_LONG_PRESSED, NULL);
+	for (int i = 0; i < 10000 && (navidrome_playlists_busy() || !pages[0].selecting); i++) {
+		drain();
+		usleep(1000);
+	}
+	window_wait(0);
+	assert(pages[0].selecting && pages[0].selected == 1 && pages[0].chosen[0]);
+	// A letter jump during an asynchronous toggle must not supersede its
+	// completion and strand select_busy. The completion loads the latest scroll.
+	lv_obj_send_event(pages[0].rows[1], LV_EVENT_CLICKED, NULL);
+	assert(pages[0].select_busy);
+	go(pages[0].index, 26);
+	for (int i = 0; i < 10000 && (navidrome_playlists_busy() || pages[0].select_busy); i++) {
+		drain();
+		usleep(1000);
+	}
+	window_wait(0);
+	assert(pages[0].selected == 2 && pages[0].first <= 25 * 654 && pages[0].first + pages[0].count > 25 * 654);
+	lv_obj_scroll_to_y(pages[0].list, 500 * pitch, LV_ANIM_OFF);
+	lv_obj_update_layout(pages[0].screen);
+	lv_obj_send_event(pages[0].list, LV_EVENT_SCROLL, NULL);
+	window_wait(0);
+	lv_obj_send_event(pages[0].rows[0], LV_EVENT_CLICKED, NULL);
+	for (int i = 0; i < 10000 && (navidrome_playlists_busy() || pages[0].selected != 3); i++) {
+		drain();
+		usleep(1000);
+	}
+	window_wait(0);
+	assert(pages[0].selected == 3 && pages[0].chosen[0]);
+	assert(playback_selections == before_selection);
+	lv_obj_send_event(pages[0].rows[1], LV_EVENT_CLICKED, NULL);
+	assert(pages[0].select_busy);
+	assert(browse_selection_back());
+	for (int i = 0; i < 10000 && navidrome_playlists_busy(); i++) {
+		drain();
+		usleep(1000);
+	}
+	window_wait(0);
+	assert(!pages[0].selecting && !pages[0].select_busy);
+	lv_obj_send_event(pages[0].rows[0], LV_EVENT_CLICKED, NULL);
+	assert(playback_selections == before_selection + 1);
+	puts("real LVGL long press, cross-window selection, concurrent letter jump/Cancel, and restored playback: passed");
+
 	navidromebrowse_open(ND_TRACKS); // Leave one window completion pending.
 	navidrome_lock();
 	navidromebrowse_refresh();

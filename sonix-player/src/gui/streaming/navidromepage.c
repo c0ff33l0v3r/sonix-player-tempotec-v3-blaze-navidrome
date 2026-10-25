@@ -1,5 +1,6 @@
 #include "navidromepage.h"
 #include "navidromebrowse.h"
+#include "navidromeplaylists.h"
 #include "navidromesettings.h"
 #include "src/system/streaming/navidromeplay.h"
 #include <stdlib.h>
@@ -40,19 +41,6 @@ static void unavailable_cb(lv_event_t *e) {
 	gui_notify_popup(message);
 }
 
-static void tile_action(const char *label) {
-	navidrome_poll_network();
-	navidrome_snapshot_t s;
-	navidrome_snapshot(&s);
-	if (s.state != ND_CONNECTED) {
-		gui_notify_popup(navidrome_feedback(&s));
-		return;
-	}
-	char message[160];
-	lv_snprintf(message, sizeof(message), tr("grid_not_yet_available"), tr(label));
-	gui_notify_popup(message);
-}
-
 static void category_action(nd_kind_t kind) {
 	navidrome_snapshot_t s;
 	nd_library_t library;
@@ -72,7 +60,7 @@ static void albums_action(void) { category_action(ND_ALBUMS); }
 static void tracks_action(void) { category_action(ND_TRACKS); }
 static void artists_action(void) { category_action(ND_ARTISTS); }
 static void genres_action(void) { category_action(ND_GENRES); }
-static void playlists_action(void) { tile_action("playlists"); }
+static void playlists_action(void) { navidromeplaylists_open(); }
 
 static void settings_cb(lv_event_t *e) {
 	(void)e;
@@ -87,10 +75,11 @@ static void refresh(void) {
 	nd_library_t library;
 	navidrome_library_snapshot(&library);
 	for (int i = 0; i < 5; i++)
-		gridpage_set_dimmed(category_grid, i, i == 4 ? dim : !library.ready);
+		gridpage_set_dimmed(category_grid, i, i == 4 ? !(snapshot.unlocked && *library.path && *library.scope) : !library.ready);
 	lv_obj_set_style_opa(search_icon, dim ? LV_OPA_40 : LV_OPA_COVER, 0);
 	navidromesettings_refresh();
 	navidromebrowse_refresh();
+	navidromeplaylists_refresh();
 }
 
 #ifndef HOST_BUILD
@@ -160,6 +149,7 @@ void navidromepage_init(gui_config_t *cfg) {
 	corner_button(cfg, 1, &icon_search, "navidrome_search");
 	navidromesettings_init(cfg);
 	navidromebrowse_init(cfg);
+	navidromeplaylists_init(cfg);
 	navidrome_set_listener(refresh);
 	lv_obj_add_event_cb(navidrome_screen, menu_loaded, LV_EVENT_SCREEN_LOADED, NULL);
 	lv_obj_add_event_cb(navidrome_screen, menu_unloaded, LV_EVENT_SCREEN_UNLOADED, NULL);

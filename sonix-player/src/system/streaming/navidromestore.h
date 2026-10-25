@@ -62,6 +62,7 @@ bool nd_store_retain(const char *scope, int64_t generation);
 void nd_store_release(const char *scope, int64_t generation);
 bool nd_store_query(nd_store_t *store, int64_t generation, const nd_query_t *query, int offset, nd_row_t rows[ND_WINDOW], int *count, int *total);
 bool nd_store_letters(nd_store_t *store, int64_t generation, const nd_query_t *query, int first[ND_LETTER_BUCKETS]);
+bool nd_store_track(nd_store_t *store, int64_t generation, const char *id, nd_row_t *out);
 bool nd_store_contains(nd_store_t *store, int64_t generation, nd_kind_t kind, const char *id);
 
 #endif

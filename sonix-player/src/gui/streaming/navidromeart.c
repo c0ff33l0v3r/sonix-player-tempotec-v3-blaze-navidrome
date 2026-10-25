@@ -70,12 +70,52 @@ static bool trim(const char *dir, size_t incoming) {
 	}
 }
 
+static void cache_key(const art_slot_t *job, int size, char key[33]) {
+	char input[ND_ID_MAX + 100];
+	snprintf(input, sizeof(input), "%s:%zu:%s:%d:v1", job->library.scope, strlen(job->id), job->id, size);
+	md5_hex(input, strlen(input), key);
+}
+
+// Encoded artwork can be decoded at the new display size. Reads stay scoped to
+// the same profile/card and keep the existing byte/dimension limits.
+static bool cached_image(const art_slot_t *job, const nd_context_t *context, const char *path, cover_image_t *out) {
+	bool leased = job->player ? navidrome_playback_begin(context) : navidrome_cache_begin(context->epoch, context->card_epoch);
+	if (!leased)
+		return false;
+	int fd = open(path, O_RDONLY | O_NOFOLLOW);
+	struct stat st;
+	char *cached = NULL;
+	size_t length = 0;
+	if (fd >= 0 && fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0 && st.st_size <= 256 * 1024) {
+		cached = malloc((size_t)st.st_size);
+		while (cached && length < (size_t)st.st_size) {
+			ssize_t n = read(fd, cached + length, (size_t)st.st_size - length);
+			if (n <= 0)
+				break;
+			length += n;
+		}
+		if (length != (size_t)st.st_size) {
+			free(cached);
+			cached = NULL;
+		}
+	}
+	if (fd >= 0)
+		close(fd);
+	if (cached && job->library.writable)
+		utime(path, NULL);
+	navidrome_cache_end();
+	int w = 0, h = 0, components = 0;
+	bool found = cached && stbi_info_from_memory((const stbi_uc *)cached, (int)length, &w, &h, &components) && w > 0 && h > 0 && w <= 512 && h <= 512 && cover_load_image_memory(cached, length, job->size, job->size, COVER_FIT_COVER, out);
+	free(cached);
+	return found;
+}
+
 static bool load(const art_slot_t *job, cover_image_t *out) {
 	nd_context_t context;
 	if (!navidrome_context(&context, false))
 		return false;
 	bool valid = (job->player ? context.profile_epoch == job->profile_epoch : context.epoch == job->library.epoch) && context.card_epoch == job->library.card_epoch;
-	char dir[1100], path[1200], key[33], input[ND_ID_MAX + 100];
+	char dir[1100], path[1200], key[33];
 	snprintf(dir, sizeof(dir), "%s", job->library.path);
 	char *slash = strrchr(dir, '/');
 	if (!valid || !slash) {
@@ -83,36 +123,22 @@ static bool load(const art_slot_t *job, cover_image_t *out) {
 		return false;
 	}
 	strcpy(slash, "/art");
-	snprintf(input, sizeof(input), "%s:%zu:%s:%d:v1", job->library.scope, strlen(job->id), job->id, job->size);
-	md5_hex(input, strlen(input), key);
+	cache_key(job, job->size, key);
 	snprintf(path, sizeof(path), "%s/%s.img", dir, key);
-	bool found = false;
-	if ((job->player ? navidrome_playback_begin(&context) : navidrome_cache_begin(context.epoch, context.card_epoch))) {
-		int fd = open(path, O_RDONLY | O_NOFOLLOW);
-		struct stat st;
-		char *cached = NULL;
-		size_t length = 0;
-		if (fd >= 0 && fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0 && st.st_size <= 256 * 1024) {
-			cached = malloc((size_t)st.st_size);
-			while (cached && length < (size_t)st.st_size) {
-				ssize_t n = read(fd, cached + length, (size_t)st.st_size - length);
-				if (n <= 0)
-					break;
-				length += n;
-			}
-			if (length != (size_t)st.st_size) {
-				free(cached);
-				cached = NULL;
-			}
+	bool found = cached_image(job, &context, path, out);
+	if (!found && !job->player) {
+		// Finite historical list-thumbnail sizes, largest first. Do not require
+		// reconnect/Sync merely because a new layout uses different bounds.
+		// Player art keeps its exact-size quality/cache policy.
+		static const int sizes[] = {72, 64, 48, 43, 32};
+		for (size_t i = 0; !found && i < sizeof(sizes) / sizeof(*sizes); i++) {
+			if (sizes[i] == job->size)
+				continue;
+			char old_key[33], old_path[1200];
+			cache_key(job, sizes[i], old_key);
+			snprintf(old_path, sizeof(old_path), "%s/%s.img", dir, old_key);
+			found = cached_image(job, &context, old_path, out);
 		}
-		if (fd >= 0)
-			close(fd);
-		if (cached && job->library.writable)
-			utime(path, NULL);
-		navidrome_cache_end();
-		int w = 0, h = 0, components = 0;
-		found = cached && stbi_info_from_memory((const stbi_uc *)cached, (int)length, &w, &h, &components) && w > 0 && h > 0 && w <= 512 && h <= 512 && cover_load_image_memory(cached, length, job->size, job->size, COVER_FIT_COVER, out);
-		free(cached);
 	}
 	if (found) {
 		valid = (job->player ? navidrome_playback_current(&context, false) : navidrome_context_current(&context, false));

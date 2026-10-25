@@ -514,6 +514,21 @@ int main(int argc, char **argv) {
 	navidromeart_request(0, &offline, "blue", 32);
 	cover_image_t cached = art_wait(0, true);
 	cover_free(&cached);
+	// Changing the thumbnail geometry must not strand existing encoded artwork
+	// when startup is disconnected or the card is read-only.
+	for (int size = 43; size <= 72; size += (size == 43 ? 5 : 24)) {
+		navidromeart_request(0, &offline, "blue", size);
+		cached = art_wait(0, true);
+		assert(cached.pixels[2] == 255);
+		cover_free(&cached);
+	}
+	nd_library_t readonly_art = offline;
+	readonly_art.writable = false;
+	navidromeart_request(0, &readonly_art, "blue", 48);
+	cached = art_wait(0, true);
+	assert(cached.pixels[2] == 255);
+	cover_free(&cached);
+	puts("offline/read-only artwork reuse across thumbnail sizes without HTTP: passed");
 	navidromeart_request(0, &offline, "uncached-offline", 32);
 	cached = art_wait(0, false);
 	cover_free(&cached);

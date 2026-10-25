@@ -782,3 +782,28 @@ bool nd_store_import_batch(nd_store_t *s, const nd_batch_t *b) {
 		s->error = "nd_cache_error";
 	return false;
 }
+
+bool nd_store_track(nd_store_t *s, int64_t generation, const char *id, nd_row_t *out) {
+	sqlite3_stmt *st = NULL;
+	if (!prepare(s, &st, "SELECT e.id,e.title,e.artist,e.cover,e.duration,e.disc,e.track FROM entity e JOIN snapshot s ON s.id=e.gen WHERE e.gen=? AND e.kind=? AND e.id=? AND s.scope=? AND s.complete=1"))
+		return false;
+	sqlite3_bind_int64(st, 1, generation);
+	sqlite3_bind_int(st, 2, ND_TRACKS);
+	bind(st, 3, id);
+	bind(st, 4, s->scope);
+	bool ok = sqlite3_step(st) == SQLITE_ROW;
+	memset(out, 0, sizeof(*out));
+	if (ok) {
+		char *fields[] = {out->id, out->title, out->artist, out->cover};
+		size_t caps[] = {sizeof(out->id), sizeof(out->title), sizeof(out->artist), sizeof(out->cover)};
+		for (int i = 0; i < 4; i++) {
+			const char *value = (const char *)sqlite3_column_text(st, i);
+			snprintf(fields[i], caps[i], "%s", value ? value : "");
+		}
+		out->duration = sqlite3_column_int(st, 4);
+		out->disc = sqlite3_column_int(st, 5);
+		out->track = sqlite3_column_int(st, 6);
+	}
+	sqlite3_finalize(st);
+	return ok;
+}
