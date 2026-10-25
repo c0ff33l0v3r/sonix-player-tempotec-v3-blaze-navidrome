@@ -176,6 +176,7 @@ static void drain(void) {
 		callback(data);
 	}
 }
+#ifndef NAVIDROME_BROWSE_FIXTURE_ONLY
 static void window_wait(int level) {
 	for (int i = 0; i < 10000; i++) {
 		drain();
@@ -186,6 +187,7 @@ static void window_wait(int level) {
 	}
 	assert(!"window timeout");
 }
+#endif
 
 static void seed(const nd_library_t *library) {
 	char dir[1100];
@@ -246,7 +248,7 @@ static void seed(const nd_library_t *library) {
 	nd_store_close(&store);
 }
 
-#if !defined(NAVIDROME_COORDINATOR_TEST) && !defined(NAVIDROME_PLAYLIST_UI) && !defined(NAVIDROME_STAR_UI)
+#if !defined(NAVIDROME_COORDINATOR_TEST) && !defined(NAVIDROME_PLAYLIST_UI) && !defined(NAVIDROME_STAR_UI) && !defined(NAVIDROME_BROWSE_FIXTURE_ONLY)
 #include "navidrome_artistfilter_uifixture.h"
 
 int main(void) {

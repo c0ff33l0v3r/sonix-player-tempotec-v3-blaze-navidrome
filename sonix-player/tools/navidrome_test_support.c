@@ -32,3 +32,23 @@ char library_index_letter_of_key(const char *key) {
 	return c >= 'a' && c <= 'z' ? (char)(c - 'a' + 'A') : c >= 128 ? '~' : '#';
 }
 int library_index_slot(char c) { return c >= 'A' && c <= 'Z' ? c - 'A' + 1 : c == '~' ? 27 : 0; }
+
+#include <string.h>
+size_t library_fold_text(const char *text, char *out, size_t size) {
+	size_t n = 0;
+	if (!size) return 0;
+	if (text) for (; text[n] && n + 1 < size; n++) out[n] = (char)tolower((unsigned char)text[n]);
+	out[n] = 0;
+	return n;
+}
+bool library_search_pattern(const char *text, char *out, size_t size) {
+	char folded[256];
+	if (size < 3 || !library_fold_text(text, folded, sizeof(folded))) return false;
+	size_t n = 0; out[n++] = '%';
+	for (size_t i = 0; folded[i] && n + 3 < size; i++) {
+		if (strchr("%_\\", folded[i])) out[n++] = '\\';
+		out[n++] = folded[i];
+	}
+	out[n++] = '%'; out[n] = 0;
+	return true;
+}

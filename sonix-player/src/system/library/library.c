@@ -819,7 +819,7 @@ static void sortkey_sql(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
 // Folding never lengthens a character -- an accented letter shrinks to one
 // byte, Cyrillic and Greek keep their two -- so a buffer the size of the input
 // is always enough.
-static size_t fold_text(const char *text, char *out, size_t out_size) {
+size_t library_fold_text(const char *text, char *out, size_t out_size) {
 	if (!out || out_size == 0) {
 		return 0;
 	}
@@ -863,7 +863,7 @@ static size_t fold_text(const char *text, char *out, size_t out_size) {
 static void foldcase_sql(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
 	const char *text = argc > 0 ? (const char *)sqlite3_value_text(argv[0]) : NULL;
 	char folded[LIBRARY_SORT_KEY_MAX];
-	fold_text(text, folded, sizeof(folded));
+	library_fold_text(text, folded, sizeof(folded));
 	sqlite3_result_text(ctx, folded, -1, SQLITE_TRANSIENT);
 }
 
@@ -890,7 +890,7 @@ static uint32_t fnv1a(const char *text, uint32_t hash) {
 static void album_key(const char *album_artist, const char *path, char *out, size_t size) {
 	if (album_artist && album_artist[0]) {
 		char folded[LIBRARY_SORT_KEY_MAX];
-		fold_text(album_artist, folded, sizeof(folded));
+		library_fold_text(album_artist, folded, sizeof(folded));
 		snprintf(out, size, "a%08x", (unsigned)fnv1a(folded, 2166136261u));
 		return;
 	}
@@ -2687,9 +2687,9 @@ static bool playlist_table(const char *name, char *out, size_t out_size) {
 // wrapped in wildcards, and with LIKE's own two wildcards escaped -- a query is
 // a piece of a name, so a user typing "_" means an underscore and not "any
 // character". False for a query that folds to nothing.
-static bool search_pattern(const char *query, char *out, size_t size) {
+bool library_search_pattern(const char *query, char *out, size_t size) {
 	char folded[256];
-	if (!query || size < 3 || fold_text(query, folded, sizeof(folded)) == 0) {
+	if (!query || size < 3 || library_fold_text(query, folded, sizeof(folded)) == 0) {
 		return false;
 	}
 	size_t at = 0;
@@ -2982,7 +2982,7 @@ library_index_t *library_index_open(library_list_t kind, library_filter_t filter
 	// A search binds the pattern the value becomes, not the value.
 	char pattern[2 * 256 + 3];
 	if (filter == LIBRARY_FILTER_SEARCH) {
-		if (!search_pattern(value, pattern, sizeof(pattern))) {
+		if (!library_search_pattern(value, pattern, sizeof(pattern))) {
 			free(ix);
 			return NULL;
 		}
@@ -8165,7 +8165,7 @@ int library_search(const char *query, int per_category, library_search_cb_t cb, 
 	}
 
 	char like[2 * 256 + 3];
-	if (!search_pattern(query, like, sizeof(like))) {
+	if (!library_search_pattern(query, like, sizeof(like))) {
 		return 0;
 	}
 

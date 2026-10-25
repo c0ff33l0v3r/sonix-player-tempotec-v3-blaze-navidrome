@@ -214,6 +214,19 @@ static void artwork_checks(nd_library_t lib) {
 	image = art_wait(0, true);
 	assert(image.pixels[2] == 255);
 	cover_free(&image);
+	navidromeart_request(0, &lib, "blue", 32);
+	navidromeart_request_player(&lib, "red", 128, 128, 128);
+	navidromeart_request(ND_ART_SEARCH_SLOT, &lib, "blue", 32);
+	cover_image_t search_image = art_wait(ND_ART_SEARCH_SLOT, true);
+	navidromeart_release(ND_ART_SEARCH_SLOT);
+	image = art_wait(0, true);
+	assert(image.pixels[2] == 255 && search_image.pixels[2] == 255 && image.pixels != search_image.pixels);
+	cover_free(&search_image);
+	cover_free(&image);
+	image = art_wait(ND_ART_PLAYER_SLOT, true);
+	assert(image.pixels[0] == 255 && image.pixels[2] == 0);
+	cover_free(&image);
+	navidromeart_release(ND_ART_PLAYER_SLOT);
 	for (int i = 0; i < ND_WINDOW; i++)
 		navidromeart_release(i);
 	navidromeart_request_player(&lib, "red", 128, 128, 128);
@@ -440,6 +453,11 @@ int main(int argc, char **argv) {
 	assert(library().offer == offered);
 	navidrome_sync_offer_consume(offered);
 	assert(!library().offer);
+	navidromeart_request(ND_ART_SEARCH_SLOT, &before, "red", 32);
+	cover_image_t before_sync = art_wait(ND_ART_SEARCH_SLOT, true);
+	assert(before_sync.pixels[0] == 255);
+	cover_free(&before_sync);
+	navidromeart_release(ND_ART_SEARCH_SLOT);
 	nd_library_t full = sync_ok(17000, 1700);
 	assert(!library().offer);
 	query_checks(full);

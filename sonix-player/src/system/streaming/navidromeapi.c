@@ -315,6 +315,6 @@ const char *nd_api_finite_json(const char *host, const char *user, const char *p
 	if (limit < 2 || limit > ND_API_BYTES)
 		return "nd_input_long";
 	const char *error = finite_json(host, user, password, method, query, limit, false, current, arg, out);
-	nd_log("navidrome: favorite request method=%s result=%s\n", method, error ? error : "ok");
+	nd_log("navidrome: finite request method=%s result=%s\n", method, error ? error : "ok");
 	return error;
 }

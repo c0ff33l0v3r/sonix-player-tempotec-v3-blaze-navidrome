@@ -1,4 +1,5 @@
 #include "navidromeplay.h"
+#include "navidromeplaycatalog.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/nowplaying/trackmenu.h"
 #include "src/gui/shell/gui.h"
@@ -22,6 +23,8 @@ typedef struct source {
 	nd_query_t query;
 	char selected[ND_ID_MAX];
 	int64_t *handles;
+	nd_playcatalog_t *catalog;
+	bool capture;
 	int count, start;
 	int window_start, window_count;
 	nd_playrow_t window[ND_WINDOW * 2];
@@ -70,7 +73,10 @@ static lv_timer_t *timer;
 static void retain(source_t *s) { __sync_add_and_fetch(&s->refs, 1); }
 static void release(source_t *s) {
 	if (s && __sync_sub_and_fetch(&s->refs, 1) == 0) {
-		nd_store_release(s->library.scope, s->library.generation);
+		if (s->capture)
+			nd_playcatalog_free(s->catalog);
+		else
+			nd_store_release(s->library.scope, s->library.generation);
 		free(s->handles);
 		nd_wipe(&s->context, sizeof(s->context));
 		free(s);
@@ -224,18 +230,27 @@ static void deliver_result(result_t *r) {
 static void cached_favorite(source_t *s, nd_playrow_t *row) {
 	if (!row->row.id[0])
 		return;
-	row->row.favorite = false;
-	row->row.favorite_known = false;
+	if (!s->capture) {
+		row->row.favorite = false;
+		row->row.favorite_known = false;
+	}
 	nd_library_t favorites;
 	navidrome_favorites_snapshot(&favorites);
 	if (!favorites.ready || favorites.card_epoch != s->context.card_epoch || strcmp(favorites.scope, s->library.scope))
 		return;
 	nd_store_t store = {0};
-	if (nd_store_open_source(&store, favorites.path, favorites.scope, false, false, true))
-		row->row.favorite_known = nd_store_annotation(&store, favorites.generation, ND_TRACKS, row->row.id, &row->row.favorite);
+	if (nd_store_open_source(&store, favorites.path, favorites.scope, false, false, true)) {
+		bool starred;
+		bool known = nd_store_annotation(&store, favorites.generation, ND_TRACKS, row->row.id, &starred);
+		if (known || !s->capture) {
+			row->row.favorite_known = known;
+			row->row.favorite = known && starred;
+		}
+	}
 	nd_store_close(&store);
 }
 
+static bool read_row(source_t *s, int entry, nd_playrow_t *row);
 static void ready(const char *path, void *user) {
 	job_t *job = user;
 	result_t *r = calloc(1, sizeof(*r));
@@ -245,12 +260,7 @@ static void ready(const char *path, void *user) {
 	retain(job->source);
 	snprintf(r->path, sizeof(r->path), "%s", path);
 	source_t *s = job->source;
-	if (navidrome_playback_begin(&s->context)) {
-		nd_store_t store;
-		if (nd_store_open_source(&store, s->library.path, s->library.scope, false, false, s->library.favorites))
-			nd_store_play_row(&store, s->library.generation, s->handles[job->entry], &r->row);
-		nd_store_close(&store);
-		cached_favorite(s, &r->row);
+	if (read_row(s, job->entry, &r->row) && navidrome_playback_begin(&s->context)) {
 		metadata_read(path, &r->metadata);
 		navidrome_cache_end();
 	}
@@ -261,8 +271,8 @@ static void ready(const char *path, void *user) {
 static bool read_row(source_t *s, int entry, nd_playrow_t *row) {
 	if (entry < 0 || entry >= s->count || !navidrome_playback_begin(&s->context))
 		return false;
-	nd_store_t store;
-	bool ok = nd_store_open_source(&store, s->library.path, s->library.scope, false, false, s->library.favorites) && nd_store_play_row(&store, s->library.generation, s->handles[entry], row);
+	nd_store_t store = {0};
+	bool ok = s->capture ? nd_playcatalog_read(s->catalog, entry, row) : nd_store_open_source(&store, s->library.path, s->library.scope, false, false, s->library.favorites) && nd_store_play_row(&store, s->library.generation, s->handles[entry], row);
 	nd_store_close(&store);
 	if (ok)
 		cached_favorite(s, row);
@@ -340,7 +350,13 @@ static void *work(void *unused) {
 		source_t *s = job.source;
 		const char *error = NULL;
 		if (job.initial) {
-			if (!navidrome_playback_begin(&s->context))
+			if (s->capture) {
+				s->catalog = nd_playcatalog_capture(&s->library, &s->context, &s->query, s->selected, current, &job, &error);
+				if (s->catalog) {
+					s->count = nd_playcatalog_count(s->catalog);
+					s->start = nd_playcatalog_start(s->catalog);
+				}
+			} else if (!navidrome_playback_begin(&s->context))
 				error = "nd_audio_cancelled";
 			else {
 				nd_store_t store;
@@ -525,6 +541,27 @@ bool navidromeplay_select(const nd_library_t *lib, const nd_query_t *query, cons
 	s->origin = origin;
 	snprintf(s->selected, sizeof(s->selected), "%s", id);
 	bool ok = navidrome_context(&s->context, false) && s->context.epoch == lib->epoch && s->context.card_epoch == lib->card_epoch;
+	pthread_mutex_lock(&lock);
+	s->token = serial + 1;
+	pthread_mutex_unlock(&lock);
+	if (ok)
+		ok = submit(s, 0, true, true, NULL);
+	release(s);
+	return ok;
+}
+bool navidromeplay_search(const nd_library_t *lib, const nd_context_t *identity, const nd_query_t *query, const char *id, void *origin) {
+	if (!started || !id || !*id || strlen(id) >= ND_ID_MAX || query->kind != ND_TRACKS || !*lib->path || !*lib->scope)
+		return false;
+	source_t *s = calloc(1, sizeof(*s));
+	if (!s)
+		return false;
+	s->refs = 1;
+	s->capture = true;
+	s->library = *lib;
+	s->query = *query;
+	s->origin = origin;
+	snprintf(s->selected, sizeof(s->selected), "%s", id);
+	bool ok = navidrome_context(&s->context, false) && s->context.profile_epoch == identity->profile_epoch && s->context.card_epoch == lib->card_epoch;
 	pthread_mutex_lock(&lock);
 	s->token = serial + 1;
 	pthread_mutex_unlock(&lock);

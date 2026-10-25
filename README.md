@@ -211,8 +211,8 @@ without adding an Artists category. Disposable Favorites data lives in
 `.local/navidrome/.cache/favorites.db` alongside other caches.
 
 Show album opens the exact Navidrome album. Show artist is unavailable when the
-snapshot has no authoritative primary artist ID. Search results, lyrics
-integration, and listening reports remain deferred.
+snapshot has no authoritative primary artist ID. Lyrics integration and
+listening reports remain deferred.
 
 Navidrome → **Playlists** stores playlists of Navidrome track references on the
 selected card. Like Music’s Playlists page, it starts with a **New playlist** row
@@ -264,9 +264,42 @@ encoded mutation forms are limited to 2 MiB, with an 8 MiB explicit response,
 parser, and request-buffer budget. Unsupported sizes fail without truncating a
 local playlist. Upload requires the server's OpenSubsonic form-POST support.
 
-Playback from saved playlists, search results, audio upload/download, SD-card file
+Playback from saved playlists, audio upload/download, SD-card file
 matching, mixed-source playlists, automatic merge/sync, server deletion, and
 manual drag reordering remain outside this feature.
+
+Use the header **Search** button to search Tracks, Albums, or Artists. Enter a
+query and press the keyboard's Search key. Connected searches query the server,
+even before the first library sync. Disconnected searches use the last complete
+matching synced library while credentials are available. A failed server search
+falls back to that library when possible, retaining the query and showing the
+failure reason. A successful empty server result
+stays empty. Reconnection does not replace displayed local results; submit again
+to select the current source.
+
+Navidrome can return no server matches for a single letter; try at least two
+characters. The page shows a hint for that case. Synced searches still accept
+a single character.
+
+Server counts show `+` while more results remain; synced counts are exact.
+Offline matching follows Music's case/accent-insensitive name matching, including
+literal `%`, `_`, and backslash characters, against metadata retained at the last
+sync. Server matching and ordering can differ. Album and artist hits open by ID,
+including items absent from the snapshot. Failed child requests can use the exact
+matching synced item. Large unpaged children keep the existing response limits;
+without writable card storage, only small bounded child lists are available.
+Searching and browsing do not publish a library sync or start audio downloads.
+Server and synced search share the same interface without source/date sections.
+
+Tap a found track to play it through Now Playing. As in Music search, the queue
+contains all matching track results and starts at the tapped track. Selecting a
+track inside a found album queues that whole album in disc/track order, including
+albums not yet synced. The current Normal, Repeat, Shuffle or Shuffle Repeat
+mode is preserved; Shuffle starts with the tapped track and includes the rest of
+the captured results. Preparing a server queue may take a moment while its full
+metadata is captured. Back, new searches and Sync leave an active queue intact.
+Online Artists excludes artists without albums, matching the synced Artists
+visibility rule.
 
 ### Blaze simulator
 
@@ -363,7 +396,21 @@ permit finite count reduction. Existing feedback strings remain unchanged.
 Sonix builds as described in [UPSTREAM-README.md](UPSTREAM-README.md)
 (`make target` in `sonix-player/`, Rockbox MIPS toolchain). `make target` draws
 the icons for the Blaze's 320 px wide panel, so it needs a Python with
-`cairosvg` (`ICON_PYTHON=/path/to/python` if `python3` lacks it). The packer builds
+`cairosvg` and `pillow` (`ICON_PYTHON=/path/to/python` if `python3` lacks them).
+The same dependencies apply to `make host PANEL_WIDTH=320`. From `sonix-player/`,
+an isolated environment can provide them:
+
+```sh
+python3 -m venv build_gen/icon-tools
+build_gen/icon-tools/bin/python -m pip install cairosvg pillow
+make host -j12 PANEL_WIDTH=320 ICON_PYTHON=build_gen/icon-tools/bin/python
+```
+
+Wait for `Host build complete` before relaunching the simulator. A failed build
+can leave an older executable in place. `make clean` removes this build-tools
+environment along with the other generated files.
+
+The packer builds
 the Blaze image from the **official v1.3 firmware** (SHA-256
 `5aa1bf262e9241737086076eef0f238e54e75ae226fa0c845d126de11ac01e95`), which is
 not redistributed here:

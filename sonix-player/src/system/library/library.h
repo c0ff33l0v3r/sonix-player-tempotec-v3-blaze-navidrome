@@ -629,6 +629,9 @@ typedef enum {
 	LIBRARY_SEARCH_ARTIST,
 } library_search_type_t;
 typedef void (*library_search_cb_t)(library_search_type_t type, const char *name, const char *path, void *user);
+// Shared Unicode search matching; pattern output needs 2*256+3 bytes.
+size_t library_fold_text(const char *text, char *out, size_t size);
+bool library_search_pattern(const char *query, char *out, size_t size);
 int library_search(const char *query, int per_category, library_search_cb_t cb, void *user);
 
 // ---------------------------------------------------------------------------

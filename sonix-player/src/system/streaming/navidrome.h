@@ -15,7 +15,7 @@ typedef struct {
 
 typedef struct {
 	char host[ND_HOST_MAX], user[ND_USER_MAX], password[ND_SECRET_MAX];
-	unsigned epoch, card_epoch, network_epoch, profile_epoch, playback_network_epoch;
+	unsigned epoch, card_epoch, network_epoch, profile_epoch, playback_network_epoch, search_network_epoch;
 } nd_context_t;
 
 void navidrome_init(void);
@@ -73,4 +73,8 @@ const char *navidrome_ping(const char *host, const char *user, const char *passw
 #ifdef NAVIDROME_TEST
 void navidrome_test_online(int online); // -1 production behavior, 0/1 injected device snapshot
 #endif
+// Search metadata has no card/snapshot dependency; reconnect retires network jobs.
+bool navidrome_search_current(const nd_context_t *context, bool network);
+void navidrome_search_failed(const nd_context_t *context, const char *reason);
+
 #endif

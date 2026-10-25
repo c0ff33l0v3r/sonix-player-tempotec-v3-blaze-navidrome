@@ -46,6 +46,7 @@ typedef struct {
 	// Albums filtered by an artist/genre, or tracks filtered by an album.
 	nd_kind_t filter_kind;
 	char filter[ND_ID_MAX];
+	char search[256]; // Literal substring, separate from an opaque relationship ID.
 } nd_query_t;
 
 typedef struct {
@@ -64,6 +65,7 @@ bool nd_store_metadata(nd_store_t *store, int64_t generation, nd_kind_t kind, co
 bool nd_store_annotation(nd_store_t *store, int64_t generation, nd_kind_t kind, const char *id, bool *starred);
 // Extract one exact bounded metadata object, used by targeted item completion.
 bool nd_metadata_row(const json_doc_t *doc, int object, nd_kind_t kind, nd_playrow_t *row);
+bool nd_metadata_album_track(const json_doc_t *doc, int object, const char *album, nd_playrow_t *row);
 
 // Validate the independent Subsonic starred timestamp; absence means clear.
 bool nd_metadata_starred(const json_doc_t *document, int object, bool *starred);

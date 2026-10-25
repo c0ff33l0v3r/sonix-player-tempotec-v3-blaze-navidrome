@@ -751,17 +751,30 @@ bool nd_store_letters(nd_store_t *s, int64_t gen, const nd_query_t *q, int first
 	return rc == SQLITE_DONE;
 }
 
+static void search_fold(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+	const char *text = argc ? (const char *)sqlite3_value_text(argv[0]) : "";
+	char folded[ND_TEXT_MAX];
+	library_fold_text(text, folded, sizeof(folded));
+	sqlite3_result_text(ctx, folded, -1, SQLITE_TRANSIENT);
+}
+
 bool nd_store_query(nd_store_t *s, int64_t gen, const nd_query_t *q, int offset, nd_row_t rows[ND_WINDOW], int *count, int *total) {
 	if (!read_view(s, gen))
 		return false;
 	*count = *total = 0;
 	if (offset < 0 || q->kind < ND_ALBUMS || q->kind > ND_GENRES || q->favorites != s->favorites || (s->favorites && q->kind > ND_TRACKS) || !sql(s, "BEGIN"))
 		return false;
-	char where[768], text[1200];
+	char where[1024], text[1400], pattern[2 * 256 + 3];
+	if (*q->search && (!library_search_pattern(q->search, pattern, sizeof(pattern)) || sqlite3_create_function(s->db, "nd_fold", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, search_fold, NULL, NULL) != SQLITE_OK)) {
+		sql(s, "ROLLBACK");
+		return false;
+	}
 	snprintf(where, sizeof(where), " FROM browse_entity e JOIN snapshot s ON s.id=e.gen WHERE e.gen=?1 AND e.kind=?2 AND s.scope=?3 AND s.complete=1%s", !q->filter[0] ? "" : q->kind == ND_TRACKS ? " AND e.album=?4" : " AND EXISTS(SELECT 1 FROM rel r WHERE r.gen=e.gen AND r.album=e.id AND r.kind=?5 AND r.id=?4)");
 	if (s->favorites && q->kind == ND_TRACKS && !*q->filter)
 		strcat(where, " AND e.starred=1");
 	strcat(where, artist_filter(s, q->kind));
+	if (*q->search)
+		strcat(where, " AND nd_fold(e.title) LIKE ?8 ESCAPE '\\'");
 	sqlite3_stmt *st = NULL;
 	bool ok = true;
 	for (int pass = 0; ok && pass < 2; pass++) {
@@ -777,6 +790,8 @@ bool nd_store_query(nd_store_t *s, int64_t gen, const nd_query_t *q, int offset,
 			if (q->kind != ND_TRACKS)
 				sqlite3_bind_int(st, 5, q->filter_kind);
 		}
+		if (*q->search)
+			bind(st, 8, pattern);
 		if (pass) {
 			sqlite3_bind_int(st, 6, ND_WINDOW);
 			sqlite3_bind_int(st, 7, offset);
@@ -823,13 +838,18 @@ bool nd_store_play_index(nd_store_t *s, int64_t gen, const nd_query_t *q, const 
 	*start = -1;
 	if (q->kind != ND_TRACKS || q->favorites != s->favorites || !sql(s, "BEGIN"))
 		return false;
-	char text[768];
+	char text[1024], pattern[515];
+	if (*q->search && (!library_search_pattern(q->search, pattern, sizeof(pattern)) || sqlite3_create_function(s->db, "nd_fold", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, search_fold, NULL, NULL) != SQLITE_OK)) {
+		sql(s, "ROLLBACK");
+		return false;
+	}
 	snprintf(text, sizeof(text),
 			 "SELECT e.rowid,e.id FROM browse_entity e JOIN snapshot s ON s.id=e.gen "
-			 "WHERE e.gen=?1 AND e.kind=1 AND s.scope=?2 AND s.complete=1 %s ORDER BY %s",
+			 "WHERE e.gen=?1 AND e.kind=1 AND s.scope=?2 AND s.complete=1 %s %s ORDER BY %s",
 			 q->filter[0]	? "AND e.album=?3"
 			 : s->favorites ? "AND e.starred=1"
 							: "",
+			 *q->search ? "AND nd_fold(e.title) LIKE ?4 ESCAPE '\\'" : "",
 			 q->filter[0] ? "e.disc,e.track,e.sortkey,e.id" : "e.sortkey,e.id");
 	sqlite3_stmt *st = NULL;
 	bool ok = prepare(s, &st, text);
@@ -840,6 +860,8 @@ bool nd_store_play_index(nd_store_t *s, int64_t gen, const nd_query_t *q, const 
 		bind(st, 2, s->scope);
 		if (q->filter[0])
 			bind(st, 3, q->filter);
+		if (*q->search)
+			bind(st, 4, pattern);
 		int rc;
 		while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
 			if (used == cap) {
@@ -1305,15 +1327,22 @@ bool nd_store_local_activate(nd_store_t *s) {
 	return ok;
 }
 
-bool nd_metadata_row(const json_doc_t *d, int obj, nd_kind_t kind, nd_playrow_t *out) {
+static bool metadata_row(const json_doc_t *d, int obj, nd_kind_t kind, const char *parent_album, nd_playrow_t *out) {
 	memset(out, 0, sizeof(*out));
-	const char *names[] = {"id", "albumId", "title", "name", "artist", "coverArt", "starred", "songCount", "duration", "discNumber", "track"};
+	const char *names[] = {"id", "albumId", "album", "artistId", "title", "name", "artist", "coverArt", "starred", "songCount", "duration", "discNumber", "track"};
 	for (size_t i = 0; i < sizeof(names) / sizeof(*names); i++)
 		if (!nd_api_field_unique(d, obj, names[i], false))
 			return false;
 	if (!field(d, obj, "id", out->row.id, sizeof(out->row.id), true) || !label(d, obj, kind == ND_TRACKS ? "title" : "name", out->row.title) || !label(d, obj, "artist", out->row.artist) || !field(d, obj, "coverArt", out->row.cover, sizeof(out->row.cover), false))
 		return false;
-	if (kind == ND_TRACKS && !field(d, obj, "albumId", out->album_id, sizeof(out->album_id), true))
+	if (kind == ND_TRACKS && !field(d, obj, "albumId", out->album_id, sizeof(out->album_id), !parent_album))
+		return false;
+	if (kind == ND_TRACKS && parent_album) {
+		if (*out->album_id && strcmp(out->album_id, parent_album))
+			return false;
+		snprintf(out->album_id, sizeof(out->album_id), "%s", parent_album);
+	}
+	if (!label(d, obj, "album", out->album) || !field(d, obj, "artistId", out->artist_id, sizeof(out->artist_id), false))
 		return false;
 	long duration = json_obj_long(d, obj, "duration", 0), disc = json_obj_long(d, obj, "discNumber", 0), track = json_obj_long(d, obj, "track", 0);
 	if (duration < 0 || duration > INT_MAX || disc < 0 || disc > INT_MAX || track < 0 || track > INT_MAX)
@@ -1326,3 +1355,5 @@ bool nd_metadata_row(const json_doc_t *d, int obj, nd_kind_t kind, nd_playrow_t 
 	out->row.favorite_known = true;
 	return nd_metadata_starred(d, obj, &out->row.favorite);
 }
+bool nd_metadata_row(const json_doc_t *d, int obj, nd_kind_t kind, nd_playrow_t *out) { return metadata_row(d, obj, kind, NULL, out); }
+bool nd_metadata_album_track(const json_doc_t *d, int obj, const char *album, nd_playrow_t *out) { return metadata_row(d, obj, ND_TRACKS, album, out); }

@@ -6,6 +6,7 @@
 void navidromeplay_init(void); // GUI thread, after LVGL initialization
 void navidromeplay_shutdown(void);
 bool navidromeplay_select(const nd_library_t *library, const nd_query_t *query, const char *id, void *origin);
+bool navidromeplay_search(const nd_library_t *library, const nd_context_t *identity, const nd_query_t *query, const char *id, void *origin);
 bool navidromeplay_prepare(const char *reference); // true for non-Navidrome references
 void navidromeplay_other(const char *path);
 void navidromeplay_stop(void);

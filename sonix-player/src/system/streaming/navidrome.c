@@ -39,7 +39,7 @@ static unsigned cache_users, sync_owners, external_users;
 static pthread_t worker;
 static struct {
 	bool initialized, started, stop, pending, busy, configured, invalid, unlocked, checking, connected;
-	unsigned generation, revision, local_epoch, card_epoch, offer, profile_epoch, playback_network_epoch;
+	unsigned generation, revision, local_epoch, card_epoch, offer, profile_epoch, playback_network_epoch, search_network_epoch;
 	bool cache_pending, sync_cancel;
 	char root[1024];
 	nd_library_t library, favorites;
@@ -897,6 +897,8 @@ static bool submit(job_t *job) {
 	g.error = NULL;
 	if (job->kind == JOB_SAVE || job->kind == JOB_CONNECT || job->kind == JOB_UNLOCK)
 		g.offer = 0;
+	if (job->kind == JOB_CONNECT || job->kind == JOB_SAVE || job->kind == JOB_UNLOCK)
+		g.search_network_epoch++;
 	job->generation = ++g.generation;
 	g.job = *job;
 	g.pending = true;
@@ -1013,6 +1015,7 @@ bool navidrome_reconnect(void) {
 }
 
 static void clear_secrets(void) {
+	g.search_network_epoch++;
 	g.profile_epoch++;
 	if (g.invalidate_playback)
 		g.invalidate_playback();
@@ -1057,6 +1060,7 @@ void navidrome_poll_network(void) {
 	pthread_mutex_lock(&lock);
 	if (g.connected || g.checking) {
 		g.playback_network_epoch++;
+		g.search_network_epoch++;
 		if (g.stop_playback_network)
 			g.stop_playback_network();
 		g.generation++;
@@ -1252,6 +1256,7 @@ bool navidrome_context(nd_context_t *out, bool network) {
 		out->network_epoch = g.generation;
 		out->profile_epoch = g.profile_epoch;
 		out->playback_network_epoch = g.playback_network_epoch;
+		out->search_network_epoch = g.search_network_epoch;
 	}
 	pthread_mutex_unlock(&lock);
 	return ok;
@@ -1324,6 +1329,7 @@ void navidrome_network_failed(const nd_context_t *c) {
 	pthread_mutex_lock(&lock);
 	if (playback_current(c, true)) {
 		g.playback_network_epoch++;
+		g.search_network_epoch++;
 		g.generation++;
 		g.connected = false;
 		g.error = "nd_network_error";
@@ -1367,4 +1373,29 @@ bool navidrome_context_commit(const nd_context_t *context, sqlite3 *db) {
 		ok = sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK;
 	pthread_mutex_unlock(&lock);
 	return ok;
+}
+
+// No card/snapshot dependence: a server query remains useful before first sync.
+bool navidrome_search_current(const nd_context_t *context, bool network) {
+	pthread_mutex_lock(&lock);
+	bool ok = !g.stop && g.unlocked && !g.invalid && context->profile_epoch == g.profile_epoch && (!network || (g.connected && context->search_network_epoch == g.search_network_epoch));
+	pthread_mutex_unlock(&lock);
+	return ok;
+}
+
+void navidrome_search_failed(const nd_context_t *context, const char *reason) {
+	pthread_mutex_lock(&lock);
+	if (!g.stop && g.unlocked && g.connected && context->profile_epoch == g.profile_epoch && context->search_network_epoch == g.search_network_epoch) {
+		g.search_network_epoch++;
+		g.playback_network_epoch++;
+		if (g.stop_playback_network)
+			g.stop_playback_network();
+		g.connected = false;
+		// Network callbacks now cancel, and their owner drains/clears busy.
+		// Keep the service job lifetime so local credential conversion can finish.
+		g.error = reason;
+		g.revision++;
+	}
+	pthread_mutex_unlock(&lock);
+	notify();
 }

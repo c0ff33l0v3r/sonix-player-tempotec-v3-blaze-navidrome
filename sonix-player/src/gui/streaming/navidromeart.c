@@ -25,7 +25,8 @@ typedef struct {
 	int backdrop_w, backdrop_h;
 	cover_image_t image, backdrop;
 } art_slot_t;
-static art_slot_t slots[ND_WINDOW + 1];
+#define ART_SLOTS ND_ART_SLOT_COUNT // Browser, player and Search own disjoint slots.
+static art_slot_t slots[ART_SLOTS];
 static pthread_mutex_t art_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t wake = PTHREAD_COND_INITIALIZER;
 static bool started;
@@ -158,8 +159,17 @@ static bool load(const art_slot_t *job, cover_image_t *out) {
 		int w = 0, h = 0, components = 0;
 		if (!error && stbi_info_from_memory((const stbi_uc *)body, (int)length, &w, &h, &components) && w > 0 && h > 0 && w <= 512 && h <= 512 && (job->player ? navidrome_playback_current(&context, true) : navidrome_context_current(&context, true)) && cover_load_image_memory(body, length, job->size, job->size, COVER_FIT_COVER, out)) {
 			bool leased = (job->player ? navidrome_playback_begin(&context) : navidrome_cache_begin(context.epoch, context.card_epoch));
-			if (leased)
+			if (leased) {
+				// Connected Search can request art before the first Sync.
+				for (char *p = dir + 1; *p; p++) {
+					if (*p != '/')
+						continue;
+					*p = 0;
+					mkdir(dir, 0700);
+					*p = '/';
+				}
 				mkdir(dir, 0700);
+			}
 			if (leased && trim(dir, length) && (job->player ? navidrome_playback_current(&context, true) : navidrome_context_current(&context, true))) {
 				char temp[1220];
 				snprintf(temp, sizeof(temp), "%s.tmp", path);
@@ -204,9 +214,9 @@ static void *art_worker(void *unused) {
 	pthread_mutex_lock(&art_lock);
 	for (;;) {
 		int i;
-		for (i = 0; i < ND_WINDOW + 1 && !slots[i].pending; i++) {
+		for (i = 0; i < ART_SLOTS && !slots[i].pending; i++) {
 		}
-		if (i == ND_WINDOW + 1) {
+		if (i == ART_SLOTS) {
 			pthread_cond_wait(&wake, &art_lock);
 			continue;
 		}
@@ -233,7 +243,7 @@ static void *art_worker(void *unused) {
 }
 
 void navidromeart_release(int i) {
-	if (i < 0 || i >= ND_WINDOW + 1)
+	if (i < 0 || i >= ART_SLOTS)
 		return;
 	pthread_mutex_lock(&art_lock);
 	art_slot_t *slot = &slots[i];
@@ -247,7 +257,7 @@ void navidromeart_release(int i) {
 }
 
 static void request(int i, const nd_library_t *library, const char *id, int size, int backdrop_w, int backdrop_h) {
-	if (i < 0 || i >= ND_WINDOW + 1)
+	if (i < 0 || i >= ART_SLOTS)
 		return;
 	navidromeart_release(i);
 	pthread_mutex_lock(&art_lock);
@@ -279,7 +289,7 @@ static void request(int i, const nd_library_t *library, const char *id, int size
 }
 
 bool navidromeart_take(int i, cover_image_t *out, bool *finished) {
-	if (i < 0 || i > ND_WINDOW) {
+	if (i < 0 || i >= ART_SLOTS) {
 		*finished = true;
 		return false;
 	}

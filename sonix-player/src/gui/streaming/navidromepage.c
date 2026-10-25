@@ -1,4 +1,5 @@
 #include "navidromefavorites.h"
+#include "navidromesearch.h"
 #include "navidromebrowse.h"
 #include "navidromeplaylists.h"
 #include "navidromesettings.h"
@@ -28,17 +29,8 @@ static void unavailable_cb(lv_event_t *e) {
 		return;
 	}
 
-	const char *label = lv_event_get_user_data(e);
-	navidrome_poll_network();
-	navidrome_snapshot_t snapshot;
-	navidrome_snapshot(&snapshot);
-	if (snapshot.state != ND_CONNECTED) {
-		gui_notify_popup(navidrome_feedback(&snapshot));
-		return;
-	}
-	char message[160];
-	lv_snprintf(message, sizeof(message), tr("grid_not_yet_available"), tr(label));
-	gui_notify_popup(message);
+	(void)e;
+	navidromesearch_open();
 }
 
 static void category_action(nd_kind_t kind) {
@@ -76,11 +68,12 @@ static void refresh(void) {
 	navidrome_library_snapshot(&library);
 	for (int i = 0; i < 6; i++)
 		gridpage_set_dimmed(category_grid, i, i == 5 ? !snapshot.unlocked : i == 4 ? !(snapshot.unlocked && *library.path && *library.scope) : !library.ready);
-	lv_obj_set_style_opa(search_icon, dim ? LV_OPA_40 : LV_OPA_COVER, 0);
+	lv_obj_set_style_opa(search_icon, (!snapshot.unlocked || (dim && !library.ready)) ? LV_OPA_40 : LV_OPA_COVER, 0);
 	navidromesettings_refresh();
 	navidromebrowse_refresh();
 	navidromeplaylists_refresh();
 	navidromefavorites_update();
+	navidromesearch_refresh();
 }
 
 #ifndef HOST_BUILD
@@ -152,6 +145,7 @@ void navidromepage_init(gui_config_t *cfg) {
 	navidromebrowse_init(cfg);
 	navidromeplaylists_init(cfg);
 	navidromefavorites_init(cfg);
+	navidromesearch_init(cfg);
 	navidrome_set_listener(refresh);
 	lv_obj_add_event_cb(navidrome_screen, menu_loaded, LV_EVENT_SCREEN_LOADED, NULL);
 	lv_obj_add_event_cb(navidrome_screen, menu_unloaded, LV_EVENT_SCREEN_UNLOADED, NULL);

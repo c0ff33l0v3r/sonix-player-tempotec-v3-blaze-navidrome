@@ -107,13 +107,13 @@ static void wait_fetch(int previous) {
 	}
 	assert(atomic_load(&fetches) > previous);
 }
-int main(void) {
+int main(int argc, char **argv) {
 	alarm(60);
 	char dir[] = "/tmp/sonix-navidrome-coordinator-XXXXXX";
 	assert(mkdtemp(dir) && !chdir(dir));
 	navidrome_init();
 	navidrome_set_root(dir);
-	assert(navidrome_save("http://fixture/base", "fixture user", server_password, "vault1"));
+	assert(navidrome_save(argc > 1 ? argv[1] : "http://fixture/base", "fixture user", server_password, "vault1"));
 	wait_idle();
 	nd_library_t lib;
 	navidrome_library_snapshot(&lib);
@@ -313,6 +313,77 @@ int main(void) {
 	nd_store_close(&refreshed);
 	assert(strstr(playback.current_file, "song-00300"));
 	puts("coordinator Favorites complete queue, exact track selection and generation pin retention: passed");
+	if (argc > 1) {
+		nd_context_t identity;
+		navidrome_library_snapshot(&lib);
+		assert(navidrome_context(&identity, false));
+		nd_wipe(identity.password, sizeof(identity.password));
+		nd_query_t search_query = {.kind = ND_TRACKS};
+		snprintf(search_query.search, sizeof(search_query.search), "Track");
+		playlist_set_mode(PLAYBACK_MODE_SHUFFLE);
+		assert(navidromeplay_search(&lib, &identity, &search_query, "remote-song-10000", other));
+		wait_started(8);
+		assert(playlist_get_mode() == PLAYBACK_MODE_SHUFFLE);
+		assert(playlist_count() == 17000 && playlist_current_index() == 0);
+		nd_playrow_t track;
+		assert(navidromeplay_track(playback.current_file, &track, NULL) && !strcmp(track.row.id, "remote-song-10000"));
+		bool seen[17000] = {0};
+		for (int i = 0; i < 17000; i++) {
+			char reference[80];
+			unsigned token;
+			size_t entry;
+			assert(playlist_path_at(i, reference, sizeof(reference)) && sscanf(reference, "ndq:%u:%zu", &token, &entry) == 2 && entry < 17000 && !seen[entry]);
+			seen[entry] = true;
+		}
+		playlist_set_mode(PLAYBACK_MODE_NORMAL);
+		assert(playlist_current_index() == 10000 && playlist_count() == 17000);
+		// A new ordinary search must capture only its matches, in stored order.
+		snprintf(search_query.search, sizeof(search_query.search), "Track 000");
+		assert(navidromeplay_select(&lib, &search_query, "song-00050", other));
+		wait_started(9);
+		assert(playlist_count() == 100 && playlist_current_index() == 50);
+		search_query.search[0] = 0;
+		snprintf(search_query.filter, sizeof(search_query.filter), "new-album");
+		playlist_set_mode(PLAYBACK_MODE_SHUFFLE_REPEAT);
+		assert(navidromeplay_search(&lib, &identity, &search_query, "new-song-0", other));
+		wait_started(10);
+		assert(playlist_get_mode() == PLAYBACK_MODE_SHUFFLE_REPEAT);
+		assert(playlist_count() == 12 && playlist_current_index() == 0);
+		assert(navidromeplay_track(playback.current_file, &track, NULL) && !strcmp(track.row.id, "new-song-0"));
+		bool album_seen[12] = {0};
+		for (int i = 0; i < 12; i++) {
+			char reference[80];
+			unsigned token;
+			size_t entry;
+			assert(playlist_path_at(i, reference, sizeof(reference)) && sscanf(reference, "ndq:%u:%zu", &token, &entry) == 2 && entry < 12 && !album_seen[entry]);
+			album_seen[entry] = true;
+		}
+		assert(playlist_set_current(11));
+		char next[80];
+		assert(playlist_next(next, sizeof(next)) && playlist_current_index() == 0 && playlist_count() == 12);
+		assert(playlist_get_mode() == PLAYBACK_MODE_SHUFFLE_REPEAT);
+		memset(album_seen, 0, sizeof(album_seen));
+		for (int i = 0; i < 12; i++) {
+			char reference[80];
+			unsigned token;
+			size_t entry;
+			assert(playlist_path_at(i, reference, sizeof(reference)) && sscanf(reference, "ndq:%u:%zu", &token, &entry) == 2 && entry < 12 && !album_seen[entry]);
+			album_seen[entry] = true;
+		}
+		// Cancellation during remote enumeration cannot publish a partial queue.
+		search_query.filter[0] = 0;
+		snprintf(search_query.search, sizeof(search_query.search), "slow");
+		assert(navidromeplay_search(&lib, &identity, &search_query, "remote-song-10000", other));
+		usleep(50000);
+		navidromeplay_stop();
+		for (int i = 0; i < 400; i++) {
+			drain();
+			navidromeplay_tick();
+			usleep(1000);
+		}
+		assert(starts == 10 && playlist_count() == 12);
+		puts("coordinator search queues: exact match set, unsynced metadata/audio start, selected-first Shuffle, unique full search/album rounds, Shuffle Repeat and normal-order restoration: passed");
+	}
 	navidrome_lock();
 	drain();
 	navidromeplay_tick();

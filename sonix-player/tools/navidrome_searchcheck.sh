@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+check_dir=$(mktemp -d /tmp/sonix-navidrome-searchcheck.XXXXXX)
+check_binary="$check_dir/check"
+trap 'rm -rf "$check_dir"' EXIT HUP INT TERM
+check_sqlite=build_host/system/db/sqlite3_impl.o
+if [ ! -f "$check_sqlite" ]; then
+    check_sqlite="$check_dir/sqlite.o"
+    ${CC:-cc} -std=gnu11 -O1 -DHOST_BUILD -I. -c src/system/db/sqlite3_impl.c -o "$check_sqlite"
+fi
+${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -O1 -g -ffunction-sections -fdata-sections ${NAVIDROME_CHECK_FLAGS:-} \
+    -DHOST_BUILD -DNAVIDROME_TEST -DLV_CONF_INCLUDE_SIMPLE -I. -Ilvgl \
+    tools/navidrome_searchcheck.c src/system/library/library.c \
+    src/system/streaming/navidromesearch.c src/system/streaming/navidromedebug.c \
+    src/system/streaming/navidromeplaycatalog.c src/system/streaming/navidrome.c src/system/streaming/navidromeapi.c src/system/streaming/navidromebatch.c src/system/streaming/navidromestore.c \
+    src/system/streaming/navidromelibrary.c src/system/streaming/navidromecrypto.c src/system/streaming/navidromevault.c \
+    src/system/net/gzip.c src/system/image/png_scaled.c src/gb/miniz/miniz.c src/system/core/json.c src/system/core/md5.c src/system/net/http.c src/system/net/tls.c \
+    "$check_sqlite" -Wl,--gc-sections -lm -pthread -ldl -lresolv -o "$check_binary"
+python3 tools/navidrome_searchcheck.py "$check_binary"
