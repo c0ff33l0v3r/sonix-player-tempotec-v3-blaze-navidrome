@@ -1,4 +1,5 @@
 #include "navidrome.h"
+#include "navidromecache.h"
 #include "navidromeapi.h"
 #include "navidromebatch.h"
 #include "navidromedebug.h"
@@ -51,6 +52,7 @@ static struct {
 	void (*listener)(void);
 	void (*invalidate_playback)(void);
 	void (*stop_playback_network)(void);
+	void (*cancel_downloads)(void), (*shutdown_downloads)(void);
 } g;
 
 static void changed(void *unused) {
@@ -154,6 +156,8 @@ static int commit(const job_t *job, const nd_record_t *r, const uint8_t key[32],
 			g.profile_epoch++;
 			if (g.invalidate_playback)
 				g.invalidate_playback();
+			if (g.cancel_downloads)
+				g.cancel_downloads();
 		}
 		if (strcmp(g.record.host, r->host) || strcmp(g.record.user, r->user)) {
 			g.local_epoch++;
@@ -1019,6 +1023,8 @@ static void clear_secrets(void) {
 	g.profile_epoch++;
 	if (g.invalidate_playback)
 		g.invalidate_playback();
+	if (g.cancel_downloads)
+		g.cancel_downloads();
 	g.generation++;
 	g.local_epoch++;
 	g.offer = 0;
@@ -1063,6 +1069,8 @@ void navidrome_poll_network(void) {
 		g.search_network_epoch++;
 		if (g.stop_playback_network)
 			g.stop_playback_network();
+		if (g.cancel_downloads)
+			g.cancel_downloads();
 		g.generation++;
 		g.connected = g.checking = g.busy = false;
 		g.library.syncing = g.favorites.syncing = false;
@@ -1096,7 +1104,10 @@ void navidrome_shutdown(void) {
 	bool join = g.started;
 	g.started = false;
 	g.listener = NULL;
+	void (*shutdown_downloads)(void) = g.shutdown_downloads;
 	pthread_mutex_unlock(&lock);
+	if (shutdown_downloads)
+		shutdown_downloads();
 	if (join)
 		pthread_join(worker, NULL);
 	pthread_mutex_lock(&lock);
@@ -1133,6 +1144,8 @@ void navidrome_set_root(const char *root) {
 	g.local_epoch++;
 	if (g.invalidate_playback)
 		g.invalidate_playback();
+	if (g.cancel_downloads)
+		g.cancel_downloads();
 	// Card events run on the storage worker. Leases only cover local file I/O,
 	// never network waits, and no new old-card lease can enter after this epoch.
 	while (cache_users || sync_owners)
@@ -1301,6 +1314,14 @@ bool navidrome_playback_current(const nd_context_t *c, bool network) {
 	pthread_mutex_unlock(&lock);
 	return ok;
 }
+bool navidrome_playback_scope(const nd_context_t *c, const nd_library_t *library) {
+	pthread_mutex_lock(&lock);
+	const nd_library_t *source = library->favorites ? &g.favorites : &g.library;
+	bool ok = playback_current(c, false) && library->card_epoch == g.card_epoch &&
+		!strcmp(library->scope, source->scope) && !strcmp(library->path, source->path);
+	pthread_mutex_unlock(&lock);
+	return ok;
+}
 
 bool navidrome_playback_begin(const nd_context_t *c) {
 	pthread_mutex_lock(&lock);
@@ -1321,6 +1342,13 @@ bool navidrome_playback_publish(const nd_context_t *c, const char *temp, const c
 bool navidrome_playback_pin(const nd_library_t *library) {
 	pthread_mutex_lock(&lock);
 	bool ok = !g.stop && g.unlocked && library->ready && library->epoch == g.local_epoch && library->card_epoch == g.card_epoch && library->generation == (library->favorites ? g.favorites.generation : g.library.generation) && !strcmp(library->scope, library->favorites ? g.favorites.scope : g.library.scope) && nd_store_retain(library->scope, library->generation);
+	pthread_mutex_unlock(&lock);
+	return ok;
+}
+
+bool navidrome_playback_pin_source(const nd_library_t *library) {
+	pthread_mutex_lock(&lock);
+	bool ok = !g.stop && g.unlocked && library->ready && library->epoch == g.local_epoch && library->card_epoch == g.card_epoch && library->generation == (library->favorites ? g.favorites.generation : g.library.generation) && !strcmp(library->scope, library->favorites ? g.favorites.scope : g.library.scope) && !strcmp(library->path, library->favorites ? g.favorites.path : g.library.path) && nd_store_retain_source(library);
 	pthread_mutex_unlock(&lock);
 	return ok;
 }
@@ -1349,6 +1377,19 @@ void navidrome_set_playback_network_stop(void (*cancel)(void)) {
 	pthread_mutex_lock(&lock);
 	g.stop_playback_network = cancel;
 	pthread_mutex_unlock(&lock);
+}
+
+void navidrome_set_download_hooks(void (*cancel)(void), void (*shutdown)(void)) {
+	pthread_mutex_lock(&lock);
+	g.cancel_downloads = cancel;
+	g.shutdown_downloads = shutdown;
+	pthread_mutex_unlock(&lock);
+}
+bool navidrome_playback_action(const nd_context_t *context, bool network, bool (*action)(void *), void *user) {
+	pthread_mutex_lock(&lock);
+	bool ok = playback_current(context, network) && action && action(user);
+	pthread_mutex_unlock(&lock);
+	return ok;
 }
 
 bool navidrome_external_begin(const nd_context_t *context, bool network) {
@@ -1390,6 +1431,8 @@ void navidrome_search_failed(const nd_context_t *context, const char *reason) {
 		g.playback_network_epoch++;
 		if (g.stop_playback_network)
 			g.stop_playback_network();
+		if (g.cancel_downloads)
+			g.cancel_downloads();
 		g.connected = false;
 		// Network callbacks now cancel, and their owner drains/clears busy.
 		// Keep the service job lifetime so local credential conversion can finish.
@@ -1398,13 +1441,6 @@ void navidrome_search_failed(const nd_context_t *context, const char *reason) {
 	}
 	pthread_mutex_unlock(&lock);
 	notify();
-}
-
-bool navidrome_playback_pin_source(const nd_library_t *library) {
-	pthread_mutex_lock(&lock);
-	bool ok = !g.stop && g.unlocked && library->ready && library->epoch == g.local_epoch && library->card_epoch == g.card_epoch && library->generation == (library->favorites ? g.favorites.generation : g.library.generation) && !strcmp(library->scope, library->favorites ? g.favorites.scope : g.library.scope) && !strcmp(library->path, library->favorites ? g.favorites.path : g.library.path) && nd_store_retain_source(library);
-	pthread_mutex_unlock(&lock);
-	return ok;
 }
 
 // Independent from the service lock: cache maintenance waits for network/storage

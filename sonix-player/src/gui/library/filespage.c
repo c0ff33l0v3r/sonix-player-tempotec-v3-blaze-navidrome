@@ -1,4 +1,5 @@
 #include "filespage.h"
+#include "folderpicker.h"
 
 #include <dirent.h>
 #include <pthread.h>
@@ -674,6 +675,7 @@ static void name_layer_hide(void) {
 // ---------------------------------------------------------------------------
 
 static void pick_rebuild(void);
+static void pick_name_free(lv_event_t *e) { free(lv_event_get_user_data(e)); }
 
 static void pick_row_cb(lv_event_t *e) {
 	if (gesture_not_tap()) {
@@ -745,38 +747,12 @@ static void pick_rebuild(void) {
 	}
 
 	for (int i = 0; i < count; i++) {
-		lv_obj_t *row = lv_btn_create(pick_list);
-		lv_obj_set_size(row, lv_pct(100), ROW_HEIGHT);
-		lv_obj_add_style(row, &theme_style_card, 0);
-		lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_set_style_radius(row, ui_px(12), 0);
-		lv_obj_set_style_border_width(row, 0, 0);
-		lv_obj_set_style_shadow_width(row, 0, 0);
-		lv_obj_set_style_pad_hor(row, ui_px(16), 0);
-		lv_obj_set_style_pad_column(row, ui_px(14), 0);
-		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-		lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-		// The row owns the copy the callback reads: the array above is freed
-		// before the first tap can happen.
+		// A row owns its callback name until it is rebuilt or destroyed.
 		char *kept = strdup(names[i]);
-		if (!kept) {
+		if (!kept)
 			break;
-		}
-		lv_obj_add_event_cb(row, pick_row_cb, LV_EVENT_CLICKED, kept);
-
-		lv_obj_t *glyph = lv_image_create(row);
-		lv_image_set_src(glyph, &icon_folder);
-		lv_obj_add_style(glyph, &theme_style_icon, 0);
-		lv_obj_set_style_image_recolor(glyph, theme()->accent, 0);
-		lv_obj_set_style_image_recolor_opa(glyph, LV_OPA_COVER, 0);
-
-		lv_obj_t *label = lv_label_create(row);
-		lv_label_set_text(label, names[i]);
-		lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
-		lv_obj_set_flex_grow(label, 1);
-		lv_obj_set_height(label, ui_px(32));
-		lv_obj_add_style(label, &theme_style_text, 0);
-		lv_obj_set_style_text_font(label, &font_ui_22, 0);
+		lv_obj_t *row = folderpicker_row(pick_list, names[i], pick_row_cb, kept);
+		lv_obj_add_event_cb(row, pick_name_free, LV_EVENT_DELETE, kept);
 	}
 	free(names);
 }
@@ -1271,64 +1247,14 @@ void filespage_init(gui_config_t *cfg) {
 
 	// --- the destination picker: the same page, folders only, with the button
 	// that says "here" pinned to the bottom.
-	pick_layer = lv_obj_create(filespage_screen);
-	lv_obj_set_size(pick_layer, cfg->screen_width, cfg->screen_height);
-	lv_obj_align(pick_layer, LV_ALIGN_TOP_LEFT, 0, 0);
-	lv_obj_add_style(pick_layer, &theme_style_screen, 0);
-	lv_obj_set_style_bg_opa(pick_layer, LV_OPA_COVER, 0);
-	lv_obj_set_style_border_width(pick_layer, 0, 0);
-	lv_obj_set_style_radius(pick_layer, 0, 0);
-	lv_obj_set_style_pad_all(pick_layer, 0, 0);
-	lv_obj_set_scrollable(pick_layer, false);
+	folderpicker_t destination = folderpicker_create(filespage_screen, cfg,
+		"file_explorer", "files_move_here", pick_here_cb, NULL, pick_cancel_cb);
+	pick_layer = destination.root;
+	pick_title = destination.title;
+	pick_list = destination.list;
+	pick_here_btn = destination.use;
+	pick_here_label = destination.use_label;
 	lv_obj_set_hidden(pick_layer, true);
-
-	pick_title = lv_label_create(pick_layer);
-	lv_label_set_text(pick_title, tr("file_explorer"));
-	lv_obj_add_style(pick_title, &theme_style_text, 0);
-	lv_obj_set_style_text_font(pick_title, &font_ui_24, 0);
-	lv_obj_align(pick_title, LV_ALIGN_TOP_LEFT, cfg->padding + ui_px(56) + ui_px(14), cfg->padding + cfg->top_bar_height + ui_px(10));
-
-	lv_obj_t *pick_cancel = lv_btn_create(pick_layer);
-	lv_obj_set_size(pick_cancel, ui_px(56), ui_px(56));
-	lv_obj_align(pick_cancel, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
-	lv_obj_set_style_bg_opa(pick_cancel, LV_OPA_TRANSP, 0);
-	lv_obj_set_style_border_width(pick_cancel, 0, 0);
-	lv_obj_set_style_shadow_width(pick_cancel, 0, 0);
-	lv_obj_set_style_pad_all(pick_cancel, 0, 0);
-	lv_obj_add_event_cb(pick_cancel, pick_cancel_cb, LV_EVENT_CLICKED, NULL);
-
-	lv_obj_t *pick_cancel_icon = lv_image_create(pick_cancel);
-	lv_image_set_src(pick_cancel_icon, &icon_close);
-	lv_obj_add_style(pick_cancel_icon, &theme_style_icon, 0);
-	lv_obj_center(pick_cancel_icon);
-
-	// The button first, so the list can be sized against what it leaves.
-	pick_here_btn = lv_btn_create(pick_layer);
-	lv_obj_set_size(pick_here_btn, cfg->screen_width - 2 * cfg->padding, ui_px(64));
-	lv_obj_align(pick_here_btn, LV_ALIGN_BOTTOM_MID, 0, -cfg->padding);
-	lv_obj_set_style_radius(pick_here_btn, ui_px(14), 0);
-	lv_obj_set_style_bg_color(pick_here_btn, theme()->accent, 0);
-	lv_obj_set_style_border_width(pick_here_btn, 0, 0);
-	lv_obj_set_style_shadow_width(pick_here_btn, 0, 0);
-	lv_obj_add_event_cb(pick_here_btn, pick_here_cb, LV_EVENT_CLICKED, NULL);
-
-	pick_here_label = lv_label_create(pick_here_btn);
-	lv_label_set_text(pick_here_label, tr("files_move_here"));
-	lv_obj_set_style_text_color(pick_here_label, lv_color_white(), 0);
-	lv_obj_set_style_text_font(pick_here_label, &font_ui_24, 0);
-	lv_obj_center(pick_here_label);
-
-	pick_list = lv_obj_create(pick_layer);
-	lv_obj_set_size(pick_list, lv_pct(100), cfg->screen_height - content_top - ui_px(64) - 2 * cfg->padding);
-	lv_obj_align(pick_list, LV_ALIGN_TOP_LEFT, 0, content_top);
-	lv_obj_set_style_bg_opa(pick_list, 0, 0);
-	lv_obj_set_style_border_width(pick_list, 0, 0);
-	lv_obj_set_style_radius(pick_list, 0, 0);
-	lv_obj_set_style_pad_hor(pick_list, cfg->padding, 0);
-	lv_obj_set_style_pad_ver(pick_list, 0, 0);
-	lv_obj_set_style_pad_gap(pick_list, ui_px(8), 0);
-	lv_obj_set_scroll_dir(pick_list, LV_DIR_VER);
-	lv_obj_set_flex_flow(pick_list, LV_FLEX_FLOW_COLUMN);
 
 	lv_obj_add_event_cb(filespage_screen, loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 	switcher_attach_back_gesture(file_list);

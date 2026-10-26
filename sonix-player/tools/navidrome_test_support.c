@@ -66,5 +66,13 @@ __attribute__((weak)) void config_set_bool(const char *section, const char *key,
 }
 __attribute__((weak)) bool config_save(void) { return true; }
 
+// Legacy focused fixtures replace audio ownership. The real audio module
+// overrides these when a fixture exercises permanent-file source context.
 extern bool nd_audio_owns(const char *) __attribute__((weak));
-__attribute__((weak)) bool nd_audio_source(const char *path) { return (path && !strncmp(path, "ndq:", 4)) || (nd_audio_owns && nd_audio_owns(path)); }
+__attribute__((weak)) bool nd_audio_source(const char *path) { return nd_audio_owns && nd_audio_owns(path); }
+__attribute__((weak)) void nd_audio_set_source(const char *path) { (void)path; }
+
+// Settings-only fixtures do not link the separate download page. Download UI
+// fixtures link its real implementation instead of these weak boundaries.
+__attribute__((weak)) void navidromedownloadpage_init(void *config) { (void)config; }
+__attribute__((weak)) void navidromedownloadpage_open(void) {}

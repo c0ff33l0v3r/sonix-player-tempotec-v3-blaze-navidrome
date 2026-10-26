@@ -1,4 +1,5 @@
 #include "navidromesettings.h"
+#include "navidromedownloadpage.h"
 #include "navidromealbum.h"
 #include "src/gui/nowplaying/player.h"
 
@@ -727,11 +728,15 @@ static void album_view_cb(lv_event_t *e) {
 	actions();
 }
 
+static void downloads_cb(lv_event_t *e) { (void)e; if (!gesture()) navidromedownloadpage_open(); }
+
 void navidromesettings_init(gui_config_t *cfg) {
 	config = cfg;
+	navidromedownloadpage_init(cfg);
 	form_init(&settings_form, "nd_settings");
 	form_init(&main_form, "nd_server");
 	settingsrow_add(settings_form.body, "nd_server", NULL, server_cb, NULL);
+	settingsrow_add(settings_form.body, "nd_dl_downloads", NULL, downloads_cb, NULL);
 	settingsrow_toggle(settings_form.body, "musicsettings_album_head", &album_view_switch, album_view_cb);
 	lv_obj_t *album_note = lv_label_create(settings_form.body);
 	lv_obj_set_width(album_note, lv_pct(100));

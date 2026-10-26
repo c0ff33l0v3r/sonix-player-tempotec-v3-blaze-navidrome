@@ -249,6 +249,16 @@ static void navidrome_accounting(void) {
 	assert(playing_source() == BS_NAVIDROME);
 	assert(!nd_audio_owns(NULL) && !nd_audio_owns("ndq:1:0"));
 	assert(!nd_audio_owns("/mnt/sd/Music/Navidrome/song.flac"));
+	// One physical permanent file retains the audible source's accounting.
+	const char *permanent = "/mnt/sd/Music/Navidrome/song.flac";
+	fake_path = permanent;
+	nd_audio_set_source(permanent);
+	assert(playing_source() == BS_NAVIDROME);
+	nd_audio_set_source(NULL);
+	fake_source = BS_LOCAL;
+	assert(playing_source() == BS_LOCAL);
+	fake_source = BS_NAVIDROME;
+	fake_path = NULL;
 
 	// The same real ownership rule covers growing, complete and legacy files;
 	// it does not inspect completion metadata, the card or connection state.

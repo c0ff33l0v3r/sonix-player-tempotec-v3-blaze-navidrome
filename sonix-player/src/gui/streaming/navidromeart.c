@@ -27,7 +27,7 @@ typedef struct {
 	int backdrop_w, backdrop_h;
 	cover_image_t image, backdrop;
 } art_slot_t;
-#define ART_SLOTS ND_ART_SLOT_COUNT // Rows, player, Search and album heads own disjoint slots.
+#define ART_SLOTS ND_ART_SLOT_COUNT // Browser/player/Search/album heads/Queue/Downloads own disjoint slots.
 static art_slot_t slots[ART_SLOTS];
 static pthread_mutex_t art_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t wake = PTHREAD_COND_INITIALIZER;

@@ -156,7 +156,7 @@ static int playing_source(void) {
 	if (podcastcache_owns(path)) {
 		return BS_PODCAST;
 	}
-	if (nd_audio_owns(path)) {
+	if (nd_audio_source(path)) {
 		return BS_NAVIDROME;
 	}
 	return BS_LOCAL;

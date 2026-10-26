@@ -64,6 +64,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "src/system/streaming/navidromeaudio.h"
+#include "src/system/streaming/navidromedownloads.h"
 
 // How often the power state machine polls. Kept short so a power-button press
 // feels responsive; the work done per tick is trivial.
@@ -682,7 +683,7 @@ static bool streaming_playback_active(void) {
 	if (!path[0]) {
 		return false;
 	}
-	return nd_audio_owns(path) || qobuzcache_owns(path) || tidalcache_owns(path) || podcastcache_owns(path);
+	return nd_audio_source(path) || qobuzcache_owns(path) || tidalcache_owns(path) || podcastcache_owns(path);
 }
 
 // Whether the network is the point rather than an idle drain: an AirPlay
@@ -698,7 +699,7 @@ static bool wifi_in_use(void) {
 	// A scan or a connect in flight counts as use: parking the radio out from
 	// under wpa_supplicant mid-association leaves the driver to sort out a
 	// teardown it did not expect.
-	return wifi_busy() || wifi_scan_running() || streaming_playback_active() || airplay_get_enabled() || dlna_get_enabled() || sonixlink_get_enabled() || wifitransfer_get_enabled() || qobuzcache_downloading_id() > 0 || nd_audio_network_wanted() || qobuzcache_network_wanted() || tidalcache_downloading_id() > 0 || tidalcache_network_wanted() || podcastcache_downloading_id() > 0 || podcastcache_network_wanted() || podcastdl_busy() || lastfm_network_wanted() || ota_busy();
+	return wifi_busy() || wifi_scan_running() || streaming_playback_active() || airplay_get_enabled() || dlna_get_enabled() || sonixlink_get_enabled() || wifitransfer_get_enabled() || qobuzcache_downloading_id() > 0 || (nd_audio_network_wanted() || navidromedownloads_network_wanted()) || qobuzcache_network_wanted() || tidalcache_downloading_id() > 0 || tidalcache_network_wanted() || podcastcache_downloading_id() > 0 || podcastcache_network_wanted() || podcastdl_busy() || lastfm_network_wanted() || ota_busy();
 }
 
 // Pushes the next suspend attempt out by the anti-hammer delay. A radio that has

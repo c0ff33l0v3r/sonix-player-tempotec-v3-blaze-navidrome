@@ -32,6 +32,9 @@ static http_stream_t *active;
 static unsigned cancelled;
 static bool network_wanted;
 static char protected_paths[3][512];
+static char copy_path[512];
+static char source_path[512];
+static nd_audio_original_resolver original_resolver;
 static char failed_path[512];
 static pthread_once_t once = PTHREAD_ONCE_INIT;
 static bool registered;
@@ -51,8 +54,20 @@ bool nd_audio_failed(const char *path) {
 	return failed;
 }
 bool nd_audio_owns(const char *path) { return path && (strstr(path, "/" ND_CACHE_RELATIVE "/audio/") || strstr(path, "/.local/navidrome/audio/")); }
-// Recognize represented selections independently of a decoder cache filename.
-bool nd_audio_source(const char *path) { return nd_audio_owns(path) || (path && !strncmp(path, "ndq:", 4)); }
+bool nd_audio_source(const char *path) {
+	if (!path || !*path) return false;
+	if (nd_audio_owns(path) || !strncmp(path, "ndq:", 4)) return true;
+	pthread_mutex_lock(&lock);
+	bool source = source_path[0] && !strcmp(path, source_path);
+	pthread_mutex_unlock(&lock);
+	return source;
+}
+void nd_audio_set_source(const char *path) {
+	pthread_mutex_lock(&lock);
+	snprintf(source_path, sizeof(source_path), "%s", path ? path : "");
+	pthread_mutex_unlock(&lock);
+}
+void nd_audio_set_original_resolver(nd_audio_original_resolver resolver) { original_resolver = resolver; }
 bool nd_audio_network_wanted(void) {
 	pthread_mutex_lock(&lock);
 	bool wanted = network_wanted;
@@ -75,6 +90,7 @@ static bool protected(const char *path) {
 	pthread_mutex_lock(&lock);
 	for (int i = 0; i < 3; i++)
 		keep |= protected_paths[i][0] && !strcmp(path, protected_paths[i]);
+	keep |= copy_path[0] && !strcmp(path, copy_path);
 	pthread_mutex_unlock(&lock);
 	return keep || growfile_is_growing(path);
 }
@@ -189,7 +205,7 @@ static bool room(const char *root, int64_t incoming) {
 		unlink(marker);
 	}
 }
-static const char *extension(const unsigned char *p, size_t n) {
+const char *nd_audio_extension(const unsigned char *p, size_t n) {
 	if (n < 12)
 		return NULL;
 	if (!memcmp(p, "fLaC", 4))
@@ -240,7 +256,19 @@ static bool cached(const nd_library_t *lib, const char *stem, const char *id, ch
 }
 
 static uint32_t little32(const unsigned char *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
-static bool valid_audio(const char *path) {
+bool nd_audio_write_original(int fd, const void *data, size_t size) {
+	if (fd < 0 || !data || !size || size > AUDIO_CHUNK) return false;
+	const unsigned char *bytes = data;
+	size_t at = 0;
+	while (at < size) {
+		ssize_t n = write(fd, bytes + at, size - at);
+		if (n < 0 && errno == EINTR) continue;
+		if (n <= 0) return false;
+		at += (size_t)n;
+	}
+	return true;
+}
+bool nd_audio_valid(const char *path) {
 	decode_format_t format = decode_detect_format(path);
 	if (format != DECODE_FORMAT_UNKNOWN) {
 		decoder_t *decoder = decoder_open_info(path, format);
@@ -295,6 +323,7 @@ static bool turn_current(void *user) {
 
 bool nd_audio_cached(const nd_library_t *lib, const nd_context_t *ctx, const char *id) {
 	char root[512], stem[512], path[512];
+	if (original_resolver && original_resolver(lib, ctx, id, path)) return true;
 	if (!names(lib, id, root, stem) || !navidrome_playback_begin(ctx))
 		return false;
 	bool hit = cached(lib, stem, id, path);
@@ -303,6 +332,11 @@ bool nd_audio_cached(const nd_library_t *lib, const nd_context_t *ctx, const cha
 }
 
 static const char *fetch_audio(const nd_library_t *lib, const nd_context_t *ctx, const nd_playrow_t *track, bool progressive_start, nd_audio_current_cb current, nd_audio_ready_cb ready, void *user) {
+	char permanent[512];
+	if (original_resolver && original_resolver(lib, ctx, track->row.id, permanent)) {
+		if (current(user)) ready(permanent, user);
+		return NULL;
+	}
 	pthread_once(&once, register_cache);
 	if (!registered)
 		return "nd_worker_error";
@@ -310,7 +344,7 @@ static const char *fetch_audio(const nd_library_t *lib, const nd_context_t *ctx,
 	if (!names(lib, track->row.id, root, stem) || !navidrome_playback_begin(ctx))
 		return "nd_cache_storage";
 	bool hit = cached(lib, stem, track->row.id, path);
-	if (hit && !valid_audio(path)) {
+	if (hit && !nd_audio_valid(path)) {
 		pthread_mutex_lock(&lock);
 		snprintf(failed_path, sizeof(failed_path), "%s", path);
 		pthread_mutex_unlock(&lock);
@@ -421,7 +455,7 @@ static const char *fetch_audio(const nd_library_t *lib, const nd_context_t *ctx,
 			break;
 		}
 		if (!path[0]) {
-			const char *ext = extension(buffer, (size_t)n);
+			const char *ext = nd_audio_extension(buffer, (size_t)n);
 			if (!ext)
 				error = "nd_audio_invalid";
 			else if (snprintf(path, sizeof(path), "%s%s", stem, ext) >= (int)sizeof(path))
@@ -452,17 +486,8 @@ static const char *fetch_audio(const nd_library_t *lib, const nd_context_t *ctx,
 		}
 		if (!error && !room(root, (int64_t)n + sizeof(complete_t)))
 			error = "nd_audio_space";
-		if (!error) {
-			size_t at = 0;
-			while (at < (size_t)n) {
-				ssize_t wrote = write(fd, buffer + at, (size_t)n - at);
-				if (wrote <= 0) {
-					error = "nd_cache_storage";
-					break;
-				}
-				at += (size_t)wrote;
-			}
-		}
+		if (!error && !nd_audio_write_original(fd, buffer, (size_t)n))
+			error = "nd_cache_storage";
 		if (!error) {
 			done += n;
 			if (announced)
@@ -520,7 +545,7 @@ static const char *fetch_audio(const nd_library_t *lib, const nd_context_t *ctx,
 		announced = false;
 	}
 	if (!error && navidrome_playback_begin(ctx)) {
-		if (!valid_audio(path))
+		if (!nd_audio_valid(path))
 			error = "nd_audio_invalid";
 		if (!error) {
 			int data = open(path, O_WRONLY | O_NOFOLLOW);
@@ -579,4 +604,28 @@ const char *nd_audio_fetch(const nd_library_t *lib, const nd_context_t *ctx, con
 	const char *error = fetch_audio(lib, ctx, track, progressive_start, transfer_current, transfer_ready, &t);
 	nd_cache_io_end();
 	return error;
+}
+
+// The shared transfer turn excludes an evicting cache writer while reservation
+// admission validates this source. A separate pin also protects maintenance.
+bool nd_audio_copy_acquire(const nd_library_t *lib, const nd_context_t *ctx, const char *id, char path[512]) {
+    unsigned epoch = nd_cache_epoch();
+    if (!nd_cache_io_begin(epoch)) return false;
+    char root[512], stem[512];
+    if (!names(lib, id, root, stem) || !navidrome_playback_begin(ctx)) { nd_cache_io_end(); return false; }
+    bool ok = cached(lib, stem, id, path) && nd_audio_valid(path);
+    pthread_mutex_lock(&lock);
+    if (copy_path[0]) ok = false;
+    if (ok) snprintf(copy_path, sizeof(copy_path), "%s", path);
+    pthread_mutex_unlock(&lock);
+    navidrome_cache_end();
+    if (!ok) nd_cache_io_end();
+    return ok;
+}
+void nd_audio_copy_release(void) {
+    pthread_mutex_lock(&lock);
+    bool held = copy_path[0] != 0;
+    copy_path[0] = 0;
+    pthread_mutex_unlock(&lock);
+    if (held) nd_cache_io_end();
 }

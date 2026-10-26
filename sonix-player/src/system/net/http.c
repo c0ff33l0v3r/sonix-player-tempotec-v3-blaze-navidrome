@@ -1385,6 +1385,10 @@ struct http_session {
 	void *user;
 	const char *error;
 	bool chunked, closing, complete, chunk_crlf;
+	bool binary;
+	size_t wire_limit, decoded_limit, declared;
+	int deadline_ms;
+	char content_type[64];
 	int status;
 	size_t remaining, chunk, pos, end;
 	unsigned char buffer[8192];
@@ -1698,7 +1702,7 @@ static int finite_encoded(void *arg, void *out, size_t size) {
 		}
 		n = got;
 	}
-	if (n > FINITE_WIRE - s->stats.encoded) {
+	if (n > s->wire_limit - s->stats.encoded) {
 		s->error = "body_limit";
 		return -1;
 	}
@@ -1719,9 +1723,22 @@ http_session_t *http_session_new(bool (*current)(void *), void *user) {
 		s->conn.fd = -1;
 		s->current = current;
 		s->user = user;
+		s->wire_limit = FINITE_WIRE;
+		s->decoded_limit = FINITE_DECODED;
+		s->deadline_ms = HTTP_FINITE_DEADLINE_MS;
 	}
 	return s;
 }
+bool http_session_binary(http_session_t *s, size_t max_bytes, int seconds) {
+	if (!s || s->conn.fd >= 0 || !max_bytes || max_bytes > INT32_MAX || seconds <= 0 || seconds > 1800)
+		return false;
+	s->binary = true;
+	s->wire_limit = s->decoded_limit = max_bytes;
+	s->deadline_ms = seconds * 1000;
+	return true;
+}
+const char *http_session_content_type(const http_session_t *s) { return s->content_type; }
+size_t http_session_length(const http_session_t *s) { return s->declared; }
 void http_session_free(http_session_t *s) {
 	if (!s)
 		return;
@@ -1746,7 +1763,7 @@ int http_session_read(http_session_t *s, void *out, size_t size) {
 		finite_close(s);
 		return -1;
 	}
-	if ((size_t)n > FINITE_DECODED - s->stats.decoded) {
+	if ((size_t)n > s->decoded_limit - s->stats.decoded) {
 		s->error = "decoded_limit";
 		finite_close(s);
 		return -1;
@@ -1763,7 +1780,7 @@ bool http_session_get(http_session_t *s, const char *url, bool gzip, bool reuse)
 	s->gzip = NULL;
 	memset(&s->stats, 0, sizeof(s->stats));
 	s->error = NULL;
-	s->deadline = finite_now() + HTTP_FINITE_DEADLINE_MS / 1000.0;
+	s->deadline = finite_now() + s->deadline_ms / 1000.0;
 	s->idle = finite_now() + 8;
 	char current[2600];
 	if (snprintf(current, sizeof(current), "%s", url) >= (int)sizeof(current)) {
@@ -1792,9 +1809,11 @@ bool http_session_get(http_session_t *s, const char *url, bool gzip, bool reuse)
 		s->chunked = s->closing = s->chunk_crlf = false;
 		s->remaining = s->chunk = 0;
 		s->status = 0;
+		s->declared = 0;
+		s->content_type[0] = 0;
 		char request[3000], host[300];
 		host_header_value(&u, host, sizeof(host));
-		int length = snprintf(request, sizeof(request), "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: " HTTP_USER_AGENT "\r\nAccept: application/json\r\nAccept-Encoding: %s\r\nConnection: %s\r\n\r\n", u.path, host, gzip ? "gzip, identity" : "identity", reuse ? "keep-alive" : "close");
+		int length = snprintf(request, sizeof(request), "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: " HTTP_USER_AGENT "\r\nAccept: %s\r\nAccept-Encoding: %s\r\nConnection: %s\r\n\r\n", u.path, host, s->binary ? "*/*" : "application/json", gzip ? "gzip, identity" : "identity", reuse ? "keep-alive" : "close");
 		if (length < 0 || length >= (int)sizeof(request)) {
 			s->error = "address";
 			break;
@@ -1866,6 +1885,8 @@ bool http_session_get(http_session_t *s, const char *url, bool gzip, bool reuse)
 			} else if (!strcasecmp(line, "Connection")) {
 				if (strcasestr(value, "close"))
 					close = true;
+			} else if (!strcasecmp(line, "Content-Type")) {
+				snprintf(s->content_type, sizeof(s->content_type), "%.63s", value);
 			} else if (!strcasecmp(line, "Location")) {
 				if (*location) {
 					s->error = "framing";
@@ -1893,10 +1914,15 @@ bool http_session_get(http_session_t *s, const char *url, bool gzip, bool reuse)
 		// Close after fully draining a length-delimited Connection: close response too.
 		if (close && !s->closing)
 			s->origin.port = 0;
-		if (has_length && s->remaining > FINITE_WIRE) {
+		if (has_length && s->remaining > s->wire_limit) {
 			s->error = "body_limit";
 			break;
 		}
+		if (s->binary && (compressed || (has_length && s->end - s->pos > s->remaining))) {
+			s->error = compressed ? "encoding_unsupported" : "framing";
+			break;
+		}
+		s->declared = has_length ? s->remaining : 0;
 		if (compressed) {
 			s->gzip = gzip_reader_new(finite_encoded, s);
 			if (!s->gzip) {

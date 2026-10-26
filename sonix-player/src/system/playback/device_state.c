@@ -950,6 +950,8 @@ static bool prepared_paused;
 static void load_and_play_at(const char *filepath, double position) {
 	if (!navidromeplay_prepare(filepath))
 		return;
+	if (!prepared_metadata)
+		nd_audio_set_source(NULL);
 	navidromeplay_other(filepath);
 	if (!prepared_metadata)
 		prepared_duration = 0;
@@ -1051,6 +1053,7 @@ void device_state_represent_source(const char *reference, const song_metadata_t 
 
 void device_state_clear_prepared(void) {
 	audio_stop();
+	nd_audio_set_source(NULL);
 	current_metadata_file[0] = 0;
 	prepared_duration = 0;
 	memset(&current_metadata, 0, sizeof(current_metadata));
@@ -1059,6 +1062,8 @@ void device_state_clear_prepared(void) {
 // The same without starting: the track comes up paused at its beginning, and
 // play starts it. The queue is left as it is.
 static void load_paused(const char *filepath) {
+	nd_audio_set_source(NULL);
+	navidromeplay_other(filepath);
 	scrub_cancel();
 	history_leave_for(filepath, -1.0);
 	radio_clear();
@@ -1085,6 +1090,8 @@ static void load_paused(const char *filepath) {
 // tap on the file would build, but the track comes up paused at `position`
 // instead of playing.
 void device_state_restore_file(const char *filepath, double position) {
+	nd_audio_set_source(NULL);
+	navidromeplay_other(filepath);
 	// Same reason as load_and_play: this changes the track too.
 	scrub_cancel();
 

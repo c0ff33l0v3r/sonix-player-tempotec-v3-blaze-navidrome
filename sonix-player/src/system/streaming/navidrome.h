@@ -56,6 +56,7 @@ bool navidrome_context_current(const nd_context_t *context, bool network);
 
 // Playback lifetime excludes ordinary metadata publication. No network work.
 bool navidrome_playback_current(const nd_context_t *context, bool network);
+bool navidrome_playback_scope(const nd_context_t *context, const nd_library_t *library);
 bool navidrome_playback_begin(const nd_context_t *context);
 bool navidrome_playback_publish(const nd_context_t *context, const char *temp, const char *path);
 bool navidrome_playback_pin_source(const nd_library_t *library);
@@ -64,6 +65,10 @@ void navidrome_network_failed(const nd_context_t *context);
 // Called under service mutex: callback may only wake/cancel workers or post.
 void navidrome_set_playback_invalidator(void (*invalidate)(void));
 void navidrome_set_playback_network_stop(void (*cancel)(void));
+// Independent background-download lifecycle; cancellation runs under service lock.
+void navidrome_set_download_hooks(void (*cancel)(void), void (*shutdown)(void));
+// Short local commit/publication only. Callback must not reenter this service.
+bool navidrome_playback_action(const nd_context_t *context, bool network, bool (*action)(void *), void *user);
 // Serialized external playlist worker, sharing credential/card lifecycle with service jobs.
 bool navidrome_external_begin(const nd_context_t *context, bool network);
 void navidrome_external_end(void);
@@ -74,6 +79,7 @@ const char *navidrome_ping(const char *host, const char *user, const char *passw
 #ifdef NAVIDROME_TEST
 void navidrome_test_online(int online); // -1 production behavior, 0/1 injected device snapshot
 #endif
+
 // Search metadata has no card/snapshot dependency; reconnect retires network jobs.
 bool navidrome_search_current(const nd_context_t *context, bool network);
 void navidrome_search_failed(const nd_context_t *context, const char *reason);

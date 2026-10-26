@@ -33,6 +33,12 @@ static bool chain_enabled, queue_at_end, open_player_on_tap=true;
 static int starts, sheet_opens, stops;
 static int player_refreshes, favorite_refreshes;
 static bool network_demand;
+static bool permanent_download_paths;
+static char permanent_source_binding[512];
+bool nd_audio_source(const char *path) {
+	return path && (nd_audio_owns(path) || (permanent_source_binding[0] && !strcmp(path, permanent_source_binding)));
+}
+void nd_audio_set_source(const char *path) { snprintf(permanent_source_binding, sizeof(permanent_source_binding), "%s", path ? path : ""); }
 long config_get_int(const char *section, const char *key, long fallback) {
 	if (!strcmp(section, "player") && !strcmp(key, "album_chaining")) return chain_enabled;
 	if (!strcmp(section, "player") && !strcmp(key, "queue_add_end")) return queue_at_end;
@@ -120,7 +126,10 @@ const char *nd_audio_fetch(const nd_library_t *lib, const nd_context_t *ctx, con
 	if (atoi(track->row.id + 5) == atomic_load(&fail_track))
 		return "nd_network_error";
 	char path[512];
-	snprintf(path, sizeof(path), "/fixture/.local/navidrome/.cache/audio/scope/%s.flac", track->row.id);
+	if (permanent_download_paths)
+		snprintf(path, sizeof(path), "/fixture/Music/Navidrome/%s.flac", track->row.id);
+	else
+		snprintf(path, sizeof(path), "/fixture/.local/navidrome/.cache/audio/scope/%s.flac", track->row.id);
 	ready_cb(path, user);
 	return atoi(track->row.id + 5) == atomic_load(&failed_after_ready) ? "nd_network_error" : NULL;
 }
@@ -206,6 +215,38 @@ static void polish_cache_card_change_check(void) {
 	puts("cache maintenance card replacement: old-context clear retires without deleting the prior card, stale re-admission is rejected and storage is restored: passed");
 }
 
+static void permanent_download_coordinator_check(lv_obj_t *origin) {
+	navidromeplay_stop();
+	for(int i=0;i<100;i++) { drain(); usleep(1000); }
+	nd_library_t library;
+	navidrome_library_snapshot(&library);
+	assert(library.ready);
+	permanent_download_paths=true;
+	nd_query_t tracks={.kind=ND_TRACKS};
+	int began=starts;
+	playlist_set_mode(PLAYBACK_MODE_NORMAL);
+	assert(navidromeplay_select(&library,&tracks,"song-00000",origin)); wait_started(began+1);
+	assert(strstr(playback.current_file,"/Music/Navidrome/") && nd_audio_source(playback.current_file) && !nd_audio_owns(playback.current_file));
+	nd_playrow_t shown; assert(navidromeplay_track(playback.current_file,&shown,NULL) && !strcmp(shown.row.id,"song-00000"));
+	char reference[512];
+	assert(playlist_advance_auto(reference,sizeof(reference)) && navidromeplay_auto(reference));
+	assert(!navidromeplay_prepare(reference)); wait_started(began+2);
+	assert(navidromeplay_track(playback.current_file,&shown,NULL) && !strcmp(shown.row.id,"song-00001"));
+	playlist_set_mode(PLAYBACK_MODE_REPEAT_ONE);
+	assert(playlist_advance_auto(reference,sizeof(reference)) && !navidromeplay_prepare(reference)); wait_started(began+3);
+	assert(navidromeplay_track(playback.current_file,&shown,NULL) && !strcmp(shown.row.id,"song-00001"));
+	playlist_set_mode(PLAYBACK_MODE_SHUFFLE);
+	assert(playlist_next(reference,sizeof(reference)) && !navidromeplay_prepare(reference)); wait_started(began+4);
+	assert(navidromeplay_track(playback.current_file,&shown,NULL) && strstr(playback.current_file,shown.row.id));
+	char same_file[512]; snprintf(same_file,sizeof(same_file),"%s",playback.current_file);
+	nd_audio_set_source(NULL); navidromeplay_other(same_file); playlist_clear();
+	assert(!navidromeplay_track(same_file,&shown,NULL) && !nd_audio_source(same_file));
+	// Leave a permanent Navidrome source for the shared Lock check below.
+	playlist_set_mode(PLAYBACK_MODE_NORMAL);
+	assert(navidromeplay_select(&library,&tracks,"song-00002",origin)); wait_started(began+5);
+	assert(nd_audio_source(playback.current_file) && !nd_audio_owns(playback.current_file));
+	puts("permanent-download coordinator: natural Next, Repeat one, Shuffle, exact source metadata, same-file local handoff and permanent-source Lock setup: passed");
+}
 static void polish_coordinator_check(const nd_library_t *baseline, lv_obj_t *origin) {
 	nd_library_t current_library = *baseline;
 	const nd_library_t *lib = &current_library;
@@ -657,6 +698,7 @@ int NAVIDROME_COORDINATOR_MAIN(int argc, char **argv) {
 	playback.current_file[0]=0;
 #endif
 	polish_cache_card_change_check();
+	permanent_download_coordinator_check(other);
 	navidrome_lock();
 	drain();
 	navidromeplay_tick();

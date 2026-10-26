@@ -198,6 +198,17 @@ static void artwork_checks(nd_library_t lib) {
 	image = art_wait(ND_ART_ALBUM_SLOT, true);
 	assert(image.dsc.header.w == 320);
 	cover_free(&image);
+	// Downloads own their own profile-scoped row slots; queue art remains live
+	// while the manager consumes a separately delivered cached cover.
+	navidromeart_request(ND_ART_QUEUE_SLOT, &lib, "quality-upgrade", 72);
+	navidromeart_request(ND_ART_DOWNLOAD_SLOT, &lib, "quality-upgrade", 72);
+	image = art_wait(ND_ART_DOWNLOAD_SLOT, true);
+	assert(image.dsc.header.w == 72);
+	cover_free(&image);
+	image = art_wait(ND_ART_QUEUE_SLOT, true);
+	assert(image.dsc.header.w == 72);
+	cover_free(&image);
+	navidromeart_release(ND_ART_DOWNLOAD_SLOT);
 	// Cache filenames are requested sizes, not proof of actual source detail.
 	navidromeart_request_player(&lib, "quality-under-key", 320, 0, 0);
 	image = art_wait(ND_ART_PLAYER_SLOT, true);

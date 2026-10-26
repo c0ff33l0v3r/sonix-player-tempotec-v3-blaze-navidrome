@@ -427,6 +427,7 @@ static void result_done(void *user) {
 	bool paused = !desired_play;
 	waiting = false;
 	pthread_mutex_unlock(&lock);
+	nd_audio_set_source(r->path);
 	device_state_play_prepared(r->path, &meta, paused, r->row.row.duration);
 	player_refresh_now_playing();
 	if (job->initial && config_get_bool("player", "open_player_on_tap", true) && lv_obj_is_valid(s->origin) && lv_screen_active() == s->origin)

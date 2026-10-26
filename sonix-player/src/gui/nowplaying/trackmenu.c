@@ -43,6 +43,7 @@
 #include "src/gui/shell/uiscale.h"
 #include "src/gui/streaming/navidromebrowse.h"
 #include "src/system/streaming/navidromeplay.h"
+#include "src/gui/streaming/navidromedownloadmenu.h"
 
 lv_obj_t *queue_screen;
 lv_obj_t *details_screen;
@@ -1974,10 +1975,23 @@ void trackmenu_open(lv_obj_t *anchor) {
 		{"details", open_details_cb, NULL},
 		{"settings", open_settings_cb, NULL},
 	};
+	static const popover_item_t ITEMS_NAVIDROME[] = {
+		{"trackmenu_queue", open_queue_cb, NULL},
+		{"add_to_playlist", add_to_playlist_cb, NULL},
+		{"nd_dl_download", navidromedownloadmenu_activate, NULL},
+		{"show_album", open_album_cb, NULL},
+		{"show_artist", open_artist_cb, NULL},
+		{"details", open_details_cb, NULL},
+		{"settings", open_settings_cb, NULL},
+	};
 
 	device_state_t state;
 	device_state_get(&state);
 	bool podcast = state.current_file[0] && podcastcache_is_episode(state.current_file);
+	if (navidromedownloadmenu_bind(state.current_file)) {
+		popover_show(anchor, ITEMS_NAVIDROME, sizeof(ITEMS_NAVIDROME) / sizeof(ITEMS_NAVIDROME[0]));
+		return;
+	}
 
 	popover_show(anchor, podcast ? ITEMS_PODCAST : ITEMS,
 				 podcast ? sizeof(ITEMS_PODCAST) / sizeof(ITEMS_PODCAST[0]) : sizeof(ITEMS) / sizeof(ITEMS[0]));

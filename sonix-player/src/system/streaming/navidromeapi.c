@@ -50,6 +50,28 @@ const char *nd_api_stream(const char *host, const char *user, const char *passwo
 	return error;
 }
 
+const char *nd_api_download(const char *host, const char *user, const char *password, const char *id, http_session_t *session) {
+	char encoded[ND_ID_MAX * 3 + 1], query[ND_ID_MAX * 3 + 8], url[2500];
+	if (!id || !*id || strlen(id) >= ND_ID_MAX)
+		return "nd_response_error";
+	http_url_encode(id, encoded, sizeof(encoded));
+	snprintf(query, sizeof(query), "id=%s", encoded);
+	const char *error = request_url(host, user, password, "download", query, url, sizeof(url));
+	if (!error && !http_session_get(session, url, false, false)) {
+		int status = http_session_status(session);
+		const char *reason = http_session_error(session);
+		error = status == 401 || status == 403 ? "nd_auth_error" : reason && !strcmp(reason, "body_limit") ? "nd_dl_size_limit" : "nd_network_error";
+	}
+	if (!error && http_session_status(session) != 200) {
+		int status = http_session_status(session);
+		error = status == 401 || status == 403 ? "nd_auth_error" : status >= 500 ? "nd_network_error" : "nd_response_error";
+	}
+	nd_wipe(url, sizeof(url));
+	http_clear_request_metadata();
+	nd_log("navidrome: download open status=%d accepted=%d\n", http_session_status(session), !error);
+	return error;
+}
+
 static const char *json_request(const char *host, const char *user, const char *password, const char *method, const char *query, size_t limit, int tokens, const char *form, nd_document_t *out) {
 	memset(out, 0, sizeof(*out));
 	char url[2500];

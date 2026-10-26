@@ -20,6 +20,9 @@
 // Takes the turn, waiting until it is free. Call from a worker thread.
 void streamturn_acquire(void);
 bool streamturn_acquire_current(bool (*current)(void *), void *user);
+// Low priority explicit bulk work. Never abandons a playback transfer.
+bool streamturn_acquire_background(bool (*current)(void *), void *user);
+bool streamturn_set_background_cancel(void (*cancel)(void));
 
 // Releases it and wakes a waiter.
 void streamturn_release(void);

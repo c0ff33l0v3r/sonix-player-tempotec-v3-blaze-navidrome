@@ -4,12 +4,12 @@
 #include "navidromeart.h"
 #include "src/gui/shell/gui.h"
 
-typedef enum { ND_ALBUM_SHUFFLE, ND_ALBUM_PLAY, ND_ALBUM_QUEUE } nd_album_action_t;
+typedef enum { ND_ALBUM_SHUFFLE, ND_ALBUM_PLAY, ND_ALBUM_QUEUE, ND_ALBUM_DOWNLOAD } nd_album_action_t;
 typedef void (*nd_album_action_cb)(void *user, nd_album_action_t action);
 typedef struct {
 	lv_obj_t *screen, *list, *page_title, *status, *reason;
 	lv_obj_t *head, *cover, *name, *artist, *meta, *buttons, *mask;
-	lv_obj_t *controls[3];
+	lv_obj_t *controls[4];
 	gui_config_t *cfg;
 	nd_playrow_t info;
 	nd_library_t library;

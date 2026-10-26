@@ -65,7 +65,7 @@ static void album_paint(nd_album_view_t *v) {
 	album_color(v->status, LV_STYLE_TEXT_COLOR, v->tinted, v->dim);
 	album_color(v->reason, LV_STYLE_TEXT_COLOR, v->tinted, v->dim);
 	lv_obj_set_style_bg_color(v->mask, v->tinted ? v->bg : theme()->screen_bg, 0);
-	for (int i = 0; i < 3; i++) {
+	for (int i = 0; i < 4; i++) {
 		lv_obj_t *inside = lv_obj_get_child(v->controls[i], 0);
 		if (i == ND_ALBUM_PLAY) {
 			lv_obj_set_style_bg_color(v->controls[i], v->tinted ? v->ink : theme()->accent, 0);
@@ -113,7 +113,7 @@ static void album_pressed(lv_event_t *e) {
 	nd_album_view_t *v = lv_event_get_user_data(e);
 	if (!v->active || v->revision != album_revision || !navidromealbum_enabled() || !v->action || switcher_back_drag_active() || player_sheet_drag_active() || coverflow_drag_active())
 		return;
-	for (int i = 0; i < 3; i++)
+	for (int i = 0; i < 4; i++)
 		if (lv_event_get_current_target(e) == v->controls[i])
 			v->action(v->user, (nd_album_action_t)i);
 }
@@ -184,7 +184,7 @@ void navidromealbum_init(nd_album_view_t *v, gui_config_t *cfg, lv_obj_t *screen
 	lv_obj_set_scrollable(v->buttons, false);
 	lv_obj_set_clickable(v->buttons, false);
 	lv_obj_set_event_bubble(v->buttons, true);
-	for (int i = 0; i < 3; i++) {
+	for (int i = 0; i < 4; i++) {
 		lv_obj_t *button = v->controls[i] = lv_btn_create(v->buttons);
 		lv_obj_set_size(button, i == ND_ALBUM_PLAY ? LV_SIZE_CONTENT : ui_px(56), ui_px(56));
 		lv_obj_set_style_border_width(button, 0, 0);
@@ -198,7 +198,7 @@ void navidromealbum_init(nd_album_view_t *v, gui_config_t *cfg, lv_obj_t *screen
 		lv_obj_add_event_cb(button, album_pressed, LV_EVENT_CLICKED, v);
 		if (i == ND_ALBUM_PLAY) {
 			lv_obj_set_style_pad_hor(button, ui_px(40), 0);
-			int max_width = (int)cfg->screen_width - 2 * (int)cfg->padding - 2 * ui_px(56) - 2 * ui_px(20);
+			int max_width = (int)cfg->screen_width - 2 * (int)cfg->padding - 3 * ui_px(56) - 3 * ui_px(20);
 			lv_obj_set_style_max_width(button, max_width, 0);
 			lv_obj_t *text = lv_label_create(button);
 			lv_label_set_text(text, tr("medialist_play"));
@@ -209,7 +209,7 @@ void navidromealbum_init(nd_album_view_t *v, gui_config_t *cfg, lv_obj_t *screen
 			lv_obj_center(text);
 		} else {
 			lv_obj_t *image = lv_image_create(button);
-			lv_image_set_src(image, i == ND_ALBUM_SHUFFLE ? &icon_shuffle : &icon_list_queue);
+			lv_image_set_src(image, i == ND_ALBUM_SHUFFLE ? &icon_shuffle : i == ND_ALBUM_DOWNLOAD ? &icon_download : &icon_list_queue);
 			lv_obj_add_style(image, &theme_style_icon, 0);
 			lv_obj_center(image);
 		}
@@ -275,7 +275,7 @@ void navidromealbum_bind(nd_album_view_t *v, bool active, const nd_playrow_t *in
 	lv_obj_set_height(v->meta, lv_font_get_line_height(&font_ui_20));
 	lv_obj_set_hidden(v->meta, !*meta);
 	lv_obj_set_hidden(v->buttons, !controls);
-	for (int i = 0; i < 3; i++)
+	for (int i = 0; i < 4; i++)
 		lv_obj_set_state(v->controls[i], LV_STATE_DISABLED, !available);
 	lv_obj_set_parent(v->status, v->head);
 	lv_obj_set_hidden(v->status, !*lv_label_get_text(v->status));

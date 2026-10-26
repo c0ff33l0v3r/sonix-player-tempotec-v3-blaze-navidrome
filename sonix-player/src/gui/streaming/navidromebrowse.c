@@ -1,4 +1,6 @@
 #include "navidromebrowse.h"
+#include "src/system/streaming/navidromedownloads.h"
+#include "src/system/core/config.h"
 #include "navidromealbum.h"
 #include "navidromeart.h"
 #include "navidromefavorites.h"
@@ -50,7 +52,7 @@ typedef struct {
 	bool selecting, select_busy, queue_busy, picking;
 	int64_t session;
 	int64_t favorite_revision;
-	lv_obj_t *select_queue, *select_add, *select_close, *select_favorite, *menus[ND_WINDOW];
+	lv_obj_t *select_download, *select_queue, *select_add, *select_close, *select_favorite, *menus[ND_WINDOW];
 	bool chosen[ND_WINDOW];
 } browse_page_t;
 static browse_page_t pages[3];
@@ -693,6 +695,7 @@ static void browse_selection_ui(browse_page_t *p) {
 
 	if (p->album.active) {
 		lv_obj_set_hidden(p->album.buttons, p->selecting || p->picking);
+        lv_obj_set_state(p->album.controls[ND_ALBUM_DOWNLOAD], LV_STATE_DISABLED, p->select_busy || p->loading || p->total <= 0);
 		lv_obj_move_foreground(p->select_add);
 		lv_obj_move_foreground(p->select_close);
 		lv_obj_move_foreground(p->select_favorite);
@@ -705,15 +708,19 @@ static void browse_selection_ui(browse_page_t *p) {
 		lv_obj_set_style_text_color(p->selection_status, p->album.tinted ? p->album.ink : theme()->text_primary, 0);
 		lv_obj_move_foreground(p->selection_status);
 	}
-	lv_obj_t *buttons[] = {p->select_add, p->select_close, p->select_favorite, p->select_queue};
+	lv_obj_t *buttons[] = {p->select_add, p->select_close, p->select_favorite, p->select_queue, p->select_download};
 	for (unsigned i = 0; i < sizeof(buttons) / sizeof(*buttons); i++) {
 		if (buttons[i])
 			navidromealbum_icon(&p->album, lv_obj_get_child(buttons[i], 0));
 	}
 	lv_obj_set_hidden(p->select_queue, !p->selecting || p->picking);
 	lv_obj_set_state(p->select_queue, LV_STATE_DISABLED, p->select_busy);
+	lv_obj_set_hidden(p->select_download, !p->selecting || p->picking);
 	if (!p->album.active)
 		lv_obj_set_hidden(p->title, p->selecting);
+	lv_obj_set_state(p->select_download, LV_STATE_DISABLED, p->select_busy || p->selected <= 0);
+	if (p->selecting)
+		lv_obj_move_foreground(p->select_download);
 	lv_obj_set_hidden(p->select_add, !p->selecting);
 	lv_obj_set_hidden(p->select_close, !p->selecting);
 	lv_obj_set_hidden(p->select_favorite, !p->selecting || (p->query.kind != ND_TRACKS && p->query.kind != ND_ALBUMS));
@@ -792,12 +799,42 @@ static void browse_favorite_start(browse_page_t *p, nd_star_request_t *q) {
 		gui_notify_popup(snapshot.state == ND_CONNECTED ? "nd_working" : navidrome_feedback(&snapshot));
 	}
 }
+static void browse_download_done(bool ok, const char *error, int added, int skipped, void *data) {
+    uintptr_t token = (uintptr_t)data;
+    browse_page_t *p = &pages[token & 3];
+    if (p->serial != (unsigned)(token >> 2) || lv_screen_active() != p->screen) return;
+    p->select_busy = false;
+    if (ok) {
+        char text[160]; lv_snprintf(text, sizeof(text), tr("nd_dl_admitted"), added, skipped);
+        toast_success(text);
+    } else gui_notify_popup(error ? error : "nd_dl_capture_error");
+    browse_selection_ui(p);
+}
+static void browse_download_kind(browse_page_t *p, const char *id, nd_kind_t kind) {
+    if (p->select_busy || p->picking || gesture()) return;
+    nd_dl_request_t q = {.action = NDDL_CAPTURE, .library = p->library, .kind = kind, .session = id ? 0 : p->session};
+    if (id) snprintf(q.id, sizeof(q.id), "%s", id);
+    const char *folder = config_get("navidrome", "download_folder", "Music/Navidrome");
+    if (strlen(folder) >= sizeof(q.destination)) { gui_notify_popup("nd_dl_path_error"); return; }
+    snprintf(q.destination, sizeof(q.destination), "%s", folder);
+    uintptr_t token = ((uintptr_t)p->serial << 2) | (unsigned)(p - pages);
+    if (navidromedownloads_request(&q, browse_download_done, (void *)token)) {
+        p->select_busy = true; browse_selection_ui(p);
+    } else gui_notify_popup("nd_working");
+}
+static void browse_download(browse_page_t *p, const char *id) {
+    browse_download_kind(p, id, p->query.kind);
+}
 static void browse_selection_button(lv_event_t *e) {
 	if (gesture())
 		return;
 	browse_page_t *p = lv_event_get_user_data(e);
 	if (lv_event_get_current_target(e) == p->select_close) {
 		browse_selection_back();
+		return;
+	}
+	if (lv_event_get_current_target(e) == p->select_download) {
+		if (p->selected > 0) browse_download(p, NULL);
 		return;
 	}
 	if (lv_event_get_current_target(e) == p->select_queue) {
@@ -900,6 +937,12 @@ static void browse_queue_menu(void *unused) {
 	if (!navidromeplay_enqueue(&p->library, p->query.kind, p->data[browse_menu_index].id, 0))
 		gui_notify_popup("nd_working");
 }
+static void browse_download_menu(void *unused) {
+    (void)unused;
+    browse_page_t *p = browse_menu_page;
+    if (p && p->serial == browse_menu_serial && browse_menu_index < p->count && lv_screen_active() == p->screen)
+        browse_download(p, p->data[browse_menu_index].id);
+}
 static void browse_menu_cb(lv_event_t *e) {
 	lv_event_stop_bubbling(e);
 	if (gesture())
@@ -918,7 +961,7 @@ static void browse_menu_cb(lv_event_t *e) {
 			nd_star_state_t star = navidrome_star_state(p->query.kind, p->data[i].id);
 			if (star == ND_STAR_UNKNOWN && (p->data[i].favorite_known || p->data[i].favorite))
 				star = p->data[i].favorite ? ND_STAR_SET : ND_STAR_CLEAR;
-			popover_item_t items[4];
+			popover_item_t items[6];
 			int n = 0;
 			bool favorite = star == ND_STAR_SET || ((star == ND_STAR_UNKNOWN || star == ND_STAR_UNCERTAIN) && p->data[i].favorite);
 			nd_star_action_t action = star == ND_STAR_UNCERTAIN ? ND_STAR_TOGGLE : favorite ? ND_STAR_REMOVE : ND_STAR_ADD;
@@ -928,6 +971,7 @@ static void browse_menu_cb(lv_event_t *e) {
 			if (p->query.kind == ND_TRACKS || p->query.kind == ND_ALBUMS) {
 				items[n++] = (popover_item_t){"add_to_queue", browse_queue_menu, NULL, false};
 				items[n++] = (popover_item_t){"add_to_playlist", browse_add_menu, NULL, false};
+				if (!p->picking) items[n++] = (popover_item_t){"nd_dl_download", browse_download_menu, NULL, false};
 			}
 			popover_show(p->menus[i], items, n);
 			return;
@@ -943,9 +987,11 @@ void navidromebrowse_init(gui_config_t *cfg) {
 		p->title = settingsrow_title(p->screen, cfg, "navidrome");
 		settingsrow_title_corner_slots(p->title, cfg, 4);
 		p->session = 2000 + level;
-		for (int slot = 0; slot < 4; slot++) {
+		for (int slot = 0; slot < 5; slot++) {
 			lv_obj_t *button = lv_btn_create(p->screen);
-			if (slot == 3)
+			if (slot == 4)
+				p->select_download = button;
+			else if (slot == 3)
 				p->select_queue = button;
 			else if (slot == 2)
 				p->select_favorite = button;
@@ -960,7 +1006,7 @@ void navidromebrowse_init(gui_config_t *cfg) {
 			lv_obj_set_style_shadow_width(button, 0, 0);
 			lv_obj_set_style_pad_all(button, 0, 0);
 			lv_obj_t *glyph = lv_image_create(button);
-			lv_image_set_src(glyph, slot == 3 ? &icon_list_queue : slot == 2 ? &icon_star_plus : slot == 1 ? &icon_list_plus : &icon_close);
+			lv_image_set_src(glyph, slot == 4 ? &icon_download : slot == 3 ? &icon_list_queue : slot == 2 ? &icon_star_plus : slot == 1 ? &icon_list_plus : &icon_close);
 			lv_obj_add_style(glyph, &theme_style_icon, 0);
 			lv_obj_center(glyph);
 			lv_obj_add_event_cb(button, browse_selection_button, LV_EVENT_CLICKED, p);
@@ -1073,6 +1119,11 @@ static void browse_album_action(void *user, nd_album_action_t action) {
     browse_snapshot(p->query.favorites, &library);
     if (!library.ready || library.epoch != p->library.epoch || library.card_epoch != p->library.card_epoch || library.generation != p->library.generation)
         return;
+    if (action == ND_ALBUM_DOWNLOAD) {
+        if (p->query.kind == ND_TRACKS && p->query.filter[0])
+            browse_download_kind(p, p->query.filter, ND_ALBUMS);
+        return;
+    }
     if (!navidromeplay_album(&p->library, &p->query, (int)action, p->screen))
         gui_notify_popup("nd_audio_unavailable");
 }

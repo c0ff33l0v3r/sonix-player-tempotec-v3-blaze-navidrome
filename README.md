@@ -206,6 +206,63 @@ without reconnecting. The queue stays stopped and retains its track information.
 Library/Favorites metadata, playlists, credentials, logs and permanent downloads
 are preserved. Partial deletion failures show the remaining usage.
 
+Choose **Download** from a Navidrome track/album menu or long-press selection,
+from the alternative album header's Download button,
+or from the current Navidrome track's Now Playing breadcrumb menu. Ordinary
+Music Now Playing does not offer this action. **Navidrome settings → Downloads**
+shows the Download folder and a **Manage downloads** subpage. The manager uses
+Queued, Success and Failed tabs with counts and a scrolling track list showing
+state, captured path and MiB sizes. Rows show cached/on-demand album covers,
+with small placeholders when unavailable. Tap a row for scrollable file/error
+details; manager rows do not start playback. Queued includes active/paused jobs; Failed
+also shows canceled jobs with their state. The header contains Resume, Pause
+and Cancel. Resume in Failed explicitly retries failed jobs; canceled jobs need
+a new Download submission. The floating red trash button immediately clears
+completed, failed and canceled history across the tabs, without confirmation.
+It keeps the files, playback associations and queued/active/paused jobs. Cleared
+failures are excluded from Retry failed; submit Download again to retry them.
+Deleted/missing files can be downloaded again;
+successful Retry restores their playback association. Controls retain completed music. Leaving
+the page keeps admitted work running; restart, reconnect, unlock and card return
+require an explicit Resume. Interrupted tracks restart from byte zero. Playback
+and its lookahead take priority over background downloads.
+
+**Download folder** defaults to `Music/Navidrome` on the selected card; choose
+the card root or a visible folder using the shared File Explorer folder picker.
+Opening the picker creates the saved destination and any missing parents on a
+writable card. Tap the header's New folder icon to name and enter a subfolder,
+then confirm **Use this folder** at the bottom. Close or Back leaves the saved
+setting unchanged; any empty folders already created remain on the card.
+New batches use the new choice; existing jobs and saved files keep their paths.
+Files use `Album Artist/Album/Title.ext`, with `Disc N/` for multi-disc
+albums. New filenames omit track numbers; existing downloaded files retain their
+saved names. Track-number tags remain unchanged. Compilations stay together
+under their album credit. Names are made safe for card filesystems and collisions receive identity suffixes; existing
+music is never overwritten. Files retain their original bytes, tags and embedded
+artwork. Separate artwork/lyrics export and server folder mirroring are excluded.
+
+Complete original cache files can be copied into permanent downloads offline;
+active cached playback keeps its original file. Navidrome playback prefers a
+verified permanent download before its disposable cache or the server. Missing
+or observably changed files lose their association without being deleted.
+Server-side replacements under the same ID are not detected automatically.
+Files larger than **2 GiB minus one byte** are rejected on host and target.
+Publication requires native atomic no-replace rename support from the running
+kernel and card filesystem; unsupported storage reports an error with no unsafe
+fallback. Actual Blaze/card support still needs device verification.
+
+Downloads are ordinary user-owned music, outside the cache budget. They survive
+Forget Server and can be opened through Folders/Music without credentials; that
+playback uses local controls, history and battery accounting. Durable download
+records live in `.local/navidrome/downloads-<scope>.db`, outside `.cache`.
+Folders sees saved files on refresh. Batch completion coalesces normal Music
+Detect changes when enabled and initialized, deferring while scanning is busy.
+Your selected scan folders and tags still control indexing; include the download
+folder in Scan Music if needed. Downloads do not enable detection or run a full
+scan. Failed tracks are reported separately from saved files; retry never
+replaces successful downloads. Search/saved-playlist list download actions remain
+outside this feature's scope.
+
 Navidrome settings → **Alternative album view** is on by default and is
 independent of Music's setting. Albums open with a large cover, cover-derived
 page colors, available artist/genre/year, numbered tracks and multi-disc
@@ -227,7 +284,7 @@ on demand.
 
 | View | Requested artwork size | On the 320 px Blaze panel |
 | --- | --- | --- |
-| Browse, Search and playlist rows | `ui_px(72)` square | 48×48 px |
+| Browse, Search, playlist and download rows | `ui_px(72)` square | 48×48 px |
 | Alternative album header | `ui_px(300)`, clamped to available width | 200×200 px |
 | Now Playing | Current cover-box width, capped at 512 px; Studio uses its own cover width | Normally 320×320 px in the standard player |
 

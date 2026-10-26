@@ -39,6 +39,13 @@ static int deliveries;
 static bool reject_publish;
 static long delivered_bytes;
 static char delivered_path[512];
+static char saved_permanent[512];
+static bool saved_original(const nd_library_t *lib, const nd_context_t *ctx, const char *id, char out[512]) {
+	(void)ctx;
+	if (strcmp(lib->scope, "0123456789abcdef0123456789abcdef") || strcmp(id, "saved-permanent")) return false;
+	snprintf(out, 512, "%s", saved_permanent);
+	return true;
+}
 void nd_log(const char *format, ...) {
 	va_list args;
 	va_start(args, format);
@@ -246,6 +253,24 @@ int main(int argc, char **argv) {
 		strcpy(ctx.password, "replacement synthetic password");
 		assert(!nd_audio_fetch(&lib, &ctx, &track, true, current, ready, argv[3]) && deliveries == 2 && !leases);
 		assert(!growfile_is_growing(delivered_path));
+		// Exercise the optional permanent-original hook on an ordinary path,
+		// offline/read-only and without manufacturing library readiness.
+		char cached_path[512];
+		strcpy(cached_path, delivered_path);
+		assert(snprintf(saved_permanent, sizeof(saved_permanent), "%s/permanent%s", argv[2], strrchr(cached_path, '.')) < (int)sizeof(saved_permanent));
+		assert(!link(cached_path, saved_permanent));
+		nd_playrow_t permanent_track = {.row = {.id = "saved-permanent"}};
+		nd_audio_set_original_resolver(saved_original);
+		assert(nd_audio_cached(&lib, &ctx, permanent_track.row.id));
+		assert(!nd_audio_fetch(&lib, &ctx, &permanent_track, true, current, ready, "saved") && deliveries == 3 && !leases);
+		assert(!strcmp(delivered_path, saved_permanent) && !nd_audio_owns(delivered_path));
+		nd_audio_set_source(delivered_path);
+		assert(nd_audio_source(delivered_path));
+		nd_audio_set_source(NULL);
+		assert(!nd_audio_source(delivered_path));
+		nd_audio_set_original_resolver(NULL);
+		strcpy(delivered_path, cached_path);
+		assert(!unlink(saved_permanent));
 		char scope[33];
 		strcpy(scope, lib.scope);
 		strcpy(lib.scope, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
@@ -259,7 +284,7 @@ int main(int argc, char **argv) {
 		assert(!ftruncate(fd, st.st_size));
 		close(fd);
 		error = nd_audio_fetch(&lib, &ctx, &track, true, current, ready, argv[3]);
-		assert(error && !strcmp(error, "nd_audio_invalid") && deliveries == 2 && !leases);
+		assert(error && !strcmp(error, "nd_audio_invalid") && deliveries == 3 && !leases);
 	}
 	assert(!atomic_load(&fixture_cache_io));
 	puts("production audio cache/decoder fixture passed");

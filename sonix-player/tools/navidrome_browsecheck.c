@@ -87,7 +87,9 @@ bool navidromeplay_matches(const nd_library_t *library, nd_kind_t kind, const ch
 }
 #endif
 #ifndef NAVIDROME_DOWNLOAD_UI
-
+__attribute__((weak)) bool navidromedownloads_request(const nd_dl_request_t *request, nd_dl_captured_cb cb, void *user) {
+    (void)request; (void)cb; (void)user; return false;
+}
 #endif
 void back_btn_tint_on_screen(lv_obj_t *screen, bool on, lv_color_t color) { (void)screen; (void)on; (void)color; }
 void topbar_tint_on_screen(lv_obj_t *screen, bool on, lv_color_t bg, lv_color_t ink) { (void)screen; (void)on; (void)bg; (void)ink; }
