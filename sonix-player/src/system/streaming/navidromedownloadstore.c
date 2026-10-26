@@ -194,7 +194,7 @@ bool nd_dl_insert(nd_dl_store_t *s, int64_t batch, const char *dest, const nd_pl
 }
 bool nd_dl_update(nd_dl_store_t *s, const nd_dl_job_t *j) {
 	sqlite3_stmt *st = NULL;
-	if (!nd_dl_prepare(s, &st, "UPDATE job SET state=?,albumartist=?,path=?,partial=?,digest=?,extension=?,error=?,bytes=?,total=?,mtime=?,inode=?,multi=? WHERE key=?"))
+	if (!nd_dl_prepare(s, &st, "UPDATE job SET state=?,albumartist=?,path=?,partial=?,digest=?,extension=?,error=?,bytes=?,total=?,mtime=?,inode=?,multi=?,albumid=?,title=?,artist=?,album=?,cover=?,disc=?,number=? WHERE key=? AND track=?"))
 		return false;
 	sqlite3_bind_int(st, 1, j->state);
 	nd_dl_bind(st, 2, j->album_artist);
@@ -208,7 +208,15 @@ bool nd_dl_update(nd_dl_store_t *s, const nd_dl_job_t *j) {
 	sqlite3_bind_int64(st, 10, j->mtime);
 	sqlite3_bind_int64(st, 11, j->inode);
 	sqlite3_bind_int(st, 12, j->multi);
-	sqlite3_bind_int64(st, 13, j->key);
+	nd_dl_bind(st, 13, j->source.album_id);
+	nd_dl_bind(st, 14, j->source.row.title);
+	nd_dl_bind(st, 15, j->source.row.artist);
+	nd_dl_bind(st, 16, j->source.album);
+	nd_dl_bind(st, 17, j->source.row.cover);
+	sqlite3_bind_int(st, 18, j->source.row.disc);
+	sqlite3_bind_int(st, 19, j->source.row.track);
+	sqlite3_bind_int64(st, 20, j->key);
+	nd_dl_bind(st, 21, j->source.row.id);
 	bool ok = sqlite3_step(st) == SQLITE_DONE;
 	sqlite3_finalize(st);
 	return ok;

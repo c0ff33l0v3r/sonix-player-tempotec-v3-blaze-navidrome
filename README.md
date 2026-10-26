@@ -260,8 +260,8 @@ Detect changes when enabled and initialized, deferring while scanning is busy.
 Your selected scan folders and tags still control indexing; include the download
 folder in Scan Music if needed. Downloads do not enable detection or run a full
 scan. Failed tracks are reported separately from saved files; retry never
-replaces successful downloads. Search/saved-playlist list download actions remain
-outside this feature's scope.
+replaces successful downloads. Search list download actions remain outside this
+feature's scope.
 
 Navidrome settings → **Alternative album view** is on by default and is
 independent of Music's setting. Albums open with a large cover, cover-derived
@@ -360,6 +360,14 @@ Local copies open and can be renamed or edited offline with available credential
 remain available without a library snapshot; adding tracks uses a complete
 matching library or Favorites snapshot. Read-only cards permit browsing but cannot save edits.
 
+Use the header download icon or **⋯ → Download playlist** to save all tracks
+through the existing download manager. Repeated tracks and pending/verified
+downloads are skipped; the playlist keeps its repetitions and current playback
+continues. Files use the configured download folder and normal artist/album/disc
+layout. No Library Sync is required: missing album details are fetched by exact
+track ID when connected. Offline cache promotion requires sufficient saved local
+album context. Later playlist edits or Pull do not change an admitted batch.
+
 Track and album menus offer **Add to playlist**. Long press a track or album to
 select several, then use the list-plus action. Albums append their individual
 tracks in disc/track order; selections follow the displayed list order. Tracks
@@ -403,9 +411,9 @@ encoded mutation forms are limited to 2 MiB, with an 8 MiB explicit response,
 parser, and request-buffer budget. Unsupported sizes fail without truncating a
 local playlist. Upload requires the server's OpenSubsonic form-POST support.
 
-Playback from saved playlists, audio upload/download, SD-card file
-matching, mixed-source playlists, automatic merge/sync, server deletion, and
-manual drag reordering remain outside this feature.
+Playback from saved playlists, audio upload, SD-card file matching, mixed-source
+playlists, automatic merge/sync, server deletion, and manual drag reordering remain
+outside this feature.
 
 Use the header **Search** button to search Tracks, Albums, or Artists. Enter a
 query and press the keyboard's Search key. Connected searches query the server,

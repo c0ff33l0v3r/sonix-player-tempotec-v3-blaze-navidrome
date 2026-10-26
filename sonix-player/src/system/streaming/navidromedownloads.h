@@ -13,6 +13,7 @@ typedef struct {
 	nd_playrow_t track;
 	char id[ND_ID_MAX], destination[ND_DL_DEST], folder[ND_DL_PATH], name[96];
 	int64_t session;
+	int64_t playlist, playlist_revision; // Complete saved copy, independent of playback.
 	int offset;
 	unsigned token;
 	unsigned profile_epoch; // Optional GUI source binding, required by Now Playing.

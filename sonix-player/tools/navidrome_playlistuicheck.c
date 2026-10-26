@@ -1,8 +1,23 @@
 #define NAVIDROME_PLAYLIST_UI
+#define NAVIDROME_DOWNLOAD_UI
+#define icon_download fixture_download_stub
 #define __wrap_http_request fixture_ping_request
 #include "navidrome_browsecheck.c"
 #undef __wrap_http_request
+#undef icon_download
+extern const lv_image_dsc_t icon_download;
 #include "src/gui/streaming/navidromeplaylists.c"
+static nd_dl_request_t captured_download;
+static unsigned download_submissions;
+static nd_dl_captured_cb captured_download_cb;
+static void *captured_download_user;
+bool navidromedownloads_request(const nd_dl_request_t *request, nd_dl_captured_cb cb, void *user) {
+	captured_download = *request;
+	captured_download_cb = cb;
+	captured_download_user = user;
+	download_submissions++;
+	return true;
+}
 lv_font_t font_ui_16, font_ui_24;
 const lv_image_dsc_t icon_list_music = FIXTURE_ICON;
 const lv_image_dsc_t icon_plus = FIXTURE_ICON, icon_import = FIXTURE_ICON, icon_refresh = FIXTURE_ICON, icon_trash = FIXTURE_ICON;
@@ -176,13 +191,62 @@ static void repeated_playlist_marks(const nd_library_t *lib) {
 	assert(nd_pl_finish(&store, id, true) && nd_pl_sql(&store, "COMMIT") && nd_pl_get(&store, id, &p));
 	nd_pl_close(&store);
 	pl_open_detail(&p); pl_wait(1);
+	assert(!lv_obj_is_hidden(pl_pages[1].download) && !lv_obj_has_state(pl_pages[1].download, LV_STATE_DISABLED));
+	lv_obj_update_layout(pl_pages[1].screen);
+	lv_area_t download_bounds;
+	lv_obj_get_coords(pl_pages[1].download, &download_bounds);
+	assert(download_bounds.x1 >= ui_px(56) && download_bounds.x2 < ui_panel_width);
+	for (int i = 0; i < 3; i++) {
+		lv_area_t other;
+		lv_obj_get_coords(pl_pages[1].buttons[i], &other);
+		assert(download_bounds.x2 < other.x1);
+	}
+	lv_obj_t *glyph = lv_obj_get_child(pl_pages[1].download, 0);
+	assert(icon_download.header.w > 1 && lv_image_get_src(glyph) == &icon_download);
+	assert(lv_obj_get_width(glyph) == ui_px(24) && lv_obj_get_height(glyph) == ui_px(24));
+	unsigned submitted = download_submissions;
+	lv_obj_send_event(pl_pages[1].download, LV_EVENT_CLICKED, NULL);
+	assert(download_submissions == submitted + 1 && captured_download.playlist == p.id && captured_download.playlist_revision == p.revision);
+	assert(!strcmp(captured_download.destination, "Music/Navidrome") && pl_pages[1].download_pending);
+	lv_obj_send_event(pl_pages[1].download, LV_EVENT_CLICKED, NULL);
+	assert(download_submissions == submitted + 1);
+	captured_download_cb(true, NULL, 2, 38, captured_download_user);
+	assert(!pl_pages[1].download_pending);
+	lv_obj_send_event(pl_pages[1].buttons[0], LV_EVENT_CLICKED, NULL);
+	assert(fixture_menu_count == 2 && !strcmp(fixture_menu[1].label, "nd_pl_download"));
+	fixture_menu[1].action(fixture_menu[1].user);
+	assert(download_submissions == submitted + 2 && pl_pages[1].download_pending);
+	captured_download_cb(true, NULL, 2, 38, captured_download_user);
+	submitted++;
 	marker_library=*lib; snprintf(selected_track,sizeof(selected_track),"song-00000");
 	navidromeplaylists_refresh();
 	for(int row=0;row<pl_pages[1].count;row++) assert(lv_obj_is_hidden(pl_pages[1].playmarks[row])==!!strcmp(pl_pages[1].entries[row].track.id,selected_track));
 	selected_track[0]=0; navidromeplaylists_refresh();
 	for(int row=0;row<pl_pages[1].count;row++) assert(lv_obj_is_hidden(pl_pages[1].playmarks[row]));
+	dragging = true;
+	lv_obj_send_event(pl_pages[1].download, LV_EVENT_CLICKED, NULL);
+	assert(download_submissions == submitted + 1);
+	dragging = false;
+	lv_obj_send_event(pl_pages[1].rows[0], LV_EVENT_LONG_PRESSED, NULL);
+	lv_obj_send_event(pl_pages[1].rows[0], LV_EVENT_CLICKED, NULL);
+	pl_wait(1);
+	assert(pl_pages[1].selecting && lv_obj_is_hidden(pl_pages[1].download));
+	lv_obj_send_event(pl_pages[1].download, LV_EVENT_CLICKED, NULL);
+	assert(download_submissions == submitted + 1);
+	lv_obj_send_event(pl_pages[1].rows[1], LV_EVENT_CLICKED, NULL); pl_wait(1);
+	assert(pl_pages[1].selected == 2);
+	lv_obj_send_event(pl_pages[1].buttons[0], LV_EVENT_CLICKED, NULL); pl_wait(1);
+	assert(!pl_pages[1].selecting);
+	pl_pages[1].card++;
+	lv_obj_send_event(pl_pages[1].download, LV_EVENT_CLICKED, NULL);
+	pl_pages[1].card--;
+	assert(download_submissions == submitted + 1);
+	lv_obj_send_event(pl_pages[1].download, LV_EVENT_CLICKED, NULL);
+	assert(pl_pages[1].download_pending);
 	navidromeplaylists_open(); pl_wait(0);
-	puts("playlist LVGL repeated exact-ID markers and clearing: passed");
+	captured_download_cb(false, "nd_dl_capture_error", 0, 0, captured_download_user);
+	assert(!pl_pages[1].download_pending && pl_active(0));
+	puts("playlist LVGL header/menu downloads, real glyph bounds, selection/gesture/stale guards and repeated exact-ID markers: passed");
 }
 
 int main(int argc, char **argv) {
@@ -287,7 +351,7 @@ int main(int argc, char **argv) {
 	// No local edit sent HTTP.
 	assert(atomic_load(&calls) == requests);
 	lv_obj_send_event(pl_pages[1].buttons[0], LV_EVENT_CLICKED, NULL);
-	assert(fixture_menu_count == 1 && !strcmp(fixture_menu[0].label, "rename"));
+	assert(fixture_menu_count == 2 && !strcmp(fixture_menu[0].label, "rename") && !strcmp(fixture_menu[1].label, "nd_pl_download"));
 	fixture_menu[0].action(NULL);
 	lv_textarea_set_text(pl_name_field, "Renamed locally");
 	pl_name_accept(NULL);
@@ -569,8 +633,8 @@ int main(int argc, char **argv) {
 	// Copy asks first; Cancel creates nothing. Accepting the unchanged name
 	// makes a distinct unlinked copy, while a chosen name is saved atomically.
 	lv_obj_send_event(pl_pages[1].buttons[0], LV_EVENT_CLICKED, NULL);
-	assert(fixture_menu_count == 2 && !strcmp(fixture_menu[1].label, "nd_pl_save_copy"));
-	fixture_menu[1].action(NULL);
+	assert(fixture_menu_count == 3 && !strcmp(fixture_menu[2].label, "nd_pl_save_copy"));
+	fixture_menu[2].action(NULL);
 	assert(!lv_obj_is_hidden(pl_name_layer) && pl_copying);
 	assert(lv_obj_get_parent(pl_name_layer) == pl_pages[1].screen);
 	assert(!strcmp(lv_textarea_get_text(pl_name_field), linked.name));
@@ -581,7 +645,7 @@ int main(int argc, char **argv) {
 	assert(nd_pl_list(&store, 0, list_rows, &listed, &total_before_copy) && total_before_copy == 3);
 	nd_pl_close(&store);
 	lv_obj_send_event(pl_pages[1].buttons[0], LV_EVENT_CLICKED, NULL);
-	fixture_menu[1].action(NULL);
+	fixture_menu[2].action(NULL);
 	pl_name_accept(NULL);
 	pl_wait(1);
 	assert(pl_pages[1].playlist.id != linked.id && !*pl_pages[1].playlist.remote);
@@ -589,7 +653,7 @@ int main(int argc, char **argv) {
 	pl_open_detail(&linked);
 	pl_wait(1);
 	lv_obj_send_event(pl_pages[1].buttons[0], LV_EVENT_CLICKED, NULL);
-	fixture_menu[1].action(NULL);
+	fixture_menu[2].action(NULL);
 	lv_textarea_set_text(pl_name_field, "Named local copy");
 	pl_name_accept(NULL);
 	pl_wait(1);

@@ -65,6 +65,9 @@ typedef struct {
 	unsigned album_next;
 } run_t;
 static void reconcile(run_t *r);
+static bool capture_pin(const nd_dl_request_t *q) {
+	return q->action == NDDL_CAPTURE && !q->direct && (!q->playlist || q->library.ready);
+}
 
 static bool current(void *data) {
 	run_t *r = data;
@@ -347,6 +350,35 @@ static bool append_entity(nd_dl_store_t *dest, nd_store_t *source, const nd_libr
 	} while (count && offset < total);
 	return true;
 }
+static bool append_playlist(nd_dl_store_t *dest, nd_store_t *source, bool opened,
+		const nd_dl_request_t *q, int64_t batch, int *added, int *skipped, run_t *r) {
+	char path[1200];
+	if (!nd_pl_path(&q->library, path)) return false;
+	int offset = 0, expected = -1;
+	for (;;) {
+		nd_playlist_store_t saved = {0};
+		nd_playlist_entry_t entries[ND_WINDOW];
+		int count = 0, total = 0;
+		bool ok = context_current(r) && nd_pl_open(&saved, path, q->library.scope, false) &&
+			nd_pl_play_window(&saved, q->playlist, q->playlist_revision, offset, entries, &count, &total);
+		nd_pl_close(&saved);
+		if (!ok || !total || (expected >= 0 && total != expected)) return false;
+		expected = total;
+		if (!count) return true; // Final empty window revalidates the complete revision.
+		for (int i = 0; i < count; i++) {
+			nd_playrow_t row;
+			if (!context_current(r)) return false;
+			if (opened && nd_store_metadata(source, q->library.generation, ND_TRACKS, entries[i].track.id, &row)) {
+				if (!append_track(dest, source, &q->library, entries[i].track.id, batch, q->destination, added, skipped, r)) return false;
+			} else {
+				row = (nd_playrow_t){.row = entries[i].track};
+				if (!validate_completions(dest, row.row.id, r) ||
+					!nd_dl_insert(dest, batch, q->destination, &row, -1, added, skipped)) return false;
+			}
+		}
+		offset += count;
+	}
+}
 static bool capture(run_t *r, const nd_dl_request_t *q, int *added, int *skipped) {
 	if (!nd_dl_destination(q->destination))
 		return false;
@@ -361,7 +393,7 @@ static bool capture(run_t *r, const nd_dl_request_t *q, int *added, int *skipped
 	close(dir);
 	nd_store_t source = {0};
 	bool opened = nd_store_open_source(&source, q->library.path, q->library.scope, false, false, q->library.favorites);
-	bool ok = (opened || q->direct) && nd_dl_sql(&dest, "BEGIN IMMEDIATE");
+	bool ok = (opened || q->direct || q->playlist) && nd_dl_sql(&dest, "BEGIN IMMEDIATE");
 	sqlite3_stmt *st = NULL;
 	if (ok)
 		ok = nd_dl_prepare(&dest, &st, "INSERT INTO batch(destination,created) VALUES(?,strftime('%s','now'))");
@@ -372,7 +404,9 @@ static bool capture(run_t *r, const nd_dl_request_t *q, int *added, int *skipped
 	sqlite3_finalize(st);
 	st = NULL;
 	int64_t batch = sqlite3_last_insert_rowid(dest.db);
-	if (ok && q->direct) {
+	if (ok && q->playlist)
+		ok = append_playlist(&dest, &source, opened, q, batch, added, skipped, r);
+	else if (ok && q->direct) {
 		nd_playrow_t known;
 		if (!q->track.row.id[0] || !q->track.album_id[0] || strcmp(q->id, q->track.row.id))
 			ok = false;
@@ -591,7 +625,7 @@ static void *manage(void *unused) {
 			snprintf(view.error, sizeof(view.error), "%s", error);
 			pthread_mutex_unlock(&mutex);
 		}
-		if (q.action == NDDL_CAPTURE && !q.direct)
+		if (capture_pin(&q))
 			nd_store_release_source(&q.library);
 		pthread_mutex_lock(&mutex);
 		view.busy = false;
@@ -622,6 +656,30 @@ static void *manage(void *unused) {
 }
 
 static const char *enrich(run_t *r, nd_dl_job_t *j, const char *cached) {
+	// A saved playlist may contain exact IDs absent from any synced library.
+	// Resolve structure here, outside every card/SQL lease and only on transfer.
+	if (!j->source.album_id[0]) {
+		if (!navidrome_playback_current(&r->context, true)) return "nd_dl_album_context";
+		char encoded[ND_ID_MAX * 3 + 1], query[ND_ID_MAX * 3 + 8];
+		http_url_encode(j->source.row.id, encoded, sizeof(encoded));
+		snprintf(query, sizeof(query), "id=%s", encoded);
+		bool old = r->network;
+		r->network = true;
+		pthread_mutex_lock(&mutex);
+		network_wanted = true;
+		pthread_mutex_unlock(&mutex);
+		nd_document_t doc;
+		const char *error = nd_api_finite_json(r->context.host, r->context.user, r->context.password, "getSong", query, ND_API_BYTES, current, r, &doc);
+		r->network = old;
+		if (error) return error;
+		nd_playrow_t row;
+		int song = json_get(&doc.doc, doc.response, "song");
+		bool valid = nd_api_field_unique(&doc.doc, doc.response, "song", true) &&
+			nd_metadata_row(&doc.doc, song, ND_TRACKS, &row) && !strcmp(row.row.id, j->source.row.id) && row.album_id[0];
+		if (valid) j->source = row;
+		nd_api_free(&doc);
+		if (!valid) return "nd_response_error";
+	}
 	nd_dl_store_t store;
 	if (open_store(r, &store, false)) {
 		sqlite3_stmt *st = NULL;
@@ -1323,7 +1381,7 @@ void navidromedownloads_init(void) {
 	navidrome_set_download_hooks(navidromedownloads_cancel, navidromedownloads_shutdown);
 }
 bool navidromedownloads_request(const nd_dl_request_t *q, nd_dl_captured_cb callback, void *user) {
-	if (!q || !start())
+	if (!q || q->playlist < 0 || (q->playlist && (q->playlist_revision <= 0 || q->direct || q->session || q->action != NDDL_CAPTURE)) || !start())
 		return false;
 	nd_context_t context;
 	bool eligible = navidrome_context(&context, false) && navidrome_playback_scope(&context, &q->library) && (!q->profile_epoch || q->profile_epoch == context.profile_epoch);
@@ -1331,8 +1389,7 @@ bool navidromedownloads_request(const nd_dl_request_t *q, nd_dl_captured_cb call
 		nd_wipe(&context, sizeof(context));
 		return false;
 	}
-	bool capture_job = q->action == NDDL_CAPTURE;
-	if (capture_job && !q->direct && !navidrome_playback_pin_source(&q->library)) {
+	if (capture_pin(q) && !navidrome_playback_pin_source(&q->library)) {
 		nd_wipe(&context, sizeof(context));
 		return false;
 	}
@@ -1353,7 +1410,7 @@ bool navidromedownloads_request(const nd_dl_request_t *q, nd_dl_captured_cb call
 	}
 	pthread_mutex_unlock(&mutex);
 	nd_wipe(&context, sizeof(context));
-	if (!ok && capture_job && !q->direct)
+	if (!ok && capture_pin(q))
 		nd_store_release_source(&q->library);
 	return ok;
 }
@@ -1361,7 +1418,7 @@ void navidromedownloads_shutdown(void) {
 	navidromedownloads_cancel();
 	pthread_mutex_lock(&mutex);
 	bool join = started;
-	bool release_pin = pending && command.action == NDDL_CAPTURE && !command.direct;
+	bool release_pin = pending && capture_pin(&command);
 	nd_library_t pinned = command.library;
 	pending = false;
 	started = false;

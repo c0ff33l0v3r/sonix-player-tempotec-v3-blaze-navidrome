@@ -36,6 +36,21 @@ static int expected = 2;
 static int callback_skipped;
 static char destination[256] = "Music/Navidrome";
 static char mode[40];
+static int64_t saved_playlist;
+static bool changed_saved;
+bool __real_nd_pl_play_window(nd_playlist_store_t *, int64_t, int64_t, int, nd_playlist_entry_t[ND_WINDOW], int *, int *);
+bool __wrap_nd_pl_play_window(nd_playlist_store_t *s, int64_t id, int64_t revision, int first,
+		nd_playlist_entry_t out[ND_WINDOW], int *count, int *total) {
+	bool ok = __real_nd_pl_play_window(s, id, revision, first, out, count, total);
+	if (ok && !changed_saved && !strcmp(mode, "playlist_changed")) {
+		changed_saved = true;
+		nd_playlist_store_t edit;
+		assert(nd_pl_open(&edit, s->path, s->scope, true));
+		assert(nd_pl_edit(&edit, id, revision, "Changed", false) && nd_pl_sql(&edit, "COMMIT"));
+		nd_pl_close(&edit);
+	}
+	return ok;
+}
 static char last_ready[512], cache_paths[2][512];
 static int descriptors(void) {
 	DIR *dir = opendir("/proc/self/fd");
@@ -216,6 +231,10 @@ static void submit(nd_dl_action_t action) {
 	nd_dl_request_t q = {.action = action, .library = library, .kind = ND_ALBUMS, .token = 1};
 	strcpy(q.id, "album");
 	strcpy(q.destination, destination);
+	if (!strncmp(mode, "playlist", 8)) {
+		q.playlist = saved_playlist;
+		q.playlist_revision = 2;
+	}
 	if (!strcmp(mode, "selection") || !strcmp(mode, "case_collision"))
 		q.session = 1;
 	if (!strcmp(mode, "single_multi") || !strcmp(mode, "current") || !strcmp(mode, "current_remote")) {
@@ -337,9 +356,9 @@ int main(int argc, char **argv) {
 	if (!strcmp(mode, "root"))
 		destination[0] = 0;
 	unsupported = !strcmp(mode, "unsupported");
-	if (!strcmp(mode, "large_batch")) {
+	if (!strcmp(mode, "large_batch") || !strcmp(mode, "playlist_large")) {
 		unsupported = true;
-		expected = 17000;
+		expected = !strcmp(mode, "large_batch") ? 17000 : 2;
 	}
 	reject_posts = !strcmp(mode, "reject_post");
 	after_rename = !strcmp(mode, "after_rename");
@@ -374,6 +393,28 @@ int main(int argc, char **argv) {
 	if (!strcmp(mode, "case_collision"))
 		assert(sqlite3_exec(source.db, "INSERT INTO entity(gen,kind,id,title,artist,album,cover,duration,disc,track,sortkey) VALUES(1,0,'album2','album','VARIOUS ARTISTS','','',0,1,0,'album2'); UPDATE entity SET album='album2' WHERE id='track/2?'", NULL, NULL, NULL) == SQLITE_OK);
 	nd_store_close(&source);
+	if (!strncmp(mode, "playlist", 8)) {
+		nd_playlist_store_t saved;
+		char path[1200];
+		assert(nd_pl_path(&library, path) && nd_pl_open(&saved, path, library.scope, true));
+		assert(nd_pl_create(&saved, "Saved", &saved_playlist) && nd_pl_begin(&saved, saved_playlist, 1));
+		int added = 0, skipped = 0;
+		int count = !strcmp(mode, "playlist_large") ? 5000 : 3;
+		for (int i = 0; i < count; i++) {
+			nd_row_t row = {.title = "Saved track"};
+			snprintf(row.id, sizeof(row.id), "track/%d?", i % 2 + 1);
+			assert(nd_pl_append(&saved, saved_playlist, &row, false, &added, &skipped));
+		}
+		assert(nd_pl_finish(&saved, saved_playlist, true) && nd_pl_sql(&saved, "COMMIT"));
+		if (!strcmp(mode, "playlist_stale"))
+			assert(nd_pl_edit(&saved, saved_playlist, 2, "Changed", false) && nd_pl_sql(&saved, "COMMIT"));
+		if (!strcmp(mode, "playlist_deleted"))
+			assert(nd_pl_edit(&saved, saved_playlist, 2, NULL, true) && nd_pl_sql(&saved, "COMMIT"));
+		nd_pl_close(&saved);
+		if (!strcmp(mode, "playlist_remote") || !strcmp(mode, "playlist_badmeta")) {
+			assert(!unlink(library.path)); library.ready = false;
+		}
+	}
 	if (!strcmp(mode, "selection") || !strcmp(mode, "case_collision")) {
 		nd_playlist_store_t s = {0};
 		char path[1200];
@@ -387,7 +428,7 @@ int main(int argc, char **argv) {
 	}
 	if (!strcmp(mode, "readonly"))
 		library.writable = false;
-	if (!strcmp(mode, "offline") || !strcmp(mode, "active_cache") || !strcmp(mode, "fallback")) {
+	if (!strcmp(mode, "offline") || !strcmp(mode, "active_cache") || !strcmp(mode, "fallback") || !strcmp(mode, "playlist_offline")) {
 		nd_playrow_t row = {0};
 		for (int i = 1; i <= 2; i++) {
 			snprintf(row.row.id, sizeof(row.row.id), "track/%d?", i);
@@ -431,7 +472,20 @@ int main(int argc, char **argv) {
 		puts("PASS read-only capture rejects before HTTP");
 		return 0;
 	}
+	if (!strcmp(mode, "playlist_stale") || !strcmp(mode, "playlist_changed") || !strcmp(mode, "playlist_deleted")) {
+		assert(!capture_ok);
+		navidromedownloads_shutdown(); pump();
+		nd_dl_store_t s;
+		assert(nd_dl_open(&s, &library, false));
+		sqlite3_stmt *st;
+		assert(nd_dl_prepare(&s, &st, "SELECT count(*) FROM job") && sqlite3_step(st) == SQLITE_ROW && sqlite3_column_int(st, 0) == 0);
+		sqlite3_finalize(st); nd_dl_close(&s);
+		assert(!leases && !cache_users && descriptors() == baseline_descriptors);
+		puts("PASS stale/deleted/during-capture playlist revision rolls back the whole batch");
+		return 0;
+	}
 	assert(capture_ok);
+	if (!strncmp(mode, "playlist", 8)) assert(callback_skipped == (!strcmp(mode, "playlist_large") ? 4998 : 1));
 	if (!strcmp(mode, "large_batch"))
 		printf("bounded downloads: request=%zu bytes, view=%zu bytes, jobs=%zu bytes for a %d-row window; 17,000 captured jobs\n", sizeof(nd_dl_request_t), sizeof(nd_dl_view_t), sizeof(nd_dl_job_t) * ND_WINDOW, ND_WINDOW);
 	if (!strcmp(mode, "selection"))
@@ -492,7 +546,7 @@ int main(int argc, char **argv) {
 			finished = values[NDDL_PAUSED] == 2;
 		else if (!strcmp(mode, "cancel") || !strcmp(mode, "preempt") || !strcmp(mode, "preempt_headers"))
 			finished = values[NDDL_CANCELLED] == 2;
-		else if (!strcmp(mode, "error") || !strcmp(mode, "truncated") || !strcmp(mode, "oversize") || unsupported || !strcmp(mode, "json") || !strcmp(mode, "html") || !strcmp(mode, "chunk_bad") || !strcmp(mode, "gzip") || !strcmp(mode, "unknown_limit") || !strcmp(mode, "auth") || !strcmp(mode, "write_fail") || !strcmp(mode, "flush_fail") || !strcmp(mode, "full"))
+		else if (!strcmp(mode, "playlist_badmeta") || !strcmp(mode, "error") || !strcmp(mode, "truncated") || !strcmp(mode, "oversize") || unsupported || !strcmp(mode, "json") || !strcmp(mode, "html") || !strcmp(mode, "chunk_bad") || !strcmp(mode, "gzip") || !strcmp(mode, "unknown_limit") || !strcmp(mode, "auth") || !strcmp(mode, "write_fail") || !strcmp(mode, "flush_fail") || !strcmp(mode, "full"))
 			finished = values[NDDL_FAILED] > 0;
 		else
 			finished = values[NDDL_COMPLETE] == expected;
@@ -544,6 +598,14 @@ int main(int argc, char **argv) {
 		}
 		if (!strcmp(mode, "single_multi"))
 			assert(strstr(path, "/Disc 1/"));
+		if (!strcmp(mode, "playlist_remote")) {
+			assert(strstr(path, "/Disc 1/Track 1.wav"));
+			nd_dl_store_t store;
+			nd_dl_job_t saved;
+			assert(nd_dl_open(&store, &library, false) && nd_dl_get(&store, 1, &saved));
+			assert(!strcmp(saved.source.album_id, "album") && !strcmp(saved.source.album, "Album") && saved.source.row.disc == 1);
+			nd_dl_close(&store);
+		}
 		if (!strcmp(mode, "recover")) {
 			navidromedownloads_shutdown();
 			nd_dl_store_t s;

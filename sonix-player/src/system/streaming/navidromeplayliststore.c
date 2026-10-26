@@ -2,6 +2,7 @@
 #include "src/system/core/sha256.h"
 #include <ctype.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -219,6 +220,54 @@ bool nd_pl_entries(nd_playlist_store_t *s, int64_t id, int offset, int64_t sessi
 	sqlite3_finalize(st);
 	return rc == SQLITE_DONE;
 }
+bool nd_pl_play_window(nd_playlist_store_t *s, int64_t id, int64_t revision, int first,
+					   nd_playlist_entry_t out[ND_WINDOW], int *count, int *total) {
+	*count = *total = 0;
+	if (id <= 0 || revision <= 0 || first < 0 || !nd_pl_sql(s, "BEGIN"))
+		return false;
+	sqlite3_stmt *st = NULL;
+	bool ok = nd_pl_prepare(s, &st, "SELECT rev,(SELECT count(*) FROM entry WHERE p=playlist.id) FROM playlist WHERE id=?");
+	if (ok) {
+		sqlite3_bind_int64(st, 1, id);
+		ok = sqlite3_step(st) == SQLITE_ROW && sqlite3_column_int64(st, 0) == revision;
+		if (!ok)
+			s->error = "nd_pl_stale";
+		else {
+			int64_t size = sqlite3_column_int64(st, 1);
+			ok = size >= 0 && size <= INT_MAX && first <= size;
+			if (ok) *total = (int)size;
+		}
+	}
+	sqlite3_finalize(st);
+	st = NULL;
+	if (ok) ok = nd_pl_prepare(s, &st, "SELECT id,track,title,artist,cover,duration FROM entry WHERE p=? ORDER BY ordinal LIMIT 16 OFFSET ?");
+	if (ok) {
+		sqlite3_bind_int64(st, 1, id);
+		sqlite3_bind_int(st, 2, first);
+		int rc;
+		while ((rc = sqlite3_step(st)) == SQLITE_ROW && ok) {
+			nd_playlist_entry_t *e = &out[(*count)++];
+			memset(e, 0, sizeof(*e));
+			e->occurrence = sqlite3_column_int64(st, 0);
+			const char *track = (const char *)sqlite3_column_text(st, 1);
+			int bytes = sqlite3_column_bytes(st, 1);
+			ok = e->occurrence > 0 && track && bytes > 0 && (size_t)bytes < sizeof(e->track.id) && strlen(track) == (size_t)bytes;
+			if (!ok) break;
+			memcpy(e->track.id, track, (size_t)bytes + 1);
+			text(st, 2, e->track.title, sizeof(e->track.title));
+			text(st, 3, e->track.artist, sizeof(e->track.artist));
+			text(st, 4, e->track.cover, sizeof(e->track.cover));
+			e->track.duration = sqlite3_column_int(st, 5);
+		}
+		ok = ok && rc == SQLITE_DONE && *count == (*total - first < ND_WINDOW ? *total - first : ND_WINDOW);
+	}
+	sqlite3_finalize(st);
+	if (ok) ok = nd_pl_sql(s, "COMMIT");
+	if (!ok) sqlite3_exec(s->db, "ROLLBACK", NULL, NULL, NULL);
+	if (!ok && !s->error) s->error = "nd_pl_storage_error";
+	return ok;
+}
+
 bool nd_pl_name_valid(const char *name) {
 	if (!name || !*name || strlen(name) >= ND_PL_NAME)
 		return false;
