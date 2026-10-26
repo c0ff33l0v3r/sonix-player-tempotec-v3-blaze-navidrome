@@ -119,6 +119,7 @@ bool __wrap_http_request(const char *url, const http_req_t *req, char **out, siz
 		atomic_store(&blocked, 1);
 		while (!atomic_load(&release_request))
 			usleep(1000);
+		fixture = atomic_load(&mode);
 	}
 	if (fixture == 6 || fixture == 7)
 		return false;
@@ -293,6 +294,168 @@ static void vault_checks(const char *dir) {
 	nd_wipe(decoded, sizeof(decoded));
 }
 
+static void auto_disconnect(void) {
+	navidrome_test_online(0);
+	navidrome_poll_network();
+	navidrome_test_online(1);
+}
+static void automatic_checks(const char *dir) {
+	navidrome_set_root(dir);
+	assert(navidrome_reconnect());
+	wait_idle();
+	nd_report_context_t reports;
+	assert(navidrome_report_context(&reports, NULL) && reports.connected);
+	unsigned explicit_generation = reports.connection;
+	auto_disconnect();
+	int requests = atomic_load(&calls);
+	navidrome_auto_tick(false, false, 0);
+	navidrome_auto_tick(true, false, 0);
+	assert(atomic_load(&calls) == requests);
+	navidrome_test_online(0);
+	navidrome_auto_tick(true, true, 10);
+	for (int i = 0; i < 10; i++) navidrome_auto_tick(true, true, 20 + i);
+	assert(atomic_load(&calls) == requests);
+	navidrome_snapshot_t state;
+	navidrome_snapshot(&state);
+	assert(state.auto_waiting && !state.busy && !strcmp(navidrome_feedback(&state), "nd_connect_waiting"));
+	navidrome_test_online(1);
+	navidrome_auto_tick(true, true, 100);
+	assert(wait_idle().state == ND_CONNECTED && atomic_load(&calls) == requests + 1);
+	assert(navidrome_report_context(&reports, NULL) && !reports.connected && reports.connection == explicit_generation);
+	for (int i = 0; i < 20; i++) navidrome_auto_tick(true, true, 200 + i * 1000);
+	assert(atomic_load(&calls) == requests + 1);
+	assert(navidrome_reconnect());
+	wait_idle();
+	assert(navidrome_report_context(&reports, NULL) && reports.connected && reports.connection != explicit_generation);
+
+	// A transient transport error gets exactly one delayed retry in the episode.
+	auto_disconnect();
+	atomic_store(&mode, 6);
+	navidrome_auto_tick(false, true, 30000);
+	navidrome_auto_tick(true, true, 30001);
+	assert(wait_idle().state == ND_DISCONNECTED);
+	requests = atomic_load(&calls);
+	navidrome_auto_tick(true, true, 30002);
+	navidrome_auto_tick(true, true, 32001);
+	assert(atomic_load(&calls) == requests);
+	navidrome_auto_tick(true, true, 32002);
+	wait_idle();
+	assert(atomic_load(&calls) == requests + 1);
+	navidrome_auto_tick(true, true, 99999);
+	assert(atomic_load(&calls) == requests + 1);
+
+	// Terminal failures cannot retry, and exit/disable consumes readiness intent.
+	const int terminal[] = {1, 2, 7};
+	for (unsigned i = 0; i < sizeof(terminal) / sizeof(*terminal); i++) {
+		atomic_store(&mode, terminal[i]);
+		navidrome_auto_tick(false, true, 100000);
+		navidrome_auto_tick(true, true, 100001);
+		wait_idle();
+		requests = atomic_load(&calls);
+		navidrome_auto_tick(true, true, 200000);
+		assert(atomic_load(&calls) == requests);
+	}
+	atomic_store(&mode, 0);
+	navidrome_test_online(0);
+	navidrome_auto_tick(false, true, 200001);
+	navidrome_auto_tick(true, true, 200002);
+	navidrome_auto_tick(false, true, 200003);
+	navidrome_test_online(1);
+	navidrome_auto_tick(false, true, 200004);
+	assert(atomic_load(&calls) == requests);
+	navidrome_test_online(0);
+	navidrome_auto_tick(true, true, 200005);
+	navidrome_auto_tick(true, false, 200006);
+	navidrome_test_online(1);
+	navidrome_auto_tick(true, false, 200007);
+	assert(atomic_load(&calls) == requests);
+
+	// Submitted success may finish after exit without rearming a retry or offer.
+	atomic_store(&mode, 8);
+	atomic_store(&blocked, 0);
+	atomic_store(&release_request, 0);
+	navidrome_auto_tick(true, true, 200008);
+	for (int i = 0; i < 5000 && !atomic_load(&blocked); i++) usleep(1000);
+	assert(atomic_load(&blocked));
+	navidrome_auto_tick(false, true, 200009);
+	atomic_store(&release_request, 1);
+	assert(wait_idle().state == ND_CONNECTED);
+	atomic_store(&mode, 0);
+	// A new family session must not inherit the retired session's retry.
+	auto_disconnect();
+	atomic_store(&mode, 8);
+	atomic_store(&blocked, 0);
+	atomic_store(&release_request, 0);
+	navidrome_auto_tick(false, true, 300000);
+	navidrome_auto_tick(true, true, 300001);
+	for (int i = 0; i < 5000 && !atomic_load(&blocked); i++) usleep(1000);
+	assert(atomic_load(&blocked));
+	navidrome_auto_tick(false, true, 300002);
+	navidrome_auto_tick(true, true, 300003);
+	atomic_store(&mode, 6);
+	atomic_store(&release_request, 1);
+	assert(wait_idle().state == ND_DISCONNECTED);
+	requests = atomic_load(&calls);
+	navidrome_auto_tick(true, true, 400000);
+	navidrome_auto_tick(true, true, 500000);
+	assert(atomic_load(&calls) == requests);
+
+	// Manual connection consumes readiness intent, including an offline failure.
+	navidrome_test_online(0);
+	navidrome_auto_tick(false, true, 500001);
+	navidrome_auto_tick(true, true, 500002);
+	assert(navidrome_reconnect());
+	wait_idle();
+	navidrome_test_online(1);
+	navidrome_auto_tick(true, true, 600000);
+	assert(atomic_load(&calls) == requests);
+	atomic_store(&mode, 0);
+	// An unrelated owner keeps one coalesced intent; releasing it admits one check.
+	nd_context_t context;
+	assert(navidrome_context(&context, false) && navidrome_external_begin(&context, false));
+	navidrome_auto_tick(false, true, 600001);
+	for (int i = 0; i < 10; i++) navidrome_auto_tick(true, true, 600002 + i);
+	assert(atomic_load(&calls) == requests);
+	navidrome_external_end();
+	navidrome_auto_tick(true, true, 600020);
+	assert(wait_idle().state == ND_CONNECTED && atomic_load(&calls) == requests + 1);
+	requests = atomic_load(&calls);
+	assert(navidrome_encrypt("vault1"));
+	wait_idle();
+	navidrome_lock();
+	navidrome_auto_tick(false, true, 600001);
+	navidrome_auto_tick(true, true, 600002);
+	assert(wait_idle().state == ND_LOCKED && atomic_load(&calls) == requests);
+	assert(navidrome_unlock("vault1"));
+	wait_idle();
+	navidrome_auto_tick(true, true, 600003);
+	assert(atomic_load(&calls) == requests + 1);
+	// No selected card is needed for a finite automatic connection.
+	navidrome_set_root(NULL);
+	wait_idle();
+	auto_disconnect();
+	navidrome_auto_tick(false, true, 700000);
+	navidrome_auto_tick(true, true, 700001);
+	assert(wait_idle().state == ND_CONNECTED);
+	// Lock retires an already submitted automatic result.
+	auto_disconnect();
+	atomic_store(&mode, 8);
+	atomic_store(&blocked, 0);
+	atomic_store(&release_request, 0);
+	navidrome_auto_tick(false, true, 800000);
+	navidrome_auto_tick(true, true, 800001);
+	for (int i = 0; i < 5000 && !atomic_load(&blocked); i++) usleep(1000);
+	assert(atomic_load(&blocked));
+	navidrome_lock();
+	atomic_store(&release_request, 1);
+	usleep(50000);
+	assert(wait_idle().state == ND_LOCKED);
+	navidrome_auto_tick(true, true, 900000);
+	assert(wait_idle().state == ND_LOCKED);
+	atomic_store(&mode, 0);
+	puts("automatic entry: readiness, opt-in, bounded retry, terminal failure, navigation, busy/no-card/Lock, no Sync offer and explicit reporter gate: passed");
+}
+
 static void service_checks(const char *dir) {
 	snprintf(config_file, sizeof(config_file), "%s/device_config.ini", dir);
 	navidrome_init();
@@ -440,10 +603,6 @@ static void service_checks(const char *dir) {
 	s = wait_idle();
 	assert(s.configured && s.state == ND_CONNECTED);
 	int before_conversion = atomic_load(&calls);
-	unsigned offer_before;
-	nd_library_t library;
-	navidrome_library_snapshot(&library);
-	offer_before = library.offer;
 	atomic_store(&fail_rename, 1);
 	assert(navidrome_unencrypt(NULL));
 	s = wait_idle();
@@ -452,8 +611,6 @@ static void service_checks(const char *dir) {
 	s = wait_idle();
 	assert(!s.encrypted && s.unlocked && s.authenticated && s.state == ND_CONNECTED);
 	assert(atomic_load(&calls) == before_conversion);
-	navidrome_library_snapshot(&library);
-	assert(library.offer == offer_before);
 	child = fork();
 	assert(child >= 0);
 	if (!child) {
@@ -494,6 +651,7 @@ static void service_checks(const char *dir) {
 	assert(navidrome_save("http://fixture/base", "fixture user", server_password, NULL));
 	s = wait_idle();
 	assert(s.configured && !s.encrypted && s.unlocked && s.state == ND_CONNECTED);
+	automatic_checks(dir);
 	navidrome_reset();
 	navidrome_snapshot(&s);
 	assert(!s.configured && !s.unlocked && access(path, F_OK));

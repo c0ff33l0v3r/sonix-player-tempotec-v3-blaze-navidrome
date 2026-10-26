@@ -1,5 +1,6 @@
 #include "src/system/streaming/navidromeplay.h"
 #include "navidromeplaylists.h"
+#include "navidromerow.h"
 #include "navidromeofflinebadge.h"
 #include "navidromeart.h"
 #include "navidromebrowse.h"
@@ -35,6 +36,8 @@ typedef struct {
 	lv_obj_t *new_row, *new_icon, *new_label, *empty;
 	lv_obj_t *images[ND_WINDOW];
 	cover_image_t artwork[ND_WINDOW];
+	int art_slots[ND_WINDOW];
+	lv_obj_t *durations[ND_WINDOW];
 	bool art_finished[ND_WINDOW], art_bound[ND_WINDOW];
 	lv_obj_t *rows[ND_WINDOW], *names[ND_WINDOW], *details[ND_WINDOW], *menus[ND_WINDOW], *checks[ND_WINDOW];
 	lv_obj_t *playmarks[ND_WINDOW];
@@ -88,6 +91,8 @@ static void pl_buttons(pl_page_t *p) {
 	}
 	if (page == 3)
 		lv_image_set_src(lv_obj_get_child(p->buttons[1], 0), &icon_plus);
+	lv_obj_t *controls[] = {p->buttons[0], p->buttons[1], p->buttons[2], p->download};
+	nd_row_title(p->title, pl_cfg, controls, 4);
 }
 static void pl_status(pl_page_t *p) {
 	if (p->selecting) {
@@ -113,7 +118,7 @@ static void pl_status(pl_page_t *p) {
 	}
 }
 static void pl_release_art_row(pl_page_t *p, int i) {
-	navidromeart_release(i);
+	navidromeart_release(p->art_slots[i]);
 	lv_image_set_src(p->images[i], &icon_music_note);
 	lv_obj_set_size(p->images[i], ui_px(ND_ART_THUMB_SIZE), ui_px(ND_ART_THUMB_SIZE));
 	lv_image_set_inner_align(p->images[i], LV_IMAGE_ALIGN_CONTAIN);
@@ -132,7 +137,7 @@ static void pl_take_art(pl_page_t *p) {
 	if (p != &pl_pages[1])
 		return;
 	for (int i = 0; i < p->count; i++) {
-		if (!p->art_finished[i] && navidromeart_take(i, &p->artwork[i], &p->art_finished[i])) {
+		if (!p->art_finished[i] && navidromeart_take(p->art_slots[i], &p->artwork[i], &p->art_finished[i])) {
 			lv_obj_remove_style(p->images[i], &theme_style_icon, 0);
 			lv_obj_set_size(p->images[i], ui_px(ND_ART_THUMB_SIZE), ui_px(ND_ART_THUMB_SIZE));
 			// Keep automatic fitting across the glyph-to-cover transition.
@@ -162,7 +167,7 @@ static void pl_show_rows(pl_page_t *p, const bool keep_art[ND_WINDOW]) {
 			p->art_bound[i] = true;
 			if (!keep_art[i] && *p->entries[i].track.cover) {
 				p->art_finished[i] = false;
-				navidromeart_request(i, &library, p->entries[i].track.cover, ui_px(ND_ART_THUMB_SIZE));
+				navidromeart_request(p->art_slots[i], &library, p->entries[i].track.cover, ui_px(ND_ART_THUMB_SIZE));
 			}
 		} else {
 			lv_label_set_text(p->names[i], p->playlists[i].name);
@@ -175,6 +180,11 @@ static void pl_show_rows(pl_page_t *p, const bool keep_art[ND_WINDOW]) {
 		lv_obj_set_hidden(p->menus[i], (page == 1 && p->selecting) || page == 2 || page == 3);
 		lv_obj_set_hidden(p->checks[i], page != 1 || !p->entries[i].selected);
 		lv_obj_set_style_bg_opa(p->rows[i], page == 1 && p->entries[i].selected ? LV_OPA_50 : LV_OPA_COVER, 0);
+	}
+	if (page == 1) {
+		lv_obj_update_layout(p->screen);
+		for (int i = 0; i < p->count; i++)
+			nd_row_footer(p->details[i], p->durations[i], lv_obj_get_content_width(lv_obj_get_parent(p->details[i])), p->entries[i].track.duration, false);
 	}
 	if (page != 3) {
 		nd_off_request_t q = {.library = library, .kind = page == 1 ? ND_OFF_TRACK : ND_OFF_PLAYLIST, .count = p->count};
@@ -292,10 +302,41 @@ static void pl_done(nd_pl_result_t *r, void *value) {
 			return;
 		}
 		bool keep_art[ND_WINDOW] = {0};
-		// Selection markers may change without changing the row's artwork.
-		if (page == 1 && p->epoch == r->context.epoch && p->card == r->context.card_epoch && p->playlist.id == r->playlist.id)
+		if (page == 1) {
+			int map[ND_WINDOW];
+			bool claimed[ND_WINDOW] = {0};
+			bool same = p->epoch == r->context.epoch && p->card == r->context.card_epoch && p->playlist.id == r->playlist.id;
+			for (int i = 0; i < ND_WINDOW; i++) {
+				map[i] = -1;
+				if (same && i < r->count)
+					for (int j = 0; j < p->count; j++)
+						if (!claimed[j] && p->art_bound[j] && p->entries[j].occurrence == r->entries[i].occurrence &&
+							!strcmp(p->entries[j].track.id, r->entries[i].track.id) && !strcmp(p->entries[j].track.cover, r->entries[i].track.cover)) {
+							map[i] = j;
+							claimed[j] = true;
+							keep_art[i] = true;
+							break;
+						}
+			}
+			nd_row_complete_map(map);
+			navidromeofflinebadge_release(&p->offline);
+			ND_ROW_REORDER(p->rows, map);
+			ND_ROW_REORDER(p->names, map);
+			ND_ROW_REORDER(p->details, map);
+			ND_ROW_REORDER(p->images, map);
+			ND_ROW_REORDER(p->menus, map);
+			ND_ROW_REORDER(p->checks, map);
+			ND_ROW_REORDER(p->playmarks, map);
+			ND_ROW_REORDER(p->durations, map);
+			ND_ROW_REORDER(p->artwork, map);
+			ND_ROW_REORDER(p->art_finished, map);
+			ND_ROW_REORDER(p->art_bound, map);
+			ND_ROW_REORDER(p->art_slots, map);
+			ND_ROW_REORDER(p->offline.icons, map);
 			for (int i = 0; i < ND_WINDOW; i++)
-				keep_art[i] = p->art_bound[i] && i < p->count && i < r->count && p->entries[i].occurrence == r->entries[i].occurrence && !strcmp(p->entries[i].track.id, r->entries[i].track.id) && !strcmp(p->entries[i].track.cover, r->entries[i].track.cover);
+				if (keep_art[i] && p->artwork[i].pixels)
+					lv_image_set_src(p->images[i], &p->artwork[i].dsc);
+		}
 		p->first = r->request.first;
 		p->count = r->count;
 		p->total = r->total;
@@ -352,7 +393,7 @@ static void pl_action(int page, nd_pl_request_t *q) {
 static void pl_load(int page) {
 	pl_page_t *p = &pl_pages[page];
 	nd_pl_request_t q = {.action = page == 1 ? NDPL_ENTRIES : page == 3 ? NDPL_CATALOGUE_WINDOW : NDPL_LIST, .id = page == 1 ? p->playlist.id : 0, .session = p->session};
-	q.first = (lv_obj_get_scroll_y(p->list) - p->offset) / p->pitch - 2;
+	q.first = nd_row_first(p->list, p->total, p->pitch, p->offset);
 	if (q.first < 0)
 		q.first = 0;
 	p->reload = true;
@@ -572,7 +613,15 @@ static void pl_row(lv_event_t *event) {
 	if (pl_gesture())
 		return;
 	uintptr_t key = (uintptr_t)lv_event_get_user_data(event);
-	int page = (int)(key / ND_WINDOW), index = (int)(key % ND_WINDOW);
+	int page = (int)(key / ND_WINDOW), index = -1;
+	lv_obj_t *target = lv_event_get_current_target(event);
+	for (int i = 0; i < pl_pages[page].count; i++)
+		if (target == pl_pages[page].rows[i] || target == pl_pages[page].menus[i]) {
+			index = i;
+			break;
+		}
+	if (index < 0)
+		return;
 	pl_page_t *p = &pl_pages[page];
 	if (index >= p->count || p->loading)
 		return;
@@ -600,7 +649,15 @@ static void pl_long(lv_event_t *event) {
 	if (pl_gesture())
 		return;
 	uintptr_t key = (uintptr_t)lv_event_get_user_data(event);
-	int page = (int)(key / ND_WINDOW), index = (int)(key % ND_WINDOW);
+	int page = (int)(key / ND_WINDOW), index = -1;
+	lv_obj_t *target = lv_event_get_current_target(event);
+	for (int i = 0; i < pl_pages[page].count; i++)
+		if (target == pl_pages[page].rows[i] || target == pl_pages[page].menus[i]) {
+			index = i;
+			break;
+		}
+	if (index < 0)
+		return;
 	if (page != 1 || index >= pl_pages[1].count || pl_pages[1].loading || (pl_pages[1].selecting && pl_pages[1].entries[index].selected))
 		return;
 	lv_indev_t *indev = lv_indev_active();
@@ -613,7 +670,15 @@ static void pl_menu(lv_event_t *event) {
 	if (pl_gesture())
 		return;
 	uintptr_t key = (uintptr_t)lv_event_get_user_data(event);
-	int page = (int)(key / ND_WINDOW), index = (int)(key % ND_WINDOW);
+	int page = (int)(key / ND_WINDOW), index = -1;
+	lv_obj_t *target = lv_event_get_current_target(event);
+	for (int i = 0; i < pl_pages[page].count; i++)
+		if (target == pl_pages[page].rows[i] || target == pl_pages[page].menus[i]) {
+			index = i;
+			break;
+		}
+	if (index < 0)
+		return;
 	pl_page_t *p = &pl_pages[page];
 	if (index >= p->count || p->loading)
 		return;
@@ -631,8 +696,7 @@ static void pl_scroll(lv_event_t *event) {
 	pl_page_t *p = lv_event_get_user_data(event);
 	if (!pl_active((int)(p - pl_pages)) || p->loading || pl_gesture())
 		return;
-	int first = (lv_obj_get_scroll_y(p->list) - p->offset) / p->pitch;
-	if (first < p->first || first + 10 > p->first + p->count)
+	if (!nd_row_covered(p->list, p->first, p->count, p->total, p->pitch, p->offset))
 		pl_load((int)(p - pl_pages));
 }
 static void pl_loaded(lv_event_t *event) {
@@ -812,6 +876,7 @@ void navidromeplaylists_init(gui_config_t *cfg) {
 		p->pitch = ui_px(page == 1 ? 100 : 88) + ui_px(8);
 		p->offset = page == 0 || page == 2 ? p->pitch : 0;
 		p->screen = lv_obj_create(NULL);
+		navidromepage_register(p->screen);
 		lv_obj_add_style(p->screen, &theme_style_screen, 0);
 		p->title = settingsrow_title(p->screen, cfg, page == 2 ? "add_to_playlist" : page == 3 ? "nd_pl_import" : "playlists");
 		settingsrow_title_corner_slots(p->title, cfg, page == 1 ? 4 : page == 2 ? 0 : 1);
@@ -928,6 +993,8 @@ void navidromeplaylists_init(gui_config_t *cfg) {
 			lv_obj_set_flex_align(texts, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 			p->names[i] = lv_label_create(texts);
 			p->details[i] = lv_label_create(texts);
+			p->durations[i] = nd_row_duration_create(p->details[i]);
+			p->art_slots[i] = i;
 			lv_obj_t *labels[] = {p->names[i], p->details[i]};
 			for (int j = 0; j < 2; j++) {
 				const lv_font_t *font = j ? (page == 1 ? &font_ui_20 : &font_ui_16) : &font_ui_24;

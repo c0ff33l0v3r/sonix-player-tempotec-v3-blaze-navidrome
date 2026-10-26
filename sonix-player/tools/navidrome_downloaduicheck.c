@@ -198,7 +198,7 @@ bool navidromedownloads_request(const nd_dl_request_t *q, nd_dl_captured_cb cb, 
 		j->key = q->offset + i + 1;
 		j->batch = 1;
 		j->state = q->filter == NDDL_SUCCESS ? NDDL_COMPLETE : q->filter == NDDL_FAILURE ? NDDL_FAILED : NDDL_QUEUED;
-		if (!(i % 2))
+		if (j->key % 2)
 			snprintf(j->source.row.cover, sizeof(j->source.row.cover), "cover/%lld", (long long)j->key);
 		if (q->filter == NDDL_FAILURE)
 			strcpy(j->error, "nd_dl_changed");
@@ -253,6 +253,34 @@ static void paint(void) {
 	lv_obj_update_layout(lv_screen_active());
 }
 static void click(lv_obj_t *o) { lv_obj_send_event(o, LV_EVENT_CLICKED, NULL); }
+static void polish_header_geometry(gui_config_t *config) {
+	lv_obj_t *page = lv_obj_create(NULL);
+	lv_obj_t *title = settingsrow_title(page, config, "A very long album and artist name with translated characters é ñ ü");
+	lv_obj_t *controls[2] = {lv_btn_create(page), lv_btn_create(page)};
+	for (int i = 0; i < 2; i++) {
+		lv_obj_set_size(controls[i], ui_px(56), ui_px(56));
+		lv_obj_align(controls[i], LV_ALIGN_TOP_RIGHT, -config->padding - i * ui_px(62), config->top_bar_height);
+		lv_obj_set_hidden(controls[i], true);
+	}
+	nd_row_title(title, config, controls, 2);
+	int full = lv_obj_get_style_width(title, 0);
+	assert(full == (int)config->screen_width - (int)config->padding - lv_obj_get_x(title));
+	lv_obj_set_hidden(controls[0], false);
+	nd_row_title(title, config, controls, 2);
+	int single = lv_obj_get_style_width(title, 0);
+	assert(single < full);
+	lv_obj_set_hidden(controls[1], false);
+	nd_row_title(title, config, controls, 2);
+	assert(lv_obj_get_style_width(title, 0) < single);
+	lv_label_set_text(title, "Short");
+	lv_obj_set_hidden(controls[0], true);
+	lv_obj_set_hidden(controls[1], true);
+	nd_row_title(title, config, controls, 2);
+	assert(lv_obj_get_style_width(title, 0) == full);
+	assert(lv_label_get_long_mode(title) == LV_LABEL_LONG_DOT);
+	lv_obj_delete(page);
+	puts("production title fitting: hidden/one/two controls, dynamic text and restored full width: passed");
+}
 int main(int argc, char **argv) {
 	alarm(30);
 	int width = argc > 1 ? atoi(argv[1]) : 320, height = width == 320 ? 480 : 800;
@@ -270,11 +298,20 @@ int main(int argc, char **argv) {
 	memset(lib.scope, 'a', 32);
 	strcpy(lib.path, "/tmp/card/.local/navidrome/.cache/library.db");
 	gui_config_t config = {.screen_width = width, .screen_height = height, .padding = ui_px(12), .top_bar_height = ui_px(24)};
+	polish_header_geometry(&config);
 	navidromedownloadpage_init(&config);
 	navidromedownloadpage_open();
 	paint();
 	assert(result.count == ND_WINDOW && result.total == 17004 && strstr(lv_label_get_text(summary), "3 skipped"));
 	assert(lv_obj_get_child_count(manager_body) == 4);
+	lv_obj_t *manage_row = lv_obj_get_child(manager_body, 3);
+	bool chevron = false;
+	for (unsigned i = 0; i < lv_obj_get_child_count(manage_row); i++) {
+		lv_obj_t *child = lv_obj_get_child(manage_row, i);
+		if (lv_obj_check_type(child, &lv_image_class) && lv_image_get_src(child) == &icon_chevron_right)
+			chevron = true;
+	}
+	assert(chevron && lv_obj_get_user_flag(manager, 3) && lv_obj_get_user_flag(picker, 3));
 	manager_open_cb(NULL);
 	paint();
 	assert(result.filter == NDDL_PENDING && result.total == 17000);
@@ -294,6 +331,28 @@ int main(int argc, char **argv) {
 	assert(loading && !lv_obj_has_state(header_actions[0], LV_STATE_DISABLED) && !lv_obj_has_state(header_actions[1], LV_STATE_DISABLED));
 	assert(thumbnails[0].cover.pixels == pixels && art_requests == requests_before && art_releases == releases_before);
 	paint();
+	// A visible overlap owns the same thumbnail even when its logical slot moves.
+	lv_obj_t *kept_row = jobs[12];
+	void *kept_pixels = thumbnails[12].cover.pixels;
+	assert(kept_pixels);
+	lv_obj_scroll_to_y(job_list, 12 * row_pitch, LV_ANIM_OFF);
+	manager_scroll(NULL);
+	paint();
+	int kept = 12 - result.offset;
+	assert(kept >= 0 && kept < result.count);
+	assert(jobs[kept] == kept_row && thumbnails[kept].cover.pixels == kept_pixels);
+	assert_cover_rendered(&thumbnails[kept]);
+	lv_obj_scroll_to_y(job_list, 0, LV_ANIM_OFF);
+	manager_scroll(NULL);
+	paint();
+	unsigned edge_admissions = admissions, edge_requests = art_requests;
+	for (int bounce = 0; bounce < 5; bounce++) {
+		lv_obj_scroll_by(job_list, 0, row_pitch / 2, LV_ANIM_OFF);
+		manager_scroll(NULL);
+		assert(admissions == edge_admissions && art_requests == edge_requests);
+		assert_cover_rendered(&thumbnails[0]);
+		lv_obj_scroll_by(job_list, 0, -row_pitch / 2, LV_ANIM_OFF);
+	}
 	for (int i = 0; i < 3; i++) {
 		lv_area_t a;
 		lv_obj_get_coords(header_actions[i], &a);

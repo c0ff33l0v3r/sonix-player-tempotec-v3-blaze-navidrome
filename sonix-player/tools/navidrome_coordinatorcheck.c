@@ -86,8 +86,17 @@ void device_state_play_prepared(const char *path, const song_metadata_t *meta, b
 }
 void player_refresh_now_playing(void) { player_refreshes++; }
 void player_refresh_favorite(void) { favorite_refreshes++; }
+#ifdef NAVIDROME_PREPARATION_UI
+void preparation_busy_end(void);
+void preparation_busy_begin(const char *key);
+void preparation_ui_init(void);
+void preparation_ui_check(void);
+void toast_busy_end(void) { preparation_busy_end(); }
+void toast_busy_dismissable(const char *key) { preparation_busy_begin(key); }
+#else
 void toast_busy_end(void) {}
 void toast_busy_dismissable(const char *key) { (void)key; }
+#endif
 void player_sheet_open(bool animate) {
 	(void)animate;
 	sheet_opens++;
@@ -406,6 +415,9 @@ int NAVIDROME_COORDINATOR_MAIN(int argc, char **argv) {
 	lv_display_t *display = lv_display_create(ui_panel_width, ui_panel_width==320?480:800);
 	lv_obj_t *origin = lv_obj_create(NULL), *other = lv_obj_create(NULL);
 	lv_screen_load(origin);
+#ifdef NAVIDROME_PREPARATION_UI
+	preparation_ui_init();
+#endif
 	navidromeplay_init();
 	nd_query_t query = {.kind = ND_TRACKS};
 	int before = atomic_load(&fetches);
@@ -716,6 +728,9 @@ int NAVIDROME_COORDINATOR_MAIN(int argc, char **argv) {
 	drain();
 	navidrome_reset();
 	drain();
+#ifdef NAVIDROME_PREPARATION_UI
+	preparation_ui_check();
+#endif
 	lv_display_delete(display);
 	lv_deinit();
 	return 0;

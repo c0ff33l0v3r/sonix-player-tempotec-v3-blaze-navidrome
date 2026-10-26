@@ -14,7 +14,11 @@ extern const lv_image_dsc_t fixture_download_stub;
 #else
 #include "src/gui/streaming/navidromeofflinebadge.c"
 #endif
-#include "src/gui/streaming/navidromebrowse.c"
+#include "src/gui/streaming/navidromepage.h"
+#ifndef NAVIDROME_BROWSE_SOURCE
+#define NAVIDROME_BROWSE_SOURCE "src/gui/streaming/navidromebrowse.c"
+#endif
+#include NAVIDROME_BROWSE_SOURCE
 #include "src/gui/streaming/navidromealbum.c"
 
 int32_t ui_panel_width = 320;
@@ -35,6 +39,9 @@ void navidromeplaylists_pick(int64_t session, int64_t generation, lv_obj_t *orig
 	(void)origin;
 }
 #endif
+void settingsrow_title_fit_width(lv_obj_t *title, int width) {
+	lv_obj_set_width(title, width);
+}
 void settingsrow_title_corner_slots(lv_obj_t *title, gui_config_t *cfg, int n) {
 	(void)title;
 	(void)cfg;

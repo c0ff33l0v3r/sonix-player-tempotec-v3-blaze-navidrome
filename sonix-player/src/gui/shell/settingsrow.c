@@ -263,6 +263,14 @@ static void row_value_resized_cb(lv_event_t *e) { fit_row((lv_obj_t *)lv_event_g
 // settingsrow_title() reserves room for exactly one button, which is not enough
 // for the Music page (four) or for a track list (up to three): a long heading
 // runs straight under the buttons.
+void settingsrow_title_fit_width(lv_obj_t *title, int width) {
+	if (!title)
+		return;
+	width = LV_MAX(1, width);
+	lv_obj_set_width(title, width);
+	fit_title(title, width);
+}
+
 void settingsrow_title_corner_slots(lv_obj_t *title, gui_config_t *cfg, int buttons) {
 	if (!title || buttons < 0) {
 		return;
@@ -273,8 +281,7 @@ void settingsrow_title_corner_slots(lv_obj_t *title, gui_config_t *cfg, int butt
 	// that reads and one that ends in an ellipsis.
 	int reserved = buttons > 0 ? buttons * CORNER_BTN_SIZE + (buttons - 1) * CORNER_SLOT_GAP : 0;
 	int width = cfg->screen_width - left - cfg->padding - reserved - ui_px(14);
-	lv_obj_set_width(title, width);
-	fit_title(title, width);
+	settingsrow_title_fit_width(title, width);
 }
 
 // Returns the heading settingsrow_page() created, for pages whose title is not

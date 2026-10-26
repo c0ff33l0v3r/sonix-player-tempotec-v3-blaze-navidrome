@@ -27,6 +27,8 @@ lv_obj_t *settingsrow_page(lv_obj_t *screen, gui_config_t *cfg, const char *titl
 // or a long title runs underneath them. Harmless to call with 1, and 0 gives a
 // page with no corner buttons the whole width back.
 void settingsrow_title_corner_slots(lv_obj_t *title, gui_config_t *cfg, int buttons);
+// Fit dynamic headings to the actual space before visible controls.
+void settingsrow_title_fit_width(lv_obj_t *title, int width);
 
 // The heading a settingsrow_page() built, for a page whose title changes after
 // it is built (Language names itself in two languages and one of them moves).

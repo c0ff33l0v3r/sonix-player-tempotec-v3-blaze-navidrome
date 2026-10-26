@@ -318,6 +318,7 @@ void navidromealbum_tick(nd_album_view_t *v) {
 	}
 	bool followed = lv_obj_get_scroll_y(v->list) > v->title_y - ui_px(48);
 	lv_label_set_text(v->page_title, followed ? v->info.row.title : "");
+	settingsrow_title_fit_width(v->page_title, lv_obj_get_style_width(v->page_title, 0));
 	lv_obj_set_hidden(v->mask, !followed);
 }
 void navidromealbum_row(nd_album_view_t *v, lv_obj_t *row, lv_obj_t *name, lv_obj_t *detail, lv_obj_t *number, lv_obj_t *image, const nd_row_t *data, bool heading) {

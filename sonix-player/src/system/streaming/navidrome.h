@@ -7,7 +7,7 @@
 typedef enum { ND_UNCONFIGURED, ND_LOCKED, ND_DISCONNECTED, ND_CONNECTING, ND_CONNECTED } navidrome_state_t;
 typedef struct {
 	char host[ND_HOST_MAX], user[ND_USER_MAX];
-	bool configured, unlocked, authenticated, invalid, busy, encrypted;
+	bool configured, unlocked, authenticated, invalid, busy, encrypted, auto_waiting;
 	navidrome_state_t state;
 	unsigned revision;
 	const char *error; // localization key; never a credential-bearing server response
@@ -31,6 +31,8 @@ bool navidrome_change_passphrase(const char *current, const char *replacement);
 bool navidrome_encrypt(const char *replacement);
 bool navidrome_unencrypt(const char *current); // NULL allowed only while already unlocked
 bool navidrome_reconnect(void);
+// One bounded opted-in page-family entry episode; GUI monotonic milliseconds.
+void navidrome_auto_tick(bool active, bool enabled, uint32_t now);
 void navidrome_lock(void);
 bool navidrome_forget(void);
 void navidrome_poll_network(void); // local snapshot only; no request, no host wlan0 requirement
@@ -46,7 +48,6 @@ void navidrome_favorites_cancel(void);
 bool navidrome_favorites_adopt(const nd_context_t *context, const nd_library_t *cache);
 bool navidrome_sync(void);
 void navidrome_sync_cancel(void);
-void navidrome_sync_offer_consume(unsigned offer);
 bool navidrome_context(nd_context_t *out, bool network);
 // Short card-I/O leases let removal drain open files without waiting for HTTP.
 bool navidrome_cache_begin(unsigned epoch, unsigned card_epoch);

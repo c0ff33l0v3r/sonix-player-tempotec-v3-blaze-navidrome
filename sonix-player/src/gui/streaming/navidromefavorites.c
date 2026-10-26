@@ -145,6 +145,7 @@ void navidromefavorites_open(void) {
 
 void navidromefavorites_init(gui_config_t *cfg) {
 	screen = lv_obj_create(NULL);
+	navidromepage_register(screen);
 	lv_obj_t *column = settingsrow_page(screen, cfg, "nd_favorites");
 	player_sheet_attach_drag(column, true);
 	settingsrow_add(column, "albums", &album_count, category_clicked, (void *)(intptr_t)ND_ALBUMS);

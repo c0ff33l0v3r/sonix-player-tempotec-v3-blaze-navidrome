@@ -3476,20 +3476,45 @@ static void reload_cover(const char *filepath) {
 // it does differ the old cover stays up for the one poll that takes, which
 // still reads better than a placeholder in the gap.
 static bool navidrome_cover_requested;
+static struct {
+	bool bound;
+	unsigned epoch, card;
+	char scope[33], id[ND_ID_MAX];
+	int size, backdrop_w, backdrop_h;
+} navidrome_cover_key;
 static void refresh_cover(const char *filepath) {
 	if (!cover_img)
 		return;
-	navidromeart_release(ND_ART_PLAYER_SLOT);
-	navidrome_cover_requested = false;
 	nd_playrow_t track;
 	nd_library_t library;
 	if (navidromeplay_track(filepath, &track, &library)) {
+		int w, h;
+		cover_request_size(&w, &h);
+		int size = LV_MIN(w, 512);
+		int bh = layout_studio_now ? backdrop_studio_h : backdrop_h;
+		if (navidrome_cover_key.bound && (navidrome_cover_key.epoch != library.epoch ||
+			navidrome_cover_key.card != library.card_epoch || strcmp(navidrome_cover_key.scope, library.scope)))
+			cover_drop_current(true);
+		backdrop_is_studio = layout_studio_now;
+		bool same = navidrome_cover_key.bound && navidrome_cover_key.epoch == library.epoch &&
+			navidrome_cover_key.card == library.card_epoch && !strcmp(navidrome_cover_key.scope, library.scope) &&
+			!strcmp(navidrome_cover_key.id, track.row.cover) && navidrome_cover_key.size == size &&
+			navidrome_cover_key.backdrop_w == backdrop_w && navidrome_cover_key.backdrop_h == bh;
 		cover_id_state = COVER_ID_IDLE;
 		cover_shown_id = cover_incoming_id = 0;
 		snprintf(cover_shown_path, sizeof(cover_shown_path), "%s", filepath);
-		int w, h;
-		cover_request_size(&w, &h);
-		navidromeart_request_player(&library, track.row.cover, w > 512 ? 512 : w, backdrop_w, layout_studio_now ? backdrop_studio_h : backdrop_h);
+		if (same)
+			return; // Settled pixels or this same in-flight request already belong here.
+		navidromeart_release(ND_ART_PLAYER_SLOT);
+		navidrome_cover_key.bound = true;
+		navidrome_cover_key.epoch = library.epoch;
+		navidrome_cover_key.card = library.card_epoch;
+		snprintf(navidrome_cover_key.scope, sizeof(navidrome_cover_key.scope), "%s", library.scope);
+		snprintf(navidrome_cover_key.id, sizeof(navidrome_cover_key.id), "%s", track.row.cover);
+		navidrome_cover_key.size = size;
+		navidrome_cover_key.backdrop_w = backdrop_w;
+		navidrome_cover_key.backdrop_h = bh;
+		navidromeart_request_player(&library, track.row.cover, size, backdrop_w, bh);
 		navidrome_cover_requested = cover_request_outstanding = true;
 		lv_timer_resume(progress_slider_timer);
 		cover_poll_start();
@@ -3497,14 +3522,25 @@ static void refresh_cover(const char *filepath) {
 	}
 
 	if (navidromeplay_reference(filepath)) {
+		// Metadata can arrive before audio or after a distant queue jump. Retain
+		// only displayed pixels, never an old track's pending delivery.
+		if (navidrome_cover_requested) {
+			navidromeart_release(ND_ART_PLAYER_SLOT);
+			navidrome_cover_key.bound = false;
+		}
+		navidrome_cover_requested = cover_request_outstanding = false;
 		cover_id_state = COVER_ID_IDLE;
-		cover_request_outstanding = false;
-		cover_drop_current(true);
+		if (!navidromeplay_preparing()) {
+			navidrome_cover_key.bound = false;
+			cover_drop_current(true);
+		}
 		return;
 	}
 
+	navidromeart_release(ND_ART_PLAYER_SLOT);
+	navidrome_cover_requested = false;
+	navidrome_cover_key.bound = false;
 	snprintf(cover_shown_path, sizeof(cover_shown_path), "%s", filepath ? filepath : "");
-
 	if (cover_shown_id != 0 && current_cover.pixels && filepath && filepath[0]) {
 		cover_id_state = COVER_ID_NEW_TRACK;
 		coverloader_request_player_id(filepath);
@@ -3512,7 +3548,6 @@ static void refresh_cover(const char *filepath) {
 		cover_poll_start();
 		return;
 	}
-
 	cover_id_state = COVER_ID_IDLE;
 	cover_incoming_id = 0;
 	reload_cover(filepath);

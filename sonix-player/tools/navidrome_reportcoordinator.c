@@ -125,7 +125,7 @@ int main(int argc, char **argv) {
 		puts("report idle/menu entry: zero network work without history or playback: passed");
 		return 0;
 	}
-	if (!strcmp(argv[2], "offline")) {
+	if (!strcmp(argv[2], "offline") || !strcmp(argv[2], "auto-only")) {
 		navidrome_test_online(0);
 		navidrome_poll_network();
 	}
@@ -145,14 +145,33 @@ int main(int argc, char **argv) {
 		advance(3, false);
 		nd_reports_test_undated(false);
 	}
-	if (!strcmp(argv[2], "offline")) {
+	if (!strcmp(argv[2], "offline") || !strcmp(argv[2], "auto-only")) {
 		navidrome_test_online(1);
 		advance(8, true);
 		navidrome_snapshot_t disconnected;
 		navidrome_snapshot(&disconnected);
 		assert(disconnected.state == ND_DISCONNECTED);
-		assert(navidrome_reconnect());
-		wait_idle();
+		if (!strcmp(argv[2], "auto-only")) {
+			navidrome_auto_tick(false, true, test_ms);
+			navidrome_auto_tick(true, true, test_ms + 1);
+			assert(wait_idle().state == ND_CONNECTED);
+			nd_report_context_t context;
+			assert(navidrome_report_context(&context, NULL) && !context.connected);
+		} else {
+			assert(navidrome_reconnect());
+			wait_idle();
+		}
+	}
+	if (!strcmp(argv[2], "auth-auto")) {
+		nd_report_context_t before, after;
+		assert(navidrome_report_context(&before, NULL));
+		navidrome_test_online(0);
+		navidrome_poll_network();
+		navidrome_test_online(1);
+		navidrome_auto_tick(false, true, test_ms);
+		navidrome_auto_tick(true, true, test_ms + 1);
+		assert(wait_idle().state == ND_CONNECTED);
+		assert(navidrome_report_context(&after, NULL) && !after.connected && after.connection == before.connection);
 	}
 	if (!strcmp(argv[2], "store-stall")) {
 		for (int i = 0; i < 2000 && !atomic_load(&entered_commit); i++)

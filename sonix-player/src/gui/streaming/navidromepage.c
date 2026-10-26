@@ -1,3 +1,4 @@
+#include "navidromepage.h"
 #include "navidromefavorites.h"
 #include "navidromesearch.h"
 #include "navidromebrowse.h"
@@ -16,13 +17,13 @@
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/uiscale.h"
 #include "src/system/core/lang.h"
+#include "src/system/core/config.h"
 #include "src/system/streaming/navidrome.h"
 
 lv_obj_t *navidrome_screen;
 static lv_obj_t *category_grid, *search_icon;
-#ifndef HOST_BUILD
-static lv_timer_t *network_timer;
-#endif
+static lv_timer_t *entry_timer;
+static lv_obj_t *entry_status;
 
 static void unavailable_cb(lv_event_t *e) {
 	if (player_sheet_drag_active() || switcher_back_drag_active() || coverflow_drag_active()) {
@@ -64,6 +65,9 @@ static void refresh(void) {
 	navidrome_snapshot_t snapshot;
 	navidrome_snapshot(&snapshot);
 	bool dim = snapshot.state != ND_CONNECTED;
+	if (entry_status)
+		lv_label_set_text(entry_status, tr(snapshot.state == ND_DISCONNECTED && !snapshot.busy && !snapshot.auto_waiting ?
+			"nd_connect_retry" : navidrome_feedback(&snapshot)));
 	nd_library_t library;
 	navidrome_library_snapshot(&library);
 	for (int i = 0; i < 6; i++)
@@ -76,32 +80,42 @@ static void refresh(void) {
 	navidromesearch_refresh();
 }
 
-#ifndef HOST_BUILD
-static void network_tick(lv_timer_t *timer) {
+// Display notifications cover direct entry, every child and every exit.
+// A sheet leaves the underlying screen active, so it does not restart a session.
+static void entry_tick(lv_timer_t *timer) {
 	(void)timer;
-	navidrome_poll_network();
-	refresh();
+	lv_obj_t *screen = lv_screen_active();
+	bool family = screen && lv_obj_get_user_flag(screen, 3);
+	navidrome_auto_tick(family, config_get_bool("navidrome", "auto_connect", false), lv_tick_get());
+	if (family)
+		navidrome_poll_network();
+	else if (entry_timer)
+		lv_timer_pause(entry_timer);
+	if (screen == navidrome_screen)
+		refresh();
 }
-#endif
-
-static void menu_loaded(lv_event_t *e) {
-	(void)e;
-	navidrome_poll_network();
-	refresh();
-#ifndef HOST_BUILD
-	if (!network_timer)
-		network_timer = lv_timer_create(network_tick, 1000, NULL);
-#endif
+static void entry_shown(lv_event_t *event) {
+	(void)event;
+	entry_tick(NULL);
+	lv_obj_t *screen = lv_screen_active();
+	if (entry_timer && screen && lv_obj_get_user_flag(screen, 3))
+		lv_timer_resume(entry_timer);
 }
-
-static void menu_unloaded(lv_event_t *e) {
-	(void)e;
-#ifndef HOST_BUILD
-	if (network_timer) {
-		lv_timer_delete(network_timer);
-		network_timer = NULL;
-	}
-#endif
+static void entry_retry(lv_event_t *event) {
+	(void)event;
+	if (player_sheet_drag_active() || switcher_back_drag_active() || coverflow_drag_active())
+		return;
+	navidrome_snapshot_t state;
+	navidrome_snapshot(&state);
+	if (state.unlocked && !state.busy && state.state == ND_DISCONNECTED)
+		navidrome_reconnect();
+	else if (!state.unlocked)
+		navidromesettings_open();
+}
+static void entry_init(void) {
+	entry_timer = lv_timer_create(entry_tick, 250, NULL);
+	lv_timer_pause(entry_timer);
+	lv_display_add_event_cb(lv_display_get_default(), entry_shown, LV_EVENT_SCREEN_LOADED, NULL);
 }
 
 // Match Music's two header controls; bubble presses to the screen so gestures
@@ -133,6 +147,7 @@ void navidromepage_init(gui_config_t *cfg) {
 	navidromeplay_init();
 	atexit(navidromeplay_shutdown);
 	navidrome_screen = lv_obj_create(NULL);
+	navidromepage_register(navidrome_screen);
 
 	const grid_entry_t entries[] = {
 		{"albums", &icon_menu_album, NULL, albums_action}, {"navidrome_tracks", &icon_menu_all, NULL, tracks_action}, {"artists", &icon_menu_artist, NULL, artists_action}, {"music_genres", &icon_menu_genre, NULL, genres_action}, {"playlists", &icon_menu_playlist, NULL, playlists_action}, {"nd_favorites", &icon_menu_favourites, NULL, navidromefavorites_open},
@@ -147,8 +162,16 @@ void navidromepage_init(gui_config_t *cfg) {
 	navidromefavorites_init(cfg);
 	navidromesearch_init(cfg);
 	navidrome_set_listener(refresh);
-	lv_obj_add_event_cb(navidrome_screen, menu_loaded, LV_EVENT_SCREEN_LOADED, NULL);
-	lv_obj_add_event_cb(navidrome_screen, menu_unloaded, LV_EVENT_SCREEN_UNLOADED, NULL);
+	entry_status = lv_label_create(navidrome_screen);
+	lv_obj_add_style(entry_status, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(entry_status, &font_ui_14, 0);
+	lv_obj_set_pos(entry_status, cfg->padding, settingsrow_content_top(cfg) - ui_px(8));
+	lv_obj_set_size(entry_status, cfg->screen_width - 2 * cfg->padding, ui_px(20));
+	lv_label_set_long_mode(entry_status, LV_LABEL_LONG_DOT);
+	lv_obj_set_clickable(entry_status, true);
+	lv_obj_add_event_cb(entry_status, entry_retry, LV_EVENT_CLICKED, NULL);
+	switcher_attach_back_gesture(entry_status);
+	entry_init();
 	refresh();
 
 	// The grid handles gestures over its tiles; the screen covers the header.

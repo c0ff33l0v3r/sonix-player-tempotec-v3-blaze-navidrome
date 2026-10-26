@@ -12,6 +12,8 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+// This service-only suite never starts the independent indicator worker.
+void nd_offline_shutdown(void) {}
 static char config_file[1024], origin[512];
 const char *tr(const char *key) { return key; }
 const char *config_path(void) { return config_file; }

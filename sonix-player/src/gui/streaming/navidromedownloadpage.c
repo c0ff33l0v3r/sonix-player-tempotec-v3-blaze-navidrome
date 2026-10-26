@@ -1,3 +1,5 @@
+#include "navidromepage.h"
+#include "navidromerow.h"
 #include "navidromedownloadpage.h"
 #include "navidromethumb.h"
 #include "src/gui/fonts/fonts.h"
@@ -412,6 +414,29 @@ static void tick(lv_timer_t *unused) {
 			snprintf(folder, sizeof(folder), "%s", fresh->folder);
 			first = fresh->offset;
 		}
+		if (lv_screen_active() == manager) {
+			int map[ND_WINDOW];
+			bool same = result.profile_epoch == fresh->profile_epoch && result.card_epoch == fresh->card_epoch && result.filter == fresh->filter;
+			for (int i = 0; i < ND_WINDOW; i++) {
+				map[i] = -1;
+				if (same && i < fresh->count)
+					for (int j = 0; j < result.count; j++)
+						if (result.jobs[j].key > 0 && result.jobs[j].key == fresh->jobs[i].key) {
+							map[i] = j;
+							break;
+						}
+			}
+			nd_row_complete_map(map);
+			ND_ROW_REORDER(jobs, map);
+			ND_ROW_REORDER(job_titles, map);
+			ND_ROW_REORDER(job_notes, map);
+			ND_ROW_REORDER(job_sizes, map);
+			ND_ROW_REORDER(job_locations, map);
+			ND_ROW_REORDER(thumbnails, map);
+			for (int i = 0; i < ND_WINDOW; i++)
+				if (thumbnails[i].cover.pixels)
+					lv_image_set_src(thumbnails[i].image, &thumbnails[i].cover.dsc);
+		}
 		result = *fresh;
 		repaint();
 	}
@@ -506,11 +531,11 @@ static void manager_scroll(lv_event_t *e) {
 	(void)e;
 	if (painting || clearing || lv_screen_active() != manager)
 		return;
-	int top = LV_MAX(0, lv_obj_get_scroll_y(job_list)) / row_pitch;
+	int top = nd_row_scroll(job_list, result.total * row_pitch) / row_pitch;
 	int visible = lv_obj_get_height(job_list) / row_pitch + 2;
 	if (result.filter == (nd_dl_filter_t)(selected_tab + 1) && top >= result.offset && LV_MIN(result.total, top + visible) <= result.offset + result.count)
 		return;
-	int wanted = LV_MAX(0, top - 2);
+	int wanted = nd_row_first(job_list, result.total, row_pitch, 0);
 	if (wanted == first && loading)
 		return;
 	first = wanted;
@@ -536,7 +561,9 @@ static void manager_unloaded(lv_event_t *e) {
 		navidromethumb_release(&thumbnails[i]);
 }
 static void job_details(lv_event_t *e) {
-	int i = (int)(intptr_t)lv_event_get_user_data(e);
+	int i = -1;
+	for (int row = 0; row < result.count; row++)
+		if (jobs[row] == lv_event_get_current_target(e)) { i = row; break; }
 	if (gesture() || lv_screen_active() != manager || i < 0 || i >= result.count || result.filter != (nd_dl_filter_t)(selected_tab + 1) || result.error[0])
 		return;
 	nd_context_t context;
@@ -629,6 +656,7 @@ static void clear_history_build(void) {
 static void manager_build(void) {
 	row_pitch = ui_px(108);
 	manager = lv_obj_create(NULL);
+	navidromepage_register(manager);
 	lv_obj_add_style(manager, &theme_style_screen, 0);
 	lv_obj_t *title = settingsrow_title(manager, cfg, "nd_dl_manage");
 	settingsrow_title_corner_slots(title, cfg, 3);
@@ -745,15 +773,17 @@ static void manager_build(void) {
 void navidromedownloadpage_init(gui_config_t *config) {
 	cfg = config;
 	screen = lv_obj_create(NULL);
+	navidromepage_register(screen);
 	lv_obj_add_style(screen, &theme_style_screen, 0);
 	manager_body = settingsrow_page(screen, cfg, "nd_dl_downloads");
 	settingsrow_add(manager_body, "nd_dl_folder", &folder_value, pick_cb, NULL);
 	summary = note(manager_body);
 	lv_label_set_text(note(manager_body), tr("nd_dl_discovery"));
-	settingsrow_action(manager_body, "nd_dl_manage", manager_open_cb, NULL);
+	settingsrow_add(manager_body, "nd_dl_manage", NULL, manager_open_cb, NULL);
 	manager_build();
 	folderpicker_t destination = folderpicker_create(NULL, cfg, "nd_dl_folder", "nd_dl_use_folder", use_cb, new_cb, cancel_picker);
 	picker = destination.root;
+	navidromepage_register(picker);
 	picker_body = destination.list;
 	use_folder = destination.use;
 	new_folder = destination.new_folder;

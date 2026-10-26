@@ -7,6 +7,11 @@
 #undef icon_download
 extern const lv_image_dsc_t icon_download;
 #include "src/gui/streaming/navidromeplaylists.c"
+#ifdef NAVIDROME_EDGE_BASELINE
+#define fixture_browse_slot(page, row) (row)
+#else
+#define fixture_browse_slot(page, row) ((page)->art_slots[(row)])
+#endif
 static nd_dl_request_t captured_download;
 static unsigned download_submissions;
 static nd_dl_captured_cb captured_download_cb;
@@ -183,7 +188,7 @@ static void repeated_playlist_marks(const nd_library_t *lib) {
 	assert(nd_pl_create(&store, "Repeated", &id) && nd_pl_begin(&store, id, 1));
 	int added = 0, skipped = 0;
 	for (int i = 0; i < 40; i++) {
-		nd_row_t row = {.title = "Repeated title"};
+		nd_row_t row = {.title = "Repeated title", .cover = "repeated-cover"};
 		snprintf(row.id, sizeof(row.id), "song-%05d", i % 2);
 		assert(nd_pl_append(&store, id, &row, false, &added, &skipped));
 	}
@@ -191,6 +196,34 @@ static void repeated_playlist_marks(const nd_library_t *lib) {
 	assert(nd_pl_finish(&store, id, true) && nd_pl_sql(&store, "COMMIT") && nd_pl_get(&store, id, &p));
 	nd_pl_close(&store);
 	pl_open_detail(&p); pl_wait(1);
+	fixture_art_ready = true;
+	navidromeplaylists_refresh();
+	pl_page_t *detail = &pl_pages[1];
+	lv_obj_t *retained = detail->rows[12];
+	void *retained_pixels = detail->artwork[12].pixels;
+	int64_t retained_occurrence = detail->entries[12].occurrence;
+	assert(retained_pixels);
+	lv_obj_scroll_to_y(detail->list, detail->offset + 12 * detail->pitch, LV_ANIM_OFF);
+	pl_wait(1);
+	int match = -1;
+	for (int i = 0; i < detail->count; i++)
+		if (detail->entries[i].occurrence == retained_occurrence) match = i;
+	assert(match >= 0 && detail->rows[match] == retained && detail->artwork[match].pixels == retained_pixels);
+	assert_cover_rendered(detail->images[match]);
+	lv_obj_scroll_to_y(detail->list, detail->offset + detail->total * detail->pitch, LV_ANIM_OFF);
+	pl_wait(1);
+	navidromeplaylists_refresh();
+	unsigned edge_serial = detail->serial, edge_art = fixture_art_requests;
+	for (int bounce = 0; bounce < 5; bounce++) {
+		lv_obj_scroll_by(detail->list, 0, -detail->pitch / 2, LV_ANIM_OFF);
+		assert(detail->serial == edge_serial && fixture_art_requests == edge_art);
+		assert_cover_rendered(detail->images[detail->count - 1]);
+		lv_obj_scroll_by(detail->list, 0, detail->pitch / 2, LV_ANIM_OFF);
+	}
+	lv_obj_scroll_to_y(detail->list, 0, LV_ANIM_OFF);
+	pl_wait(1);
+	navidromeplaylists_refresh();
+	puts("repeated playlist occurrences: overlap retains exact occurrence widget/pixels, bottom bounce submits no query/artwork: passed");
 	assert(!lv_obj_is_hidden(pl_pages[1].download) && !lv_obj_has_state(pl_pages[1].download, LV_STATE_DISABLED));
 	lv_obj_update_layout(pl_pages[1].screen);
 	lv_area_t download_bounds;
@@ -250,6 +283,53 @@ static void repeated_playlist_marks(const nd_library_t *lib) {
 }
 
 #ifndef NAVIDROME_OFFLINE_UI
+static void polish_browse_edges(void) {
+	browse_page_t *p = &pages[0];
+	assert(p->first == 0 && p->count == ND_WINDOW);
+	navidromebrowse_refresh();
+	lv_obj_t *widget = p->rows[12];
+	void *pixels = p->artwork[12].pixels;
+	assert(pixels);
+	char id[ND_ID_MAX];
+	snprintf(id, sizeof(id), "%s", p->data[12].id);
+	lv_obj_scroll_to_y(p->list, 12 * pitch, LV_ANIM_OFF);
+	window_wait(0);
+	int found = -1;
+	for (int i = 0; i < p->count; i++) if (!strcmp(p->data[i].id,id)) found=i;
+#ifdef NAVIDROME_EDGE_BASELINE
+	assert(found >= 0 && p->rows[found] != widget && !p->artwork[found].pixels);
+	assert(lv_image_get_src(p->images[found]) == &icon_music_note);
+	puts("baseline reproduced: a still-visible overlapping item loses its decoded cover and shows the placeholder after a window shift");
+	exit(0);
+#endif
+	assert(found >= 0 && p->rows[found] == widget && p->artwork[found].pixels == pixels);
+	assert_cover_rendered(p->images[found]);
+	lv_obj_scroll_to_y(p->list, p->total * pitch, LV_ANIM_OFF);
+	window_wait(0);
+	navidromebrowse_refresh();
+	assert(p->first + p->count == p->total);
+	unsigned serial = p->serial, requests = fixture_art_requests;
+	for (int i = 0; i < 5; i++) {
+		lv_obj_scroll_by(p->list, 0, -pitch / 2, LV_ANIM_OFF);
+		assert(p->serial == serial && fixture_art_requests == requests);
+		for (int row = 0; row < p->count; row++)
+			assert(p->artwork[row].pixels && lv_image_get_src(p->images[row]) == &p->artwork[row].dsc);
+		lv_obj_scroll_by(p->list, 0, pitch / 2, LV_ANIM_OFF);
+		assert(p->serial == serial);
+	}
+	lv_obj_scroll_to_y(p->list, 0, LV_ANIM_OFF);
+	window_wait(0);
+	navidromebrowse_refresh();
+	serial = p->serial; requests = fixture_art_requests;
+	for (int i = 0; i < 5; i++) {
+		lv_obj_scroll_by(p->list, 0, pitch / 2, LV_ANIM_OFF);
+		assert(p->serial == serial && fixture_art_requests == requests);
+		assert_cover_rendered(p->images[0]);
+		lv_obj_scroll_by(p->list, 0, -pitch / 2, LV_ANIM_OFF);
+	}
+	puts("list cover pixels: overlapping rows retain widgets/pixels; repeated top/bottom elastic bounce makes no query or artwork request: passed");
+}
+
 int main(int argc, char **argv) {
 	ui_panel_width = argc > 1 ? atoi(argv[1]) : 320;
 	assert(ui_panel_width == 320 || ui_panel_width == 480);
@@ -266,7 +346,7 @@ int main(int argc, char **argv) {
 	seed(&lib);
 	nd_store_t art_seed;
 	assert(nd_store_open(&art_seed, lib.path, lib.scope, true, false));
-	assert(sqlite3_exec(art_seed.db, "UPDATE entity SET cover='fixture-browse-cover' WHERE (kind=0 AND id='album-00000') OR (kind=1 AND id='song-00000')", NULL, NULL, NULL) == SQLITE_OK);
+	assert(sqlite3_exec(art_seed.db, "UPDATE entity SET cover='fixture-browse-cover' WHERE (kind=0 AND id='album-00000') OR kind=1", NULL, NULL, NULL) == SQLITE_OK);
 	nd_store_close(&art_seed);
 	navidrome_set_root(dir);
 	library_wait(&lib);
@@ -428,14 +508,14 @@ int main(int argc, char **argv) {
 	fixture_art_ready = false;
 	art_requests = fixture_art_requests;
 	art_releases = fixture_art_releases;
-	assert(fixture_art[0].pending);
+	assert(fixture_art[fixture_browse_slot(&pages[1], 0)].pending);
 	lv_obj_send_event(pages[1].rows[0], LV_EVENT_CLICKED, NULL);
 	pick_wait(1);
 	assert(pages[1].selected == 1 && playback_selections == played);
-	assert(fixture_art_requests == art_requests && fixture_art_releases == art_releases && fixture_art[0].pending);
+	assert(fixture_art_requests == art_requests && fixture_art_releases == art_releases && fixture_art[fixture_browse_slot(&pages[1], 0)].pending);
 	assert(browse_selection_back());
 	window_wait(1);
-	assert(fixture_art_requests == art_requests && fixture_art_releases == art_releases && fixture_art[0].pending);
+	assert(fixture_art_requests == art_requests && fixture_art_releases == art_releases && fixture_art[fixture_browse_slot(&pages[1], 0)].pending);
 	fixture_art_ready = true;
 	navidromebrowse_refresh();
 	assert_cover_rendered(pages[1].images[0]);
@@ -445,6 +525,7 @@ int main(int argc, char **argv) {
 	fixture_art_ready = true;
 	navidromebrowse_refresh();
 	assert_cover_rendered(pages[0].images[0]);
+	polish_browse_edges();
 	// Retention must not keep a cover when the same row gets a new cover ID.
 	art_requests = fixture_art_requests;
 	assert(nd_store_open(&art_seed, lib.path, lib.scope, true, false));
@@ -452,7 +533,7 @@ int main(int argc, char **argv) {
 	nd_store_close(&art_seed);
 	submit_window(&pages[0]);
 	window_wait(0);
-	assert(fixture_art_requests == art_requests + 1 && !strcmp(fixture_art[0].id, "fixture-replacement-cover"));
+	assert(fixture_art_requests == art_requests + 1 && !strcmp(fixture_art[fixture_browse_slot(&pages[0], 0)].id, "fixture-replacement-cover"));
 	assert(!pages[0].artwork[0].pixels && lv_image_get_src(pages[0].images[0]) == &icon_music_note);
 	navidromebrowse_refresh();
 	assert_cover_rendered(pages[0].images[0]);
@@ -600,7 +681,7 @@ int main(int argc, char **argv) {
 	assert(fixture_menu_count == 3 && !strcmp(fixture_menu[2].label, "nd_pl_save_copy"));
 	lv_obj_send_event(pl_pages[0].rows[linked_index], LV_EVENT_CLICKED, NULL);
 	pl_wait(1);
-	assert(fixture_art_requests && !strcmp(fixture_art[0].id, "remote-cover"));
+	assert(fixture_art_requests && !strcmp(fixture_art[pl_pages[1].art_slots[0]].id, "remote-cover"));
 	assert(lv_obj_get_width(pl_pages[1].images[0]) == ui_px(ND_ART_THUMB_SIZE));
 	assert(lv_image_get_inner_align(pl_pages[1].images[0]) == LV_IMAGE_ALIGN_CONTAIN);
 	assert(lv_obj_get_width(lv_obj_get_parent(pl_pages[1].images[0])) == ui_px(ND_ART_THUMB_SIZE));

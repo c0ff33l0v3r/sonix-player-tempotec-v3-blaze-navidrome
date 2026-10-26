@@ -1,4 +1,5 @@
 #include "navidromebrowse.h"
+#include "navidromerow.h"
 #include "navidromeofflinebadge.h"
 #include "src/system/streaming/navidromedownloads.h"
 #include "src/system/core/config.h"
@@ -37,7 +38,8 @@ typedef struct {
 	lv_obj_t *playmarks[ND_WINDOW];
 	nd_off_badges_t offline;
 	cover_image_t artwork[ND_WINDOW];
-	lv_obj_t *numbers[ND_WINDOW];
+	lv_obj_t *numbers[ND_WINDOW], *durations[ND_WINDOW];
+	int art_slots[ND_WINDOW];
 	nd_album_view_t album;
 	nd_album_window_t album_window;
 	char anchor[ND_ID_MAX];
@@ -99,7 +101,7 @@ static void browse_snapshot(bool favorites, nd_library_t *out) {
 static bool gesture(void) { return switcher_back_drag_active() || player_sheet_drag_active() || coverflow_drag_active(); }
 
 static void release_art_row(browse_page_t *p, int i) {
-	navidromeart_release(i);
+	navidromeart_release(p->art_slots[i]);
 	lv_obj_set_hidden(p->images[i], true);
 	lv_image_set_src(p->images[i], &icon_music_note);
 	cover_free(&p->artwork[i]);
@@ -142,13 +144,41 @@ static void window_done(void *value) {
 		submit_window(p);
 		return;
 	}
-	bool keep_art[ND_WINDOW];
-	// Selection reloads metadata too; unchanged bindings keep decoded covers
-	// and pending requests instead of flashing the placeholder for every tap.
+	bool keep_art[ND_WINDOW] = {0};
+	int map[ND_WINDOW];
+	bool claimed[ND_WINDOW] = {0};
 	bool same_library = p->library.epoch == result->library.epoch && p->library.card_epoch == result->library.card_epoch && (p->library.generation == result->library.generation || (p->query.favorites && p->library.base == result->library.base)) && !strcmp(p->library.scope, result->library.scope);
 	for (int i = 0; i < ND_WINDOW; i++) {
-		keep_art[i] = same_library && p->art_bound[i] && i < p->count && i < result->count && !strcmp(p->data[i].id, result->rows[i].id) && !strcmp(p->data[i].cover, result->rows[i].cover);
-		if (!keep_art[i] && p->art_bound[i])
+		map[i] = -1;
+		if (same_library && i < result->count)
+			for (int j = 0; j < p->count; j++)
+				if (!claimed[j] && p->art_bound[j] && !strcmp(p->data[j].id, result->rows[i].id) && !strcmp(p->data[j].cover, result->rows[i].cover)) {
+					map[i] = j;
+					claimed[j] = true;
+					keep_art[i] = true;
+					break;
+				}
+	}
+	nd_row_complete_map(map);
+	navidromeofflinebadge_release(&p->offline);
+	ND_ROW_REORDER(p->rows, map);
+	ND_ROW_REORDER(p->names, map);
+	ND_ROW_REORDER(p->details, map);
+	ND_ROW_REORDER(p->images, map);
+	ND_ROW_REORDER(p->checks, map);
+	ND_ROW_REORDER(p->playmarks, map);
+	ND_ROW_REORDER(p->numbers, map);
+	ND_ROW_REORDER(p->durations, map);
+	ND_ROW_REORDER(p->menus, map);
+	ND_ROW_REORDER(p->artwork, map);
+	ND_ROW_REORDER(p->art_finished, map);
+	ND_ROW_REORDER(p->art_bound, map);
+	ND_ROW_REORDER(p->art_slots, map);
+	ND_ROW_REORDER(p->offline.icons, map);
+	for (int i = 0; i < ND_WINDOW; i++) {
+		if (keep_art[i] && p->artwork[i].pixels)
+			lv_image_set_src(p->images[i], &p->artwork[i].dsc);
+		else if (!keep_art[i] && p->art_bound[i])
 			release_art_row(p, i);
 	}
 	p->library = result->library;
@@ -220,21 +250,20 @@ static void window_done(void *value) {
 			p->art_bound[i] = true;
 			p->art_finished[i] = !row->cover[0];
 			if (row->cover[0])
-				navidromeart_request(i, &p->library, row->cover, ui_px(ND_ART_THUMB_SIZE));
+				navidromeart_request(p->art_slots[i], &p->library, row->cover, ui_px(ND_ART_THUMB_SIZE));
 		}
 		lv_obj_set_y(p->rows[i], p->album.height + (result->alternate ? result->album.y[i] : (p->first + i) * pitch));
 		lv_label_set_text(p->names[i], row->title);
-		char detail[ND_TEXT_MAX + 80];
-		if (p->query.kind == ND_TRACKS && row->duration > 0)
-			lv_snprintf(detail, sizeof(detail), "%s%s%d:%02d", row->artist, row->artist[0] ? "  ·  " : "", row->duration / 60, row->duration % 60);
-		else
-			lv_snprintf(detail, sizeof(detail), "%s", row->artist);
-		lv_label_set_text(p->details[i], row->details ? tr(row->details == 1 && navidrome_star_loading(p->query.kind, row->id) ? "nd_favorites_loading" : "nd_favorites_metadata_error") : detail);
+		lv_label_set_text(p->details[i], row->details ? tr(row->details == 1 && navidrome_star_loading(p->query.kind, row->id) ? "nd_favorites_loading" : "nd_favorites_metadata_error") : row->artist);
 		navidromealbum_row(&p->album, p->rows[i], p->names[i], p->details[i], p->numbers[i], p->images[i], row, result->alternate && result->album.heading[i]);
+
 		navidromealbum_icon(&p->album, lv_obj_get_child(p->menus[i], 0));
 		navidromealbum_icon(&p->album, p->checks[i]);
 		lv_obj_set_style_bg_opa(p->rows[i], result->alternate && result->album.heading[i] ? LV_OPA_TRANSP : p->chosen[i] ? LV_OPA_50 : LV_OPA_COVER, 0);
 	}
+	lv_obj_update_layout(p->screen);
+	for (int i = 0; i < p->count; i++)
+		nd_row_footer(p->details[i], p->durations[i], lv_obj_get_style_width(p->names[i], 0), p->query.kind == ND_TRACKS ? p->data[i].duration : 0, result->alternate && result->album.heading[i]);
 	if (p->query.kind == ND_TRACKS || p->query.kind == ND_ALBUMS) {
 		nd_off_request_t q = {.library = p->library, .kind = p->query.kind == ND_TRACKS ? ND_OFF_TRACK : ND_OFF_ALBUM, .count = p->count};
 		for (int i = 0; i < p->count; i++)
@@ -342,9 +371,7 @@ static void submit_window(browse_page_t *p) {
 	browse_snapshot(p->query.favorites, &library);
 	if (!library.ready)
 		return;
-	int first = lv_obj_get_scroll_y(p->list) / pitch - 2;
-	if (first < 0)
-		first = 0;
+	int first = nd_row_first(p->list, p->total, pitch, 0);
 	p->loading = true;
 	p->submitted = lv_tick_get();
 	p->serial++;
@@ -365,7 +392,7 @@ static void submit_window(browse_page_t *p) {
 	request.alternate = navidromealbum_enabled() && p->query.kind == ND_TRACKS && p->query.filter_kind == ND_ALBUMS && *p->query.filter;
 	request.layout_revision = navidromealbum_revision();
 	request.pitch = pitch; request.disc_pitch = ui_px(44);
-	request.offset = LV_MAX(0, lv_obj_get_scroll_y(p->list) - p->album.height);
+	request.offset = LV_MAX(0, nd_row_scroll(p->list, p->album.height + p->album_window.extent) - p->album.height);
 	request.restore = *p->anchor != 0;
 	request.anchor_delta = p->anchor_delta;
 	snprintf(request.anchor, sizeof(request.anchor), "%s", p->anchor);
@@ -402,15 +429,16 @@ static void scrolling(lv_event_t *e) {
 
     navidromealbum_tick(&p->album);
     if (p->album.active) {
-        int y = LV_MAX(0, lv_obj_get_scroll_y(p->list) - p->album.height);
+        int y = LV_MAX(0, nd_row_scroll(p->list, p->album.height + p->album_window.extent) - p->album.height);
         int last = p->count ? p->album_window.y[p->count - 1] + (p->album_window.heading[p->count - 1] ? ui_px(44) : pitch) : 0;
         if (!p->loading && (y < p->album_window.offset || (y + lv_obj_get_height(p->list) > last && last < p->album_window.extent)))
             submit_window(p);
         return;
     }
-	int first = lv_obj_get_scroll_y(p->list) / pitch;
+	int wanted = nd_row_first(p->list, p->total, pitch, 0);
 	azindex_flash(p->index);
-	if ((p->loading && first - 2 != p->requested_first && !(first < 2 && p->requested_first == 0)) || (!p->loading && (first < p->first || first + 10 > p->first + p->count)))
+	if ((p->loading && wanted != p->requested_first) ||
+		(!p->loading && !nd_row_covered(p->list, p->first, p->count, p->total, pitch, 0)))
 		submit_window(p);
 }
 
@@ -526,6 +554,7 @@ void navidromebrowse_refresh(void) {
 		browse_snapshot(p->query.favorites, &library);
 		if (p->select_favorite)
 			lv_obj_set_state(p->select_favorite, LV_STATE_DISABLED, p->select_busy || navidrome_star_busy());
+
 		if (!library.ready) {
 			p->selecting = false;
 			p->selected = 0;
@@ -568,6 +597,7 @@ void navidromebrowse_refresh(void) {
 		if (was_tinted != p->album.tinted) {
             for (int i = 0; i < p->count; i++) {
                 navidromealbum_row(&p->album, p->rows[i], p->names[i], p->details[i], p->numbers[i], p->images[i], &p->data[i], p->album_window.heading[i]);
+				nd_row_footer(p->details[i], p->durations[i], lv_obj_get_style_width(p->names[i], 0), p->query.kind == ND_TRACKS ? p->data[i].duration : 0, p->album.active && p->album_window.heading[i]);
                 navidromealbum_icon(&p->album,lv_obj_get_child(p->menus[i],0));
                 navidromealbum_icon(&p->album,p->checks[i]);
                 lv_obj_set_style_bg_opa(p->rows[i], p->album_window.heading[i] ? LV_OPA_TRANSP : p->chosen[i] ? LV_OPA_50 : LV_OPA_COVER, 0);
@@ -578,7 +608,7 @@ void navidromebrowse_refresh(void) {
 		for (int i = 0; i < p->count; i++) {
 			if (p->album.active || p->art_finished[i])
 				continue;
-			if (navidromeart_take(i, &p->artwork[i], &p->art_finished[i])) {
+			if (navidromeart_take(p->art_slots[i], &p->artwork[i], &p->art_finished[i])) {
 				lv_obj_remove_style(p->images[i], &theme_style_icon, 0);
 				lv_obj_set_size(p->images[i], ui_px(ND_ART_THUMB_SIZE), ui_px(ND_ART_THUMB_SIZE));
 				// Keep automatic fitting across the glyph-to-cover transition.
@@ -736,6 +766,7 @@ static void browse_selection_ui(browse_page_t *p) {
 	lv_obj_set_hidden(p->select_close, !p->selecting);
 	lv_obj_set_hidden(p->select_favorite, !p->selecting || (p->query.kind != ND_TRACKS && p->query.kind != ND_ALBUMS));
 	lv_obj_set_state(p->select_favorite, LV_STATE_DISABLED, p->select_busy || navidrome_star_busy());
+	nd_row_title(p->title, p->album.cfg, buttons, (int)(sizeof(buttons) / sizeof(*buttons)));
 	if (p->selecting) {
 		char text[80];
 		lv_snprintf(text, sizeof(text), tr("nd_pl_selected"), p->selected);
@@ -994,9 +1025,10 @@ void navidromebrowse_init(gui_config_t *cfg) {
 	for (int level = 0; level < 3; level++) {
 		browse_page_t *p = &pages[level];
 		p->screen = lv_obj_create(NULL);
+		navidromepage_register(p->screen);
 		lv_obj_add_style(p->screen, &theme_style_screen, 0);
 		p->title = settingsrow_title(p->screen, cfg, "navidrome");
-		settingsrow_title_corner_slots(p->title, cfg, 4);
+		settingsrow_title_corner_slots(p->title, cfg, 0);
 		p->session = 2000 + level;
 		for (int slot = 0; slot < 5; slot++) {
 			lv_obj_t *button = lv_btn_create(p->screen);
@@ -1061,6 +1093,8 @@ void navidromebrowse_init(gui_config_t *cfg) {
 			lv_obj_align(p->images[i], LV_ALIGN_LEFT_MID, 0, 0);
 			p->names[i] = lv_label_create(p->rows[i]);
 			p->details[i] = lv_label_create(p->rows[i]);
+			p->durations[i] = nd_row_duration_create(p->details[i]);
+			p->art_slots[i] = i;
 			lv_obj_t *labels[] = {p->names[i], p->details[i]};
 			for (int j = 0; j < 2; j++) {
 				lv_obj_add_style(labels[j], j ? &theme_style_text_dim : &theme_style_text, 0);

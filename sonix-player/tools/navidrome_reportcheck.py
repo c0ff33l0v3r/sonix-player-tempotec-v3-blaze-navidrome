@@ -51,7 +51,7 @@ class Fixture(BaseHTTPRequestHandler):
             response["subsonic-response"]["openSubsonicExtensions"] = (
                 [] if route == "legacy" else [{"name": "playbackReport", "versions": [1]}]
             )
-        elif route == "auth":
+        elif route in ("auth", "auth-auto"):
             status = 401
             response = {"subsonic-response": {"status": "failed", "error": {"code": 40}}}
         elif route == "lost" and query.get("submission") == ["true"]:
@@ -79,7 +79,7 @@ def main():
         server.daemon_threads = True
         threading.Thread(target=server.serve_forever, daemon=True).start()
         cases = ["modern", "legacy", "auth", "malformed", "oversize", "redirect",
-                 "dns", "lost", "priority", "store-stall", "preempt", "overflow", "idle", "init-fail", "offline", "lifecycle", "undated"]
+                 "dns", "lost", "priority", "store-stall", "preempt", "overflow", "idle", "init-fail", "offline", "lifecycle", "undated", "auto-only", "auth-auto"]
         if os.environ.get("SONIX_REPORT_CASES"):
             cases = os.environ["SONIX_REPORT_CASES"].split(",")
         for route in cases:
@@ -94,7 +94,7 @@ def main():
                 assert secret not in output, f"redaction failed: {route}"
             with lock:
                 requests = list(seen.get(route, []))
-            if route in ("idle", "init-fail"):
+            if route in ("idle", "init-fail", "auto-only"):
                 assert not requests, (route, len(requests))
                 print(f"report {route}: silent and zero network work: passed", flush=True)
                 continue
@@ -109,7 +109,7 @@ def main():
             if route == "overflow":
                 assert 1 <= len(counted) <= 5
                 assert len({q["time"][0] for q in counted}) == len(counted)
-            elif route in ("auth", "malformed", "oversize", "redirect", "preempt"):
+            elif route in ("auth", "auth-auto", "malformed", "oversize", "redirect", "preempt"):
                 assert len(counted) <= 1
             else:
                 assert len(counted) == 1, (route, len(counted))

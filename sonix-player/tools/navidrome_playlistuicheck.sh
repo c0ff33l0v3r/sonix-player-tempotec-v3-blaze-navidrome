@@ -22,7 +22,9 @@ start = text.index('static const uint8_t icon_download_data[] = {')
 end = text.index('\n};', text.index('const lv_image_dsc_t icon_download = {', start)) + 3
 Path(sys.argv[1]).write_text('#include "src/gui/shell/icons.h"\n' + text[start:end] + '\n')
 PY
-${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -O1 -g \
+baseline_flags=
+if [ -n "${SONIX_EXPECT_EDGE_FLASH:-}" ]; then baseline_flags=-DNAVIDROME_EDGE_BASELINE; fi
+${CC:-cc} $baseline_flags -DNAVIDROME_BROWSE_SOURCE=\"${SONIX_BROWSE_SOURCE:-src/gui/streaming/navidromebrowse.c}\" -std=gnu11 -Wall -Wextra -Werror -O1 -g \
     -ffunction-sections -fdata-sections ${NAVIDROME_CHECK_FLAGS:-} \
     -DHOST_BUILD -DNAVIDROME_TEST -DLV_CONF_INCLUDE_SIMPLE -DLV_FONT_UNSCII_8=1 -I. -Ilvgl \
     tools/navidrome_playlistuicheck.c tools/navidrome_test_support.c "$check_dir/download-icon.c" lvgl/src/font/lv_font_unscii_8.c \

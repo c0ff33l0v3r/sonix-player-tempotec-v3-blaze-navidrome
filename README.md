@@ -114,15 +114,31 @@ Unlock Password (at least six characters); encrypted profiles need unlocking aft
 restart. Disabling encryption requires available credentials or the correct Unlock
 Password. Changing protection keeps the same library and does not contact the server.
 
+Enable **Connect automatically** in Navidrome settings once to connect quietly
+when you open Navidrome after a reboot. It defaults off, waits for Wi-Fi to be
+ready and allows at most one delayed retry after a temporary network failure.
+It never turns Wi-Fi on, unlocks encrypted credentials, or connects merely
+because the player started. Failures leave offline browsing available; use the
+status line's Retry action or settings Reconnect for an explicit attempt.
+Automatic connection never offers or starts Sync, refreshes Favorites, reruns a
+Search, resumes downloads or starts playback. Listening reports still need a
+successful explicit Save & Connect, Reconnect, Update Password or Unlock.
+
 From the main Navidrome settings page, use
 **Sync Library** to copy track, album, artist, and genre metadata to the selected
-SD card. Successful Save & Connect and Reconnect operations also offer
-**Sync Now** or **Later** when main settings is next visible. A new sync needs writable card storage; cancelling or
-failing a refresh keeps the last successful library.
+SD card. Connection success and opening settings never show a Sync prompt;
+start synchronization only by choosing **Sync Library**. A new sync needs writable
+card storage; cancelling or failing a refresh keeps the last successful library.
 
 After syncing, those four categories browse the local index, including offline
 once credentials are available (after unlock in encrypted mode). Settings shows
 connection status separately from the last sync time and library counts.
+List covers remain bound while scrolling past either edge or moving between
+overlapping row windows. Headers use the space left by visible controls, and
+track rows keep known durations right-aligned beside truncated artist names.
+The Cache size card supports swipe-back like the rest of settings; Manage
+downloads uses the standard navigation arrow.
+
 Artists includes album artists and track artists with at least one album linked
 in the synced library. Contributor credits without a browsable album stay in the
 metadata cache but are omitted from the artist list, its count and letter jumps.
@@ -158,7 +174,10 @@ track or album, including when paused or waiting for an unavailable track.
 
 Skipping while offline selects the intended next track. A cached track plays;
 an uncached track remains visible, stopped, with a reconnect message. Another
-skip advances from that selection. Reconnect never starts it automatically;
+skip advances from that selection. Preparing a track uses inline Now Playing
+status and keeps the controls usable without dimming the screen. Existing cover
+art stays visible until the next image is ready, with same-cover tracks reusing
+it. Reconnect never starts the selected track automatically;
 press Play to retry. **Play albums back to back** continues an album queue through
 the full Albums order, wrapping at the end; queued additions play first. Natural
 Repeat one stays on the current track. All Tracks keeps its complete track queue.
@@ -379,7 +398,8 @@ bounded selected-card queue at `.local/navidrome/listens-<scope>.db`, outside
 **Clear cache**: up to 1,024 events, 30 days and 2 MiB including storage overhead.
 Missing/read-only/full storage uses bounded temporary memory or loses reports.
 Delivery needs a valid clock and an already connected profile; startup and Wi-Fi
-recovery do not reconnect. An uncertain or attempted counting report is never
+recovery alone do not reconnect; optional connection on Navidrome entry does
+not authorize report delivery or reset a reporting failure circuit. An uncertain or attempted counting report is never
 retried automatically, including after restart, so delivery is best effort.
 
 Compatible servers receive current playback state/position with counting disabled;

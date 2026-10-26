@@ -547,18 +547,13 @@ int main(int argc, char **argv) {
 	navidrome_snapshot_t s = idle();
 	assert(s.state == ND_CONNECTED);
 	nd_library_t before = library();
-	assert(before.offer && !before.ready && before.writable);
-	unsigned offered = before.offer;
-	assert(library().offer == offered);
-	navidrome_sync_offer_consume(offered);
-	assert(!library().offer);
+	assert(!before.ready && before.writable);
 	navidromeart_request(ND_ART_SEARCH_SLOT, &before, "red", 32);
 	cover_image_t before_sync = art_wait(ND_ART_SEARCH_SLOT, true);
 	assert(before_sync.pixels[0] == 255);
 	cover_free(&before_sync);
 	navidromeart_release(ND_ART_SEARCH_SLOT);
 	nd_library_t full = sync_ok(17000, 1700);
-	assert(!library().offer);
 	query_checks(full);
 	artwork_checks(full);
 	disk_full_check(full);
@@ -654,7 +649,7 @@ int main(int argc, char **argv) {
 	assert(!library().ready);
 	assert(navidrome_unlock("vault1"));
 	s = idle();
-	assert(s.unlocked && s.state == ND_DISCONNECTED && library().ready && !library().offer);
+	assert(s.unlocked && s.state == ND_DISCONNECTED && library().ready);
 	assert(library().generation == full.generation);
 	nd_library_t offline = library();
 	navidromeart_request(0, &offline, "blue", 32);
@@ -691,18 +686,16 @@ int main(int argc, char **argv) {
 	mode("normal");
 	assert(navidrome_reconnect());
 	idle();
-	assert(library().offer && library().offer != offered);
-	navidrome_sync_offer_consume(library().offer);
 	assert(navidrome_update_password(host, "fixture user", "synthetic-server-password"));
 	idle();
-	assert(!library().offer && library().generation == full.generation);
+	assert(library().generation == full.generation);
 	assert(navidrome_update_password(host, "fixture user", "replacement-fixture-password"));
 	s = idle();
 	assert(s.state == ND_DISCONNECTED && library().ready && library().generation == full.generation && !strcmp(library().scope, full.scope));
 	assert(navidrome_update_password(host, "fixture user", "synthetic-server-password"));
 	s = idle();
-	assert(s.state == ND_CONNECTED && library().ready && !library().offer);
-	puts("offline unlock and operation-specific offers: passed");
+	assert(s.state == ND_CONNECTED && library().ready);
+	puts("offline unlock and explicit connection preserve the complete snapshot: passed");
 
 	// Read-only cache reads work independently of write eligibility.
 	assert(!chmod(card, 0500));

@@ -19,13 +19,6 @@ static unsigned prompt_count;
 static bool prompt_open, prompt_enabled, keyboard_visible_fixture;
 static void (*prompt_yes)(void *), (*prompt_no)(void *);
 static void *prompt_user;
-static void answer_later(void) {
-	void (*callback)(void *) = prompt_no;
-	void *user = prompt_user;
-	prompt_open = false;
-	assert(callback);
-	callback(user);
-}
 static const uint8_t pixel[4] = {255, 255, 255, 255};
 #define TEST_IMAGE {.header = {.magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_ARGB8888, .w = 1, .h = 1, .stride = 4}, .data_size = 4, .data = pixel}
 const lv_image_dsc_t icon_eye = TEST_IMAGE, icon_eye_off = TEST_IMAGE;
@@ -49,11 +42,13 @@ void __wrap_navidrome_library_snapshot(nd_library_t *library) {
 static char fixture_popup[100];
 void gui_notify_popup(const char *key) { snprintf(fixture_popup,sizeof(fixture_popup),"%s",key); }
 static bool fixture_navigation_drag;
-bool switcher_back_drag_active(void) { return fixture_navigation_drag; }
 bool player_sheet_drag_active(void) { return fixture_navigation_drag; }
+#ifndef NAVIDROME_REAL_BACK_TEST
+bool switcher_back_drag_active(void) { return fixture_navigation_drag; }
 void switcher_attach_back_gesture(lv_obj_t *screen) { (void)screen; }
 void switch_screen(lv_obj_t *screen) { lv_screen_load(screen); }
 void switch_screen_return_to(lv_obj_t *screen) { lv_screen_load(screen); }
+#endif
 int settingsrow_content_top(gui_config_t *cfg) {
 	(void)cfg;
 	return 65;
@@ -89,6 +84,9 @@ lv_obj_t *settingsrow_toggle(lv_obj_t *parent, const char *name, lv_obj_t **togg
 	lv_obj_add_event_cb(*toggle, cb, LV_EVENT_VALUE_CHANGED, NULL);
 	return row;
 }
+void settingsrow_title_fit_width(lv_obj_t *title, int width) {
+	lv_obj_set_width(title, width);
+}
 void settingsrow_title_corner_slots(lv_obj_t *title, gui_config_t *cfg, int n) {
 	(void)title;
 	(void)cfg;
@@ -115,7 +113,11 @@ keyboard_t *keyboard_create(lv_obj_t *parent, int w, int h, lv_obj_t *field, con
 }
 void keyboard_set_visible(keyboard_t *kb, bool show) {
 	(void)kb;
+#ifdef NAVIDROME_REAL_BACK_TEST
+	keyboard_visible_fixture = show;
+#else
 	(void)show;
+#endif
 }
 void keyboard_set_field(keyboard_t *kb, lv_obj_t *field) {
 	(void)kb;
@@ -146,13 +148,16 @@ void frameprof_event_ran(void *cb, unsigned us) {
 }
 
 static int fixture_album_preference = -1;
+static bool fixture_auto_preference;
 bool config_get_bool(const char *section, const char *key, bool fallback) {
+	if (!strcmp(section, "navidrome") && !strcmp(key, "auto_connect")) return fixture_auto_preference;
 	if (!strcmp(section, "navidrome") && !strcmp(key, "album_head") && fixture_album_preference >= 0) return fixture_album_preference != 0;
 	(void)section;
 	(void)key;
 	return fallback;
 }
 void config_set_bool(const char *section, const char *key, bool value) {
+	if (!strcmp(section, "navidrome") && !strcmp(key, "auto_connect")) fixture_auto_preference = value;
 	if (!strcmp(section, "navidrome") && !strcmp(key, "album_head")) fixture_album_preference = value;
 	(void)section;
 	(void)key;
@@ -183,7 +188,10 @@ static void assert_cleared(void) {
 		assert(!*lv_textarea_get_text(pass_form.fields[i]));
 }
 
-int main(void) {
+#ifndef NAVIDROME_SETTINGS_MAIN
+#define NAVIDROME_SETTINGS_MAIN main
+#endif
+int NAVIDROME_SETTINGS_MAIN(void) {
 	alarm(90);
 	char dir[] = "/tmp/sonix-navidrome-ui-XXXXXX";
 	assert(mkdtemp(dir) && !chdir(dir));
@@ -196,6 +204,19 @@ int main(void) {
 	navidromesettings_init(&cfg);
 	navidromesettings_open();
 	assert(lv_screen_active() == settings_form.screen);
+	assert(!lv_obj_has_state(auto_connect_switch, LV_STATE_CHECKED));
+	assert(!lv_obj_has_state(auto_connect_switch, LV_STATE_DISABLED));
+	lv_obj_add_state(auto_connect_switch, LV_STATE_CHECKED);
+	lv_obj_send_event(auto_connect_switch, LV_EVENT_VALUE_CHANGED, NULL);
+	assert(fixture_auto_preference && !atomic_load(&calls));
+	fixture_navigation_drag = true;
+	lv_obj_remove_state(auto_connect_switch, LV_STATE_CHECKED);
+	lv_obj_send_event(auto_connect_switch, LV_EVENT_VALUE_CHANGED, NULL);
+	assert(fixture_auto_preference && lv_obj_has_state(auto_connect_switch, LV_STATE_CHECKED));
+	fixture_navigation_drag = false;
+	lv_obj_remove_state(auto_connect_switch, LV_STATE_CHECKED);
+	lv_obj_send_event(auto_connect_switch, LV_EVENT_VALUE_CHANGED, NULL);
+	assert(!fixture_auto_preference && !atomic_load(&calls));
     assert(lv_obj_has_state(album_view_switch,LV_STATE_CHECKED) && navidromealbum_enabled());
     lv_obj_remove_state(album_view_switch,LV_STATE_CHECKED);
     lv_obj_send_event(album_view_switch,LV_EVENT_VALUE_CHANGED,NULL);
@@ -235,12 +256,11 @@ int main(void) {
 	switch_screen_return_to(settings_form.screen);
 	assert(!*lv_textarea_get_text(main_form.fields[2]));
 	navidromesettings_refresh();
-	assert(prompt_count == 1 && prompt_open && !prompt_enabled);
-	answer_later();
+	assert(!prompt_count && !prompt_open);
 	server_cb(NULL);
 	assert(!strcmp(lv_textarea_get_text(main_form.fields[0]), "http://fixture/base"));
 	assert(lv_textarea_get_password_mode(main_form.fields[2]));
-	puts("UI encrypted save retry, preserved identity/password draft, discard and deferred offer: passed");
+	puts("UI encrypted save retry, preserved identity/password draft, discard and no deferred Sync prompt: passed");
 
 	switch_screen_return_to(settings_form.screen);
 	navidrome_lock();
@@ -290,8 +310,7 @@ int main(void) {
 	assert(!state.encrypted && state.state == ND_CONNECTED);
 	switch_screen_return_to(settings_form.screen);
 	navidromesettings_refresh();
-	assert(prompt_count == 2 && prompt_open);
-	answer_later();
+	assert(!prompt_count && !prompt_open);
 	assert(navidrome_forget());
 	wait_idle();
 	enter_server();
@@ -313,23 +332,45 @@ int main(void) {
 	assert(lv_screen_active() == outside);
 	navidromesettings_open();
 	navidromesettings_refresh();
-	assert(prompt_count == 3 && prompt_open);
-	answer_later();
+	assert(!prompt_count && !prompt_open);
 	assert(navidrome_update_password("http://fixture/base", "fixture user", server_password));
 	wait_idle();
 	navidromesettings_refresh();
-	assert(prompt_count == 3);
+	assert(!prompt_count && !prompt_open);
 	navidrome_lock();
 	assert(navidrome_unlock("vault1"));
 	wait_idle();
 	navidromesettings_refresh();
-	assert(prompt_count == 3);
+	assert(!prompt_count && !prompt_open);
 	atomic_store(&mode, 1);
 	assert(navidrome_reconnect());
 	wait_idle();
 	navidromesettings_refresh();
-	assert(prompt_count == 3);
-	puts("UI plain setup, cancellation, late completion and operation-origin guards: passed");
+	assert(!prompt_count && !prompt_open);
+	atomic_store(&mode, 0);
+	assert(navidrome_reconnect());
+	assert(wait_idle().state == ND_CONNECTED);
+	for (int i = 0; i < 3; i++) {
+		switch_screen(outside);
+		navidromesettings_open();
+		navidromesettings_refresh();
+		assert(!prompt_count && !prompt_open);
+	}
+	navidrome_test_online(0);
+	navidrome_poll_network();
+	navidrome_test_online(1);
+	navidrome_auto_tick(false, true, 1);
+	navidrome_auto_tick(true, true, 2);
+	assert(wait_idle().state == ND_CONNECTED);
+	navidromesettings_open();
+	navidromesettings_refresh();
+	assert(!prompt_count && !prompt_open);
+	// Sync stays deliberate, with the existing storage eligibility feedback.
+	fixture_popup[0] = 0;
+	sync_cb(NULL);
+	assert(!strcmp(fixture_popup, "nd_cache_storage"));
+	assert(!prompt_count && !prompt_open);
+	puts("UI explicit/automatic connection, repeated settings entry and late completion never show a Sync prompt; manual Sync retains eligibility checks: passed");
 	fixture_cache_override = true;
 	fixture_cache_usage = (nd_cache_usage_t){.audio = 1024 * 1024, .art = 512 * 1024, .ready = true, .card_epoch = 123};
 	cache_last_request = lv_tick_get();

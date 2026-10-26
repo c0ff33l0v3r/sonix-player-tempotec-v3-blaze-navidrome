@@ -27,8 +27,8 @@
 typedef enum { JOB_SAVE, JOB_UNLOCK, JOB_CHANGE, JOB_CONNECT, JOB_FORGET, JOB_CACHE, JOB_SYNC, JOB_ENCRYPT, JOB_PLAIN, JOB_FAVORITES } job_kind_t;
 typedef struct {
 	job_kind_t kind;
-	unsigned generation, card_epoch, local_epoch;
-	bool offer, authenticate;
+	unsigned generation, card_epoch, local_epoch, auto_session;
+	bool authenticate, automatic;
 	char root[1024];
 	char host[ND_HOST_MAX], user[ND_USER_MAX], password[ND_SECRET_MAX];
 	char passphrase[ND_SECRET_MAX], replacement[ND_SECRET_MAX];
@@ -42,8 +42,11 @@ static unsigned report_connection;
 static pthread_t worker;
 static struct {
 	bool initialized, started, stop, pending, busy, configured, invalid, unlocked, checking, connected;
-	unsigned generation, revision, local_epoch, card_epoch, offer, profile_epoch, playback_network_epoch, search_network_epoch;
+	unsigned generation, revision, local_epoch, card_epoch, profile_epoch, playback_network_epoch, search_network_epoch;
 	bool cache_pending, sync_cancel;
+	bool connection_job, report_connected, auto_active, auto_enabled, auto_pending, auto_delay, auto_inflight;
+	unsigned auto_attempts, auto_profile, auto_session, auto_request_session;
+	uint32_t auto_due;
 	char root[1024];
 	nd_library_t library, favorites;
 	char path[1024], password[ND_SECRET_MAX];
@@ -163,7 +166,6 @@ static int commit(const job_t *job, const nd_record_t *r, const uint8_t key[32],
 		}
 		if (strcmp(g.record.host, r->host) || strcmp(g.record.user, r->user)) {
 			g.local_epoch++;
-			g.offer = 0;
 			memset(&g.library, 0, sizeof(g.library));
 			memset(&g.favorites, 0, sizeof(g.favorites));
 		}
@@ -697,7 +699,7 @@ static void *work(void *unused) {
 			continue;
 		}
 		static const char *operations[] = {"save", "unlock", "change_unlock_password", "reconnect", "forget", "cache", "sync", "encrypt", "unencrypt"};
-		nd_log("navidrome: operation start kind=%s generation=%u configured=%d\n", operations[job.kind], job.generation, configured);
+		nd_log("navidrome: operation start kind=%s generation=%u configured=%d\n", job.automatic ? "automatic_entry" : operations[job.kind], job.generation, configured);
 		const char *error = NULL;
 		bool check = job.kind == JOB_SAVE || job.kind == JOB_UNLOCK || job.kind == JOB_CONNECT;
 		if (job.kind == JOB_UNLOCK || job.kind == JOB_CHANGE || job.authenticate) {
@@ -818,16 +820,23 @@ static void *work(void *unused) {
 		if (accepted) {
 			g.error = error;
 			g.busy = g.checking = false;
+			if (check) g.connection_job = false;
 			if (check) {
 				g.connected = !error || !strcmp(error, "nd_history_error");
-				if (g.connected)
+				g.report_connected = g.connected && !job.automatic;
+				if (g.report_connected)
 					report_connection++;
-				if (g.connected && job.offer)
-					g.offer = job.generation;
+				if (job.automatic) {
+					g.auto_inflight = false;
+					bool transient = error && (!strcmp(error, "nd_network_error") || !strcmp(error, "nd_wifi_error"));
+					g.auto_pending = g.auto_active && g.auto_enabled && job.auto_session == g.auto_session && g.auto_profile == g.profile_epoch &&
+						g.auto_attempts < 2 && transient;
+					g.auto_delay = g.auto_pending;
+				}
 			}
 		}
 		pthread_mutex_unlock(&lock);
-		nd_log("navidrome: operation finish kind=%s generation=%u accepted=%d result=%s\n", operations[job.kind], job.generation, accepted, error ? error : "ok");
+		nd_log("navidrome: operation finish kind=%s generation=%u accepted=%d result=%s\n", job.automatic ? "automatic_entry" : operations[job.kind], job.generation, accepted, error ? error : "ok");
 		nd_wipe(&job, sizeof(job));
 		nd_wipe(&r, sizeof(r));
 		nd_wipe(key, sizeof(key));
@@ -874,6 +883,7 @@ void navidrome_snapshot(navidrome_snapshot_t *out) {
 	out->authenticated = g.unlocked && g.record.authenticated;
 	out->invalid = g.invalid;
 	out->busy = g.busy || external_users;
+	out->auto_waiting = g.auto_pending && !g.busy;
 	out->revision = g.revision;
 	out->error = g.error;
 	out->state = !g.configured ? ND_UNCONFIGURED : !g.unlocked ? ND_LOCKED : g.checking ? ND_CONNECTING : g.connected ? ND_CONNECTED : ND_DISCONNECTED;
@@ -892,6 +902,11 @@ bool navidrome_password(char out[ND_SECRET_MAX]) {
 
 // lock must be held. One pending slot, with no secret-bearing backlog.
 static bool submit(job_t *job) {
+	bool check = job->kind == JOB_SAVE || job->kind == JOB_CONNECT || job->kind == JOB_UNLOCK;
+	if (check && !job->automatic) {
+		g.auto_pending = false;
+		g.auto_session++;
+	}
 	if (g.busy || (external_users && job->kind != JOB_FORGET) || g.stop || !g.initialized)
 		return false;
 	if (!g.started) {
@@ -903,8 +918,12 @@ static bool submit(job_t *job) {
 	}
 	g.busy = true;
 	g.error = NULL;
-	if (job->kind == JOB_SAVE || job->kind == JOB_CONNECT || job->kind == JOB_UNLOCK)
-		g.offer = 0;
+	if (check) {
+		g.auto_inflight = job->automatic;
+		g.auto_request_session = job->auto_session;
+		g.connection_job = true;
+		g.report_connected = false;
+	}
 	if (job->kind == JOB_CONNECT || job->kind == JOB_SAVE || job->kind == JOB_UNLOCK)
 		g.search_network_epoch++;
 	job->generation = ++g.generation;
@@ -916,8 +935,8 @@ static bool submit(job_t *job) {
 	return true;
 }
 
-static bool save(const char *host, const char *user, const char *password, const char *passphrase, bool offer) {
-	job_t job = {.kind = JOB_SAVE, .offer = offer};
+static bool save(const char *host, const char *user, const char *password, const char *passphrase) {
+	job_t job = {.kind = JOB_SAVE};
 	const char *error = navidrome_validate(host, user, password, job.host);
 	pthread_mutex_lock(&lock);
 	if (!error && ((!g.configured && passphrase && !nd_passphrase_valid(passphrase)) || (g.configured && (!g.unlocked || g.invalid))))
@@ -938,8 +957,8 @@ static bool save(const char *host, const char *user, const char *password, const
 	return ok;
 }
 
-bool navidrome_save(const char *host, const char *user, const char *password, const char *passphrase) { return save(host, user, password, passphrase, true); }
-bool navidrome_update_password(const char *host, const char *user, const char *password) { return save(host, user, password, NULL, false); }
+bool navidrome_save(const char *host, const char *user, const char *password, const char *passphrase) { return save(host, user, password, passphrase); }
+bool navidrome_update_password(const char *host, const char *user, const char *password) { return save(host, user, password, NULL); }
 
 bool navidrome_unlock(const char *passphrase) {
 	job_t job = {.kind = JOB_UNLOCK};
@@ -1013,8 +1032,46 @@ bool navidrome_unencrypt(const char *passphrase) {
 	return ok;
 }
 
+// Called by the GUI scheduler; the service mutex owns the finite episode.
+// This only admits an existing worker job: no network or storage runs here.
+void navidrome_auto_tick(bool active, bool enabled, uint32_t now) {
+	bool ready_now = online();
+	pthread_mutex_lock(&lock);
+	bool entry = active && enabled && (!g.auto_active || !g.auto_enabled);
+	if (entry || ((!active || !enabled) && g.auto_active && g.auto_enabled))
+		g.auto_session++;
+	g.auto_active = active;
+	g.auto_enabled = enabled;
+	if (!active || !enabled)
+		g.auto_pending = false;
+	else if (entry && g.configured && g.unlocked && !g.invalid && !g.connected && !g.connection_job) {
+		g.auto_pending = true;
+		g.auto_attempts = 0;
+		g.auto_profile = g.profile_epoch;
+		g.auto_due = now;
+		g.auto_delay = false;
+	}
+	if (g.auto_pending && (!g.unlocked || g.invalid || g.connected || g.auto_profile != g.profile_epoch || g.stop))
+		g.auto_pending = false;
+	if (g.auto_pending && !g.busy && !external_users) {
+		if (g.auto_delay) {
+			g.auto_due = now + 2000;
+			g.auto_delay = false;
+		}
+		if (ready_now && (int32_t)(now - g.auto_due) >= 0) {
+			job_t job = {.kind = JOB_CONNECT, .automatic = true, .auto_session = g.auto_session};
+			if (submit(&job)) {
+				g.auto_attempts++;
+				g.auto_pending = false;
+			} else if (g.error) // Worker creation failure is terminal.
+				g.auto_pending = false;
+		}
+	}
+	pthread_mutex_unlock(&lock);
+}
+
 bool navidrome_reconnect(void) {
-	job_t job = {.kind = JOB_CONNECT, .offer = true};
+	job_t job = {.kind = JOB_CONNECT};
 	pthread_mutex_lock(&lock);
 	bool ok = g.unlocked && !g.invalid && submit(&job);
 	pthread_mutex_unlock(&lock);
@@ -1023,6 +1080,7 @@ bool navidrome_reconnect(void) {
 }
 
 static void clear_secrets(void) {
+	g.auto_pending = g.auto_inflight = g.report_connected = g.connection_job = false;
 	g.search_network_epoch++;
 	g.profile_epoch++;
 	if (g.invalidate_playback)
@@ -1031,7 +1089,6 @@ static void clear_secrets(void) {
 		g.cancel_downloads();
 	g.generation++;
 	g.local_epoch++;
-	g.offer = 0;
 	g.library.syncing = g.favorites.syncing = false;
 	g.unlocked = g.connected = g.checking = g.busy = g.pending = false;
 	nd_wipe(&g.job, sizeof(g.job));
@@ -1076,7 +1133,12 @@ void navidrome_poll_network(void) {
 		if (g.cancel_downloads)
 			g.cancel_downloads();
 		g.generation++;
-		g.connected = g.checking = g.busy = false;
+		if (g.auto_inflight) {
+			g.auto_pending = g.auto_active && g.auto_enabled && g.auto_request_session == g.auto_session && g.auto_attempts < 2;
+			g.auto_delay = g.auto_pending;
+			g.auto_inflight = false;
+		}
+		g.connected = g.checking = g.busy = g.connection_job = false;
 		g.library.syncing = g.favorites.syncing = false;
 		g.error = "nd_wifi_error";
 	}
@@ -1123,6 +1185,8 @@ void navidrome_shutdown(void) {
 }
 
 const char *navidrome_feedback(const navidrome_snapshot_t *s) {
+	if (s->auto_waiting)
+		return "nd_connect_waiting";
 	if (s->invalid)
 		return "nd_vault_error";
 	if (s->state == ND_UNCONFIGURED)
@@ -1179,10 +1243,8 @@ static void source_snapshot(nd_library_t *out, bool favorites) {
 	out->favorites = favorites;
 	out->epoch = g.local_epoch;
 	out->card_epoch = g.card_epoch;
-	out->offer = favorites ? 0 : g.offer;
 	if (!g.unlocked) {
 		out->ready = false;
-		out->offer = 0;
 		out->scope[0] = out->path[0] = 0;
 		memset(out->counts, 0, sizeof(out->counts));
 		out->finished = 0;
@@ -1236,7 +1298,6 @@ bool navidrome_sync(void) {
 	pthread_mutex_lock(&lock);
 	bool ok = g.unlocked && g.connected && g.library.writable && *g.library.path && *g.library.scope && submit(&job);
 	if (ok) {
-		g.offer = 0;
 		g.sync_cancel = false;
 		g.library.syncing = true;
 		g.library.stage = g.library.fetched = 0;
@@ -1252,13 +1313,6 @@ void navidrome_sync_cancel(void) {
 	g.sync_cancel = true;
 	pthread_mutex_unlock(&lock);
 	notify();
-}
-
-void navidrome_sync_offer_consume(unsigned offer) {
-	pthread_mutex_lock(&lock);
-	if (g.offer == offer)
-		g.offer = 0;
-	pthread_mutex_unlock(&lock);
 }
 
 bool navidrome_context(nd_context_t *out, bool network) {
@@ -1505,7 +1559,7 @@ bool navidrome_report_context(nd_report_context_t *out, nd_context_t *credential
 	out->connection = report_connection;
 	out->busy = g.busy || external_users || sync_owners;
 	out->available = !g.stop && g.unlocked && !g.invalid && g.library.scope[0] && g.library.path[0];
-	out->connected = out->available && g.connected;
+	out->connected = out->available && g.connected && g.report_connected;
 	out->writable = g.library.writable;
 	snprintf(out->scope, sizeof(out->scope), "%s", g.library.scope);
 	// Current and read-only legacy library paths have the same durable parent.
@@ -1528,7 +1582,7 @@ bool navidrome_report_current(const nd_report_context_t *c, bool network, bool l
 	pthread_mutex_lock(&lock);
 	bool ok = !g.stop && g.unlocked && !g.invalid && c->profile == g.profile_epoch &&
 		c->card == g.card_epoch && !strcmp(c->scope, g.library.scope) &&
-		(!network || (g.connected && c->connection == report_connection && !g.busy && !external_users && !sync_owners));
+		(!network || (g.connected && g.report_connected && c->connection == report_connection && !g.busy && !external_users && !sync_owners));
 	if (ok && lease) cache_users++;
 	pthread_mutex_unlock(&lock);
 	return ok;

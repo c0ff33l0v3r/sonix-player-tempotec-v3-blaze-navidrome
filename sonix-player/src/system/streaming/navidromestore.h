@@ -22,7 +22,7 @@ typedef struct {
 	bool ready, writable, syncing, loading;
 	bool corrupt;	// Cache format/read failure, independent of last-operation feedback.
 	bool favorites; // Independent favorites database/source; counts retain the four-kind ABI.
-	unsigned epoch, card_epoch, offer;
+	unsigned epoch, card_epoch;
 	int64_t generation, base;
 	time_t finished;
 	int counts[4], stage, fetched;

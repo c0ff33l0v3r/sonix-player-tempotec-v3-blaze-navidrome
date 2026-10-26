@@ -1,3 +1,4 @@
+#include "navidromepage.h"
 #include "navidromesettings.h"
 #include "navidromedownloadpage.h"
 #include "navidromealbum.h"
@@ -30,7 +31,7 @@ typedef enum { PASSPHRASE_CREATE, PASSPHRASE_UNLOCK, PASSPHRASE_CHANGE, PASSPHRA
 static form_t main_form, pass_form, settings_form;
 static lv_obj_t *encrypt_switch, *encrypt_row, *protection_note, *pass_return;
 static bool encrypt_selected;
-static lv_obj_t *debug_switch, *debug_note, *album_view_switch;
+static lv_obj_t *debug_switch, *debug_note, *album_view_switch, *auto_connect_switch;
 static gui_config_t *config;
 static lv_obj_t *save_button, *update_button, *reconnect_button, *unlock_button;
 static lv_obj_t *lock_button, *forget_button, *change_button, *pass_button;
@@ -41,7 +42,6 @@ static uint32_t cache_last_request;
 static unsigned cache_notice;
 static bool cache_was_clearing;
 static unsigned clear_card_epoch, clear_profile_epoch;
-static unsigned shown_offer;
 static pass_mode_t pass_mode;
 static unsigned loaded_revision;
 static struct {
@@ -53,7 +53,6 @@ static void actions(void);
 static void save_cb(lv_event_t *e);
 static void pass_accept_cb(lv_event_t *e);
 static void sync_actions(void);
-static void offer_sync(void);
 
 static void wipe_field(lv_obj_t *field) {
 	// LVGL owns this mutable storage (including pwd_tmp in password mode).
@@ -107,10 +106,14 @@ static void field_changed_cb(lv_event_t *e) {
 static lv_obj_t *action(form_t *f, const char *key, lv_event_cb_t cb) {
 	lv_obj_t *row = settingsrow_action(f->body, key, cb, NULL);
 	lv_obj_set_style_opa(row, LV_OPA_40, LV_STATE_DISABLED);
+	lv_obj_set_event_bubble(row, true);
 	return row;
 }
 
 static void enable(lv_obj_t *obj, bool enabled) {
+	// LVGL suppresses pointer events on disabled hit targets, including their
+	// bubbled navigation events. Let the enclosing row/body receive that press.
+	lv_obj_set_clickable(obj, enabled);
 	if (enabled)
 		lv_obj_remove_state(obj, LV_STATE_DISABLED);
 	else
@@ -126,6 +129,7 @@ static void make_field(form_t *f, int i, const char *key, bool secret, unsigned 
 	lv_obj_remove_style_all(row);
 	lv_obj_set_size(row, lv_pct(100), ui_px(88));
 	lv_obj_set_scrollable(row, false);
+	lv_obj_set_event_bubble(row, true);
 	lv_obj_t *label = lv_label_create(row);
 	lv_label_set_text(label, tr(key));
 	lv_obj_add_style(label, &theme_style_text_dim, 0);
@@ -134,6 +138,10 @@ static void make_field(form_t *f, int i, const char *key, bool secret, unsigned 
 	lv_obj_align(label, LV_ALIGN_TOP_LEFT, 0, 0);
 	lv_obj_t *field = f->fields[i] = lv_textarea_create(row);
 	lv_textarea_set_one_line(field, true);
+	// Cursor updates still scroll text programmatically. Touch drags belong
+	// to page scrolling/back navigation rather than the one-line text viewport.
+	lv_obj_set_scrollable(field, false);
+	lv_obj_set_event_bubble(field, true);
 	lv_textarea_set_max_length(field, max_chars);
 	lv_obj_set_size(field, lv_pct(100), ui_px(58));
 	lv_obj_align(field, LV_ALIGN_BOTTOM_LEFT, 0, 0);
@@ -156,6 +164,7 @@ static void make_field(form_t *f, int i, const char *key, bool secret, unsigned 
 		lv_obj_set_style_bg_opa(eye, LV_OPA_TRANSP, 0);
 		lv_obj_set_style_shadow_width(eye, 0, 0);
 		lv_obj_set_style_border_width(eye, 0, 0);
+		lv_obj_set_event_bubble(eye, true);
 		lv_obj_add_event_cb(eye, eye_cb, LV_EVENT_CLICKED, field);
 		lv_obj_t *icon = lv_image_create(eye);
 		lv_image_set_src(icon, &icon_eye);
@@ -166,6 +175,7 @@ static void make_field(form_t *f, int i, const char *key, bool secret, unsigned 
 
 static void form_init(form_t *f, const char *title) {
 	f->screen = lv_obj_create(NULL);
+	navidromepage_register(f->screen);
 	lv_obj_add_style(f->screen, &theme_style_screen, 0);
 	f->body = settingsrow_page(f->screen, config, title);
 	settingsrow_title_corner_slots(settingsrow_page_title(f->screen), config, 0);
@@ -219,6 +229,7 @@ static void actions(void) {
 	enable(encrypt_switch, !s.busy && !s.invalid);
 	lv_label_set_text(protection_note, tr(encrypted ? "nd_encryption_on_note" : "nd_encryption_off_note"));
 	lv_obj_set_state(album_view_switch, LV_STATE_CHECKED, navidromealbum_enabled());
+	lv_obj_set_state(auto_connect_switch, LV_STATE_CHECKED, config_get_bool("navidrome", "auto_connect", false));
 	nd_debug_state_t debug;
 	nd_debug_snapshot(&debug);
 	if (debug.enabled)
@@ -262,11 +273,6 @@ static void main_loaded_cb(lv_event_t *e) {
 
 static void main_unloaded_cb(lv_event_t *e) {
 	(void)e;
-	if (shown_offer) {
-		navidrome_sync_offer_consume(shown_offer);
-		shown_offer = 0;
-		confirm_close();
-	}
 	updating = true;
 	for (int i = 0; i < 3; i++)
 		wipe_field(main_form.fields[i]);
@@ -498,6 +504,7 @@ static void cache_card_build(void) {
 	lv_obj_set_style_pad_row(card, ui_px(12), 0);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_scrollable(card, false);
+	lv_obj_set_event_bubble(card, true);
 	lv_obj_t *name = lv_label_create(card);
 	lv_label_set_text(name, tr("nd_cache_size"));
 	lv_obj_add_style(name, &theme_style_text, 0);
@@ -509,6 +516,8 @@ static void cache_card_build(void) {
 		lv_obj_add_style(cache_values[i], &theme_style_text_dim, 0);
 		lv_obj_set_style_text_font(cache_values[i], &font_ui_20, 0);
 		cache_bars[i] = lv_bar_create(card);
+		lv_obj_set_clickable(cache_bars[i], false);
+		lv_obj_set_event_bubble(cache_bars[i], true);
 		lv_obj_set_width(cache_bars[i], lv_pct(100));
 		lv_obj_set_height(cache_bars[i], ui_px(10));
 		lv_bar_set_range(cache_bars[i], 0, 100);
@@ -557,7 +566,6 @@ void navidromesettings_refresh(void) {
 	}
 	if (lv_screen_active() == pass_form.screen && pass_waiting && s.busy)
 		lv_label_set_text(pass_form.status, tr(s.state == ND_CONNECTING ? "nd_connecting" : "nd_working"));
-	offer_sync();
 	cache_refresh();
 }
 
@@ -634,40 +642,6 @@ static void sync_cancel_cb(lv_event_t *e) {
 	}
 }
 
-static void sync_offer_answer(void *user) {
-	unsigned offer = (unsigned)(uintptr_t)user;
-	nd_library_t library;
-	navidrome_library_snapshot(&library);
-	shown_offer = 0;
-	if (library.offer != offer)
-		return;
-	navidrome_sync_offer_consume(offer);
-	sync_cb(NULL);
-}
-
-static void sync_offer_later(void *user) {
-	navidrome_sync_offer_consume((unsigned)(uintptr_t)user);
-	shown_offer = 0;
-}
-
-static void offer_sync(void) {
-	nd_library_t library;
-	navidrome_library_snapshot(&library);
-	if (shown_offer && shown_offer != library.offer) {
-		confirm_close();
-		shown_offer = 0;
-	}
-	if (!library.offer || shown_offer || lv_screen_active() != settings_form.screen || confirm_visible() || gui_modal_visible())
-		return;
-	navidrome_snapshot_t s;
-	navidrome_snapshot(&s);
-	if (s.busy)
-		return;
-	const char *reason = sync_reason(&s, &library);
-	shown_offer = library.offer;
-	confirm_show_choice("nd_sync_question", reason ? reason : "nd_sync_question_body", "nd_sync_now", "nd_sync_later", !reason, sync_offer_answer, sync_offer_later, (void *)(uintptr_t)shown_offer);
-}
-
 static void server_cb(lv_event_t *e) {
 	(void)e;
 	if (!gesture())
@@ -701,15 +675,6 @@ static void settings_loaded_cb(lv_event_t *e) {
 	actions();
 }
 
-static void settings_unloaded_cb(lv_event_t *e) {
-	(void)e;
-	if (shown_offer) {
-		navidrome_sync_offer_consume(shown_offer);
-		shown_offer = 0;
-		confirm_close();
-	}
-}
-
 static void debug_cb(lv_event_t *e) {
 	(void)e;
 	if (!gesture()) {
@@ -728,6 +693,15 @@ static void album_view_cb(lv_event_t *e) {
 	actions();
 }
 
+static void auto_connect_cb(lv_event_t *event) {
+	(void)event;
+	if (!gesture()) {
+		config_set_bool("navidrome", "auto_connect", lv_obj_has_state(auto_connect_switch, LV_STATE_CHECKED));
+		config_save();
+	}
+	actions();
+}
+
 static void downloads_cb(lv_event_t *e) { (void)e; if (!gesture()) navidromedownloadpage_open(); }
 
 void navidromesettings_init(gui_config_t *cfg) {
@@ -737,6 +711,13 @@ void navidromesettings_init(gui_config_t *cfg) {
 	form_init(&main_form, "nd_server");
 	settingsrow_add(settings_form.body, "nd_server", NULL, server_cb, NULL);
 	settingsrow_add(settings_form.body, "nd_dl_downloads", NULL, downloads_cb, NULL);
+	settingsrow_toggle(settings_form.body, "nd_auto_connect", &auto_connect_switch, auto_connect_cb);
+	lv_obj_t *auto_note = lv_label_create(settings_form.body);
+	lv_obj_set_width(auto_note, lv_pct(100));
+	lv_label_set_long_mode(auto_note, LV_LABEL_LONG_WRAP);
+	lv_obj_add_style(auto_note, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(auto_note, &font_ui_18, 0);
+	lv_label_set_text(auto_note, tr("nd_auto_connect_note"));
 	settingsrow_toggle(settings_form.body, "musicsettings_album_head", &album_view_switch, album_view_cb);
 	lv_obj_t *album_note = lv_label_create(settings_form.body);
 	lv_obj_set_width(album_note, lv_pct(100));
@@ -784,7 +765,6 @@ void navidromesettings_init(gui_config_t *cfg) {
 	lv_obj_add_event_cb(main_form.screen, main_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 	lv_obj_add_event_cb(main_form.screen, main_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
 	lv_obj_add_event_cb(settings_form.screen, settings_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
-	lv_obj_add_event_cb(settings_form.screen, settings_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
 	form_init(&pass_form, "nd_vault");
 	make_field(&pass_form, 0, "nd_current_passphrase", true, ND_SECRET_MAX - 1);
 	make_field(&pass_form, 1, "nd_new_passphrase", true, ND_SECRET_MAX - 1);

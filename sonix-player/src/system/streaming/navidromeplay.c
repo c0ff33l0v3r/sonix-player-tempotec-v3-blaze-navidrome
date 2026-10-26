@@ -82,7 +82,6 @@ static bool started, quitting, pending, running, waiting, desired_play = true, i
 static unsigned serial, album_intent;
 static bool turn_ready;
 static bool turn_wait_reader;
-static bool preparation_toast;
 static job_t next_job, addition_job;
 static bool addition_pending;
 static sqlite3 *addition_db; // Only sqlite3_interrupt() may touch this from another thread.
@@ -372,8 +371,6 @@ static void result_done(void *user) {
 			failed_reasons[slot] = r->error;
 		}
 		if (job->foreground) {
-			toast_busy_end();
-			preparation_toast = false;
 			pthread_mutex_lock(&lock);
 			waiting = false;
 			pthread_mutex_unlock(&lock);
@@ -393,8 +390,6 @@ static void result_done(void *user) {
 		protections();
 		goto done;
 	}
-	toast_busy_end();
-	preparation_toast = false;
 	if (job->initial) {
 		playlist_source_t source = {.user = s, .count = s->count, .path = source_path, .metadata = source_metadata, .close = source_close};
 		retain(s); s->queue_owners++;
@@ -941,10 +936,7 @@ static bool submit(source_t *s, int entry, bool initial, bool foreground, const 
 	pthread_mutex_unlock(&lock);
 	if (foreground && timer)
 		lv_timer_resume(timer);
-	if (foreground) {
-		toast_busy_dismissable("nd_audio_preparing");
-		preparation_toast = true;
-	}
+
 	return true;
 }
 bool navidromeplay_chain_boundary(bool forward, bool automatic) {
@@ -1193,10 +1185,7 @@ void navidromeplay_tick(void) {
 	if (!started)
 		return;
 	if (album_owner && (album_queue_identity != playlist_identity() || !playlist_has_source())) album_origin(NULL);
-	if (preparation_toast && !navidromeplay_preparing()) {
-		toast_busy_end();
-		preparation_toast = false;
-	}
+
 	pthread_mutex_lock(&lock);
 	result_t *result = fallback_result;
 	fallback_result = NULL;
@@ -1267,7 +1256,6 @@ void navidromeplay_tick(void) {
 		protections();
 		nd_audio_set_network_wanted(false);
 		player_refresh_now_playing();
-		toast_busy_end();
 		return;
 	}
 	if (!queue_source || busy) {
