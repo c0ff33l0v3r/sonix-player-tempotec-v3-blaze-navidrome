@@ -65,3 +65,6 @@ __attribute__((weak)) void config_set_bool(const char *section, const char *key,
     if (!strcmp(section, "navidrome") && !strcmp(key, "album_head")) fixture_album_layout = value;
 }
 __attribute__((weak)) bool config_save(void) { return true; }
+
+extern bool nd_audio_owns(const char *) __attribute__((weak));
+__attribute__((weak)) bool nd_audio_source(const char *path) { return (path && !strncmp(path, "ndq:", 4)) || (nd_audio_owns && nd_audio_owns(path)); }

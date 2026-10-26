@@ -11,6 +11,8 @@ const char *nd_audio_fetch(const nd_library_t *library, const nd_context_t *cont
 void nd_audio_cancel(void);
 void nd_audio_protect(const char *const paths[3]);
 bool nd_audio_owns(const char *path);
+// Includes represented ndq: selections as well as disposable audio files.
+bool nd_audio_source(const char *path);
 bool nd_audio_network_wanted(void);
 void nd_audio_set_network_wanted(bool wanted);
 bool nd_audio_failed(const char *path);

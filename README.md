@@ -149,6 +149,29 @@ Tracks list, starting at the selected entry. Next/Previous, repeat, shuffle, and
 queue edits use the existing Music behavior. Browsing away or refreshing the
 library preserves the captured queue. Queues containing Navidrome entries are
 session-only and are not restored after restart.
+Long-press tracks or albums for Music-style selection, then use **Add to queue**;
+row menus also add one exact track or the whole album. Additions honor Music's
+**Play next / Add at end** preference and can mix with local Music. Adding to an
+empty queue leaves it stopped. Shuffle shows the actual queued titles and
+covers; turning it off restores sequential order. Accent lines mark the selected
+track or album, including when paused or waiting for an unavailable track.
+
+Skipping while offline selects the intended next track. A cached track plays;
+an uncached track remains visible, stopped, with a reconnect message. Another
+skip advances from that selection. Reconnect never starts it automatically;
+press Play to retry. **Play albums back to back** continues an album queue through
+the full Albums order, wrapping at the end; queued additions play first. Natural
+Repeat one stays on the current track. All Tracks keeps its complete track queue.
+**Open player on tap** controls whether a successful track tap opens Now Playing.
+
+Now Playing's Settings hide local library scans, Library, folder chaining,
+track/boot restoration, the local random-entry shuffle preference and the
+unavailable Alternative player layout for Navidrome. Global Music settings keep
+those controls and their saved values. Shared PCM EQ/PEQ/MSEB, soundfield,
+crossfeed, mono/balance, ReplayGain, fades and output settings use the normal audio
+path. Native DSD/DoP retain their existing processing bypasses. Gapless still
+requires a ready next file and compatible format/output timing; prefetch does
+not guarantee a seamless transition. Last.fm behavior is unchanged.
 
 Settings → Power → **Battery usage** lists Navidrome listening time and estimated
 battery use over its 24-hour history, including streaming and cached/offline
@@ -176,6 +199,12 @@ by Encrypt Credentials. Existing metadata, artwork, and audio caches move
 into `.local/navidrome/.cache/` when the card is writable. Read-only legacy cards
 remain usable until they can migrate. Credentials and diagnostic logs retain
 their existing locations.
+Navidrome Settings shows separate **Audio / 1 GiB** and **Artwork / 32 MiB** cache
+bars plus their combined size in MiB. **Clear cache** confirms, stops Navidrome playback,
+then drains cache work and removes audio/artwork (including owned temporary files)
+without reconnecting. The queue stays stopped and retains its track information.
+Library/Favorites metadata, playlists, credentials, logs and permanent downloads
+are preserved. Partial deletion failures show the remaining usage.
 
 Navidrome settings → **Alternative album view** is on by default and is
 independent of Music's setting. Albums open with a large cover, cover-derived
@@ -262,7 +291,8 @@ Browsing, playback and captured queues remain independent. Artist state is saved
 without adding an Artists category. Disposable Favorites data lives in
 `.local/navidrome/.cache/favorites.db` alongside other caches.
 
-Show album opens the exact Navidrome album. Show artist is unavailable when the
+Show album opens the exact Navidrome album. Show artist opens that primary
+artist's local Albums page by ID, including offline; it is unavailable when the
 snapshot has no authoritative primary artist ID. Lyrics integration and
 listening reports remain deferred.
 

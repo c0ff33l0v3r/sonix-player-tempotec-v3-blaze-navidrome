@@ -1,3 +1,4 @@
+#include "navidromecache.h"
 #include "navidromeaudio.h"
 #include "navidromelibrary.h"
 #include "src/system/core/md5.h"
@@ -18,7 +19,7 @@
 #include <unistd.h>
 #include <utime.h>
 
-#define AUDIO_BUDGET (1024LL * 1024 * 1024)
+#define AUDIO_BUDGET ND_AUDIO_BUDGET
 #define AUDIO_RESERVE (16 * 1024 * 1024)
 #define AUDIO_CHUNK (64 * 1024)
 typedef struct {
@@ -50,6 +51,8 @@ bool nd_audio_failed(const char *path) {
 	return failed;
 }
 bool nd_audio_owns(const char *path) { return path && (strstr(path, "/" ND_CACHE_RELATIVE "/audio/") || strstr(path, "/.local/navidrome/audio/")); }
+// Recognize represented selections independently of a decoder cache filename.
+bool nd_audio_source(const char *path) { return nd_audio_owns(path) || (path && !strncmp(path, "ndq:", 4)); }
 bool nd_audio_network_wanted(void) {
 	pthread_mutex_lock(&lock);
 	bool wanted = network_wanted;
@@ -299,7 +302,7 @@ bool nd_audio_cached(const nd_library_t *lib, const nd_context_t *ctx, const cha
 	return hit;
 }
 
-const char *nd_audio_fetch(const nd_library_t *lib, const nd_context_t *ctx, const nd_playrow_t *track, bool progressive_start, nd_audio_current_cb current, nd_audio_ready_cb ready, void *user) {
+static const char *fetch_audio(const nd_library_t *lib, const nd_context_t *ctx, const nd_playrow_t *track, bool progressive_start, nd_audio_current_cb current, nd_audio_ready_cb ready, void *user) {
 	pthread_once(&once, register_cache);
 	if (!registered)
 		return "nd_worker_error";
@@ -553,5 +556,27 @@ const char *nd_audio_fetch(const nd_library_t *lib, const nd_context_t *ctx, con
 	if (error && (!strcmp(error, "nd_network_error") || !strcmp(error, "nd_auth_error")))
 		navidrome_network_failed(ctx);
 	streamturn_release();
+	return error;
+}
+
+typedef struct {
+	unsigned epoch;
+	nd_audio_current_cb current;
+	nd_audio_ready_cb ready;
+	void *user;
+} cache_transfer_t;
+static bool transfer_current(void *data) {
+	cache_transfer_t *t = data;
+	return nd_cache_io_current(t->epoch) && t->current(t->user);
+}
+static void transfer_ready(const char *path, void *data) {
+	cache_transfer_t *t = data;
+	if (transfer_current(t)) t->ready(path, t->user);
+}
+const char *nd_audio_fetch(const nd_library_t *lib, const nd_context_t *ctx, const nd_playrow_t *track, bool progressive_start, nd_audio_current_cb current, nd_audio_ready_cb ready, void *user) {
+	cache_transfer_t t = {.epoch = nd_cache_epoch(), .current = current, .ready = ready, .user = user};
+	if (!nd_cache_io_begin(t.epoch)) return "nd_audio_cancelled";
+	const char *error = fetch_audio(lib, ctx, track, progressive_start, transfer_current, transfer_ready, &t);
+	nd_cache_io_end();
 	return error;
 }

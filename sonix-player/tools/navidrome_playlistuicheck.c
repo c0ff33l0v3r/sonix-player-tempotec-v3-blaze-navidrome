@@ -160,6 +160,31 @@ static int remote_index(const char *id) {
 	assert(!"remote catalogue ID missing");
 	return -1;
 }
+static void repeated_playlist_marks(const nd_library_t *lib) {
+	char path[1200];
+	nd_playlist_store_t store;
+	assert(nd_pl_path(lib, path) && nd_pl_open(&store, path, lib->scope, true));
+	int64_t id;
+	assert(nd_pl_create(&store, "Repeated", &id) && nd_pl_begin(&store, id, 1));
+	int added = 0, skipped = 0;
+	for (int i = 0; i < 40; i++) {
+		nd_row_t row = {.title = "Repeated title"};
+		snprintf(row.id, sizeof(row.id), "song-%05d", i % 2);
+		assert(nd_pl_append(&store, id, &row, false, &added, &skipped));
+	}
+	nd_playlist_t p;
+	assert(nd_pl_finish(&store, id, true) && nd_pl_sql(&store, "COMMIT") && nd_pl_get(&store, id, &p));
+	nd_pl_close(&store);
+	pl_open_detail(&p); pl_wait(1);
+	marker_library=*lib; snprintf(selected_track,sizeof(selected_track),"song-00000");
+	navidromeplaylists_refresh();
+	for(int row=0;row<pl_pages[1].count;row++) assert(lv_obj_is_hidden(pl_pages[1].playmarks[row])==!!strcmp(pl_pages[1].entries[row].track.id,selected_track));
+	selected_track[0]=0; navidromeplaylists_refresh();
+	for(int row=0;row<pl_pages[1].count;row++) assert(lv_obj_is_hidden(pl_pages[1].playmarks[row]));
+	navidromeplaylists_open(); pl_wait(0);
+	puts("playlist LVGL repeated exact-ID markers and clearing: passed");
+}
+
 int main(int argc, char **argv) {
 	ui_panel_width = argc > 1 ? atoi(argv[1]) : 320;
 	assert(ui_panel_width == 320 || ui_panel_width == 480);
@@ -188,7 +213,7 @@ int main(int argc, char **argv) {
 	lv_style_set_image_recolor_opa(&theme_style_icon, LV_OPA_COVER);
 	navidrome_screen = lv_obj_create(NULL);
 	gui_config_t cfg = {.screen_width = (unsigned)ui_panel_width, .screen_height = (unsigned)panel_height, .padding = 8, .top_bar_height = 20};
-	navidromealbum_set_enabled(false); // Retained thumbnail-layout coverage.
+	navidromealbum_set_enabled(false); // This fixture checks the retained thumbnail layout.
 	navidromebrowse_init(&cfg);
 	navidromeplaylists_init(&cfg);
 	int requests = atomic_load(&calls);
@@ -634,6 +659,9 @@ int main(int argc, char **argv) {
 	pl_wait(0);
 	assert(pl_pages[0].total == 1);
 	assert(chmod(dir, 0700) == 0);
+	navidrome_set_root(dir);
+	library_wait(&lib);
+	repeated_playlist_marks(&lib);
 	navidrome_lock();
 	navidromeplaylists_refresh();
 	assert(lv_screen_active() == navidrome_screen);

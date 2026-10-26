@@ -334,9 +334,10 @@ void navidromealbum_row(nd_album_view_t *v, lv_obj_t *row, lv_obj_t *name, lv_ob
 	lv_obj_set_clickable(row, !heading);
 	lv_obj_set_height(row, heading ? ui_px(44) : ui_px(100));
 	lv_obj_set_style_bg_opa(row, heading ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
-	lv_obj_set_x(name, ui_px(v->active ? 48 : 86));
-	lv_obj_set_x(detail, ui_px(v->active ? 48 : 86));
-	lv_obj_set_width(name, (int)v->cfg->screen_width - 2 * (int)v->cfg->padding - ui_px(v->active ? 130 : 168));
+	// Match Music's centered 44-pixel number column plus 14-pixel text gap.
+	lv_obj_set_x(name, ui_px(v->active ? 58 : 86));
+	lv_obj_set_x(detail, ui_px(v->active ? 58 : 86));
+	lv_obj_set_width(name, (int)v->cfg->screen_width - 2 * (int)v->cfg->padding - ui_px(v->active ? 140 : 168));
 	lv_obj_set_width(detail, lv_obj_get_width(name));
 	lv_obj_set_hidden(detail, heading);
 	if (heading) {

@@ -22,6 +22,19 @@ typedef struct {
 } fixture_complete_t;
 static atomic_bool connected = true, cancelled_test;
 static atomic_int leases, lease_calls;
+// This standalone fixture supplies the service boundary, including the cache
+// lifetime gate introduced by cache maintenance. Clear-cache policy is covered
+// by its own fixture; these counters verify balanced transfer I/O ownership.
+static atomic_uint fixture_cache_io;
+unsigned nd_cache_epoch(void) { return 1; }
+bool nd_cache_io_current(unsigned epoch) { return epoch == 1 && !cancelled_test; }
+bool nd_cache_io_begin(unsigned epoch) {
+    if (!nd_cache_io_current(epoch)) return false;
+    atomic_fetch_add(&fixture_cache_io,1);
+    return true;
+}
+void nd_cache_io_end(void) { assert(atomic_fetch_sub(&fixture_cache_io,1)>0); }
+
 static int deliveries;
 static bool reject_publish;
 static long delivered_bytes;
@@ -204,6 +217,7 @@ int main(int argc, char **argv) {
 		assert(job.error && !strcmp(job.error, "nd_audio_cancelled") && !leases && !deliveries);
 		no_card_descriptors(argv[2]);
 		puts("blocked network holds no card descriptor or lease; invalidation wakes and drains writer: passed");
+		assert(!atomic_load(&fixture_cache_io));
 		return 0;
 	}
 	reject_publish = !strcmp(argv[3], "publish");
@@ -247,6 +261,7 @@ int main(int argc, char **argv) {
 		error = nd_audio_fetch(&lib, &ctx, &track, true, current, ready, argv[3]);
 		assert(error && !strcmp(error, "nd_audio_invalid") && deliveries == 2 && !leases);
 	}
+	assert(!atomic_load(&fixture_cache_io));
 	puts("production audio cache/decoder fixture passed");
 	return 0;
 }

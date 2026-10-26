@@ -38,9 +38,36 @@
 #include "src/system/core/lang.h"
 #include "src/system/library/library.h"
 #include "src/system/library/metadata.h"
+#include "src/system/streaming/navidromeplay.h"
 #include "src/gui/shell/uiscale.h"
 
 lv_obj_t *musicsettings_screen;
+
+static bool player_context;
+static lv_obj_t *local_settings[24];
+static int local_setting_count;
+static lv_obj_t *local_setting(lv_obj_t *object) {
+	if (local_setting_count < (int)(sizeof(local_settings) / sizeof(*local_settings)))
+		local_settings[local_setting_count++] = object;
+	return object;
+}
+static void context_refresh(lv_event_t *event) {
+	(void)event;
+	device_state_t state;
+	device_state_get(&state);
+	bool hide = player_context && nd_audio_source(state.current_file);
+	for (int i = 0; i < local_setting_count; i++)
+		lv_obj_set_hidden(local_settings[i], hide);
+}
+void musicsettings_open(bool from_player) {
+	player_context = from_player;
+	context_refresh(NULL);
+	switch_screen(musicsettings_screen);
+}
+void musicsettings_open_global_cb(lv_event_t *event) {
+	(void)event;
+	musicsettings_open(false);
+}
 
 // ---------------------------------------------------------------------------
 // Filters: the CS43198's four digital filters, the same set the stock player
@@ -1839,7 +1866,7 @@ static void build_nowplaying_page(gui_config_t *cfg) {
 	layout_standard_pill =
 		settingsrow_pill(layout_pills, "musicsettings_layout_standard", PLAYER_LAYOUT_STANDARD, layout_pick_cb);
 	layout_alternative_pill =
-		settingsrow_pill(layout_pills, "musicsettings_layout_alternative", PLAYER_LAYOUT_ALTERNATIVE, layout_pick_cb);
+		local_setting(settingsrow_pill(layout_pills, "musicsettings_layout_alternative", PLAYER_LAYOUT_ALTERNATIVE, layout_pick_cb));
 	layout_studio_pill =
 		settingsrow_pill(layout_pills, "musicsettings_layout_studio", PLAYER_LAYOUT_STUDIO, layout_pick_cb);
 
@@ -1851,7 +1878,7 @@ static void build_nowplaying_page(gui_config_t *cfg) {
 	// takes its colour from, the tags in the pill -- so a radio station, a
 	// stream from a phone and an audiobook all get the standard one whatever
 	// this says. Studio asks for less and takes all of them.
-	option_note(container, "musicsettings_local_only_note");
+	local_setting(option_note(container, "musicsettings_local_only_note"));
 
 	// The sleeve's colour as the accent of the other two arrangements too.
 	settingsrow_toggle(container, "musicsettings_cover_accent", &cover_accent_switch, cover_accent_cb);
@@ -1871,9 +1898,9 @@ static void build_nowplaying_page(gui_config_t *cfg) {
 
 	// Whether a start with a remembered track lands on the now-playing page
 	// rather than on the home screen. Read once, at startup (main.c).
-	settingsrow_toggle(container, "musicsettings_nowplaying_at_boot", &nowplaying_at_boot_switch,
-					   nowplaying_at_boot_cb);
-	option_note(container, "musicsettings_nowplaying_at_boot_note");
+	local_setting(settingsrow_toggle(container, "musicsettings_nowplaying_at_boot", &nowplaying_at_boot_switch,
+					   nowplaying_at_boot_cb));
+	local_setting(option_note(container, "musicsettings_nowplaying_at_boot_note"));
 	if (config_get_bool("music", "nowplaying_at_boot", false)) {
 		lv_obj_add_state(nowplaying_at_boot_switch, LV_STATE_CHECKED);
 	}
@@ -2008,8 +2035,8 @@ static void build_playback_page(gui_config_t *cfg) {
 	// on the player still reaches both by hand; this only decides what that one
 	// action means. Off by default, so the action stays the plain shuffle: once
 	// through the list and stop.
-	settingsrow_toggle(container, "musicsettings_continuous_shuffle", &endless_shuffle_switch, endless_shuffle_cb);
-	option_note(container, "musicsettings_shuffle_note");
+	local_setting(settingsrow_toggle(container, "musicsettings_continuous_shuffle", &endless_shuffle_switch, endless_shuffle_cb));
+	local_setting(option_note(container, "musicsettings_shuffle_note"));
 	if (musicsettings_endless_shuffle()) {
 		lv_obj_add_state(endless_shuffle_switch, LV_STATE_CHECKED);
 	}
@@ -2037,14 +2064,14 @@ static void build_playback_page(gui_config_t *cfg) {
 
 	// The same for a folder started from the browser. The order it walks in is
 	// worth spelling out, because it is chosen and not obvious.
-	settingsrow_toggle(container, "musicsettings_play_by_folder", &folder_chain_switch, folder_chain_cb);
-	option_note(container, "musicsettings_folder_chaining_note");
+	local_setting(settingsrow_toggle(container, "musicsettings_play_by_folder", &folder_chain_switch, folder_chain_cb));
+	local_setting(option_note(container, "musicsettings_folder_chaining_note"));
 	if (device_state_folder_chaining()) {
 		lv_obj_add_state(folder_chain_switch, LV_STATE_CHECKED);
 	}
 
 	// What survives the power switch: the loaded track and the volume level.
-	settingsrow_toggle(container, "musicsettings_remember_track", &remember_track_switch, remember_track_cb);
+	local_setting(settingsrow_toggle(container, "musicsettings_remember_track", &remember_track_switch, remember_track_cb));
 	if (config_get_int("player", "remember_track", 0)) {
 		lv_obj_add_state(remember_track_switch, LV_STATE_CHECKED);
 	}
@@ -2061,6 +2088,13 @@ static void musicsettings_loaded_cb(lv_event_t *e) {
 	rg_refresh();
 }
 
+static void context_tick(lv_timer_t *timer) {
+	(void)timer;
+	lv_obj_t *active = lv_screen_active();
+	if (player_context && (active == musicsettings_screen || active == nowplaying_screen || active == playback_screen))
+		context_refresh(NULL);
+}
+
 void musicsettings_init(gui_config_t *cfg) {
 	lv_obj_t *container = settingsrow_page(musicsettings_screen, cfg, "music");
 
@@ -2070,13 +2104,13 @@ void musicsettings_init(gui_config_t *cfg) {
 	// widest tool to the narrowest, and the DAC's own switches at the end.
 	artistexceptions_init(cfg, organize_touched);
 	build_scan_page(cfg);
-	settingsrow_add(container, "musicsettings_scan_options", NULL, switch_screen_cb, scan_screen);
+	local_setting(settingsrow_add(container, "musicsettings_scan_options", NULL, switch_screen_cb, scan_screen));
 
 	build_playback_page(cfg);
 	settingsrow_add(container, "musicsettings_playback_options", NULL, switch_screen_cb, playback_screen);
 
 	build_library_page(cfg);
-	settingsrow_add(container, "musicsettings_library", NULL, switch_screen_cb, library_screen);
+	local_setting(settingsrow_add(container, "musicsettings_library", NULL, switch_screen_cb, library_screen));
 
 	build_nowplaying_page(cfg);
 	settingsrow_add(container, "musicsettings_now_playing", NULL, switch_screen_cb, nowplaying_screen);
@@ -2182,6 +2216,14 @@ void musicsettings_init(gui_config_t *cfg) {
 	theme_register_refresh(rg_refresh);
 	theme_register_refresh(dsd_gain_refresh);
 	lv_obj_add_event_cb(musicsettings_screen, musicsettings_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+
+	lv_obj_add_event_cb(musicsettings_screen, context_refresh, LV_EVENT_SCREEN_LOAD_START, NULL);
+	lv_obj_add_event_cb(musicsettings_screen, context_refresh, LV_EVENT_REFRESH, NULL);
+	lv_obj_add_event_cb(nowplaying_screen, context_refresh, LV_EVENT_SCREEN_LOAD_START, NULL);
+	lv_obj_add_event_cb(nowplaying_screen, context_refresh, LV_EVENT_REFRESH, NULL);
+	lv_obj_add_event_cb(playback_screen, context_refresh, LV_EVENT_SCREEN_LOAD_START, NULL);
+	lv_obj_add_event_cb(playback_screen, context_refresh, LV_EVENT_REFRESH, NULL);
+	lv_timer_create(context_tick, 250, NULL);
 
 	// What was chosen last time becomes effective at boot. audio_init has
 	// already written a volume by this point, so the gain is re-applied here to

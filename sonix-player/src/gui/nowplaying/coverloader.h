@@ -27,7 +27,8 @@
 // takes 90; the podcasts on the card take 91..102 for their twelve rows, 103
 // for the cover at the head of one of them and 104..107 for the episodes being
 // listened to -- so the pools never trample each other's requests.
-#define COVERLOADER_SLOTS 108
+#define COVERLOADER_QUEUE_BASE 108
+#define COVERLOADER_SLOTS 120
 #define COVERLOADER_SEARCH_BASE 36
 #define COVERLOADER_SEARCH_COUNT 24
 #define COVERLOADER_AUDIOBOOKS_BASE 60

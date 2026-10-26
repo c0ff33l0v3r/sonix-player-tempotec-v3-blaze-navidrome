@@ -34,7 +34,7 @@ typedef struct {
 	sqlite3_stmt *insert, *relationship, *genre;
 	sqlite3_stmt *favorite_album, *favorite_seen, *favorite_member, *favorite_song;
 	sqlite3_stmt *local_insert, *local_artist, *annotation;
-	bool favorites, local;
+	bool favorites, local, navigation;
 	int64_t view;
 	char scope[33], path[1024]; // Exact published source path, including relative roots.
 	int64_t generation;
@@ -70,6 +70,10 @@ bool nd_store_album_window(nd_store_t *store, int64_t generation, const nd_query
 						   int *count, int *total, nd_album_window_t *layout);
 // Worker-only compact queue index and bounded individual row resolution.
 bool nd_store_play_index(nd_store_t *store, int64_t generation, const nd_query_t *query, const char *selected, int64_t **handles, int *count, int *start);
+bool nd_store_album_beside(nd_store_t *store, int64_t generation, const char *id, bool forward, char next[ND_ID_MAX]);
+// Worker-owned TEMP staging; each add deduplicates handles within this batch.
+bool nd_store_queue_add(nd_store_t *store, int64_t generation, nd_kind_t kind, const char *id);
+bool nd_store_queue_finish(nd_store_t *store, int64_t **handles, int *count);
 bool nd_store_play_row(nd_store_t *store, int64_t generation, int64_t handle, nd_playrow_t *out);
 
 // Incremental Favorites transactions. Caller owns the lease/commit barrier.

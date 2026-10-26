@@ -463,6 +463,7 @@ COLOR_ICONS = [
     ("qobuz-badge.png", "qobuz_badge", 52),
     ("tidal-badge.png", "tidal_badge", 52),
     ("podcast-badge.png", "podcast_badge", 52),
+    ("navidrome.png", "navidrome_badge", 52),
 ]
 
 

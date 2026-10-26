@@ -151,7 +151,7 @@ static bool remember_enabled(void) { return config_get_int("player", "remember_t
 
 // A track this player must not offer to come back to: a live stream has no
 // position, and a streaming cache file will not exist at the next boot.
-static bool remember_worth_saving(const device_state_t *state) { return !playlist_has_source() && !nd_audio_owns(state->current_file) && !state->live && state->current_file[0] && !qobuzcache_owns(state->current_file) && !tidalcache_owns(state->current_file); }
+static bool remember_worth_saving(const device_state_t *state) { return !playlist_has_source() && !nd_audio_source(state->current_file) && !state->live && state->current_file[0] && !qobuzcache_owns(state->current_file) && !tidalcache_owns(state->current_file); }
 
 void device_state_remember_restored(const char *path, double position) {
 	snprintf(remember.file, sizeof(remember.file), "%s", path ? path : "");
@@ -273,7 +273,7 @@ void device_state_get(device_state_t *out) {
 		out->status = audio_get_status();
 		audio_get_current_file(out->current_file, sizeof(out->current_file));
 		audio_get_progress(&out->progress_current_secs, &out->progress_total_secs);
-		if (nd_audio_owns(out->current_file) && out->progress_total_secs <= 0)
+		if (nd_audio_source(out->current_file) && out->progress_total_secs <= 0)
 			out->progress_total_secs = prepared_duration;
 
 		// While a skip button is held the position shown is the one the thumb
@@ -296,6 +296,13 @@ void device_state_get(device_state_t *out) {
 		}
 
 		out->metadata = current_metadata;
+		if (navidromeplay_reference(current_metadata_file)) {
+			snprintf(out->current_file, sizeof(out->current_file), "%s", current_metadata_file);
+			out->status = AUDIO_STATUS_STOPPED;
+			out->progress_current_secs = 0;
+			out->progress_total_secs = prepared_duration;
+			out->stream_sample_rate = out->stream_channels = 0;
+		}
 	}
 
 	char *battery = read_battery_percent();
@@ -550,7 +557,7 @@ static prefetch_slot_t *prefetch_find(const char *path) {
 
 // Files that are still being written (a streaming cache) or that are not
 // files at all must never be read ahead of time.
-static bool prefetch_allowed(const char *path) { return path[0] == '/' && !nd_audio_owns(path) && !qobuzcache_owns(path) && !tidalcache_owns(path) && !podcastcache_is_episode(path); }
+static bool prefetch_allowed(const char *path) { return path[0] == '/' && !nd_audio_source(path) && !qobuzcache_owns(path) && !tidalcache_owns(path) && !podcastcache_is_episode(path); }
 
 static void *prefetch_thread(void *arg) {
 	(void)arg;
@@ -733,7 +740,7 @@ static void queue_save_query_form(const library_index_spec_t *spec) {
 }
 
 static void queue_persist(void) {
-	if (playlist_has_source() || nd_audio_owns(current_metadata_file))
+	if (playlist_has_source() || nd_audio_source(current_metadata_file))
 		return;
 	int count = playlist_count();
 	int current = playlist_current_index();
@@ -905,7 +912,7 @@ static void history_leave_for(const char *next, double position) {
 // pressed.
 static void note_started(bool restored) {
 	snprintf(started_file, sizeof(started_file), "%s", current_metadata_file);
-	bool kept_out = playlist_has_source() || nd_audio_owns(current_metadata_file) || audiobook_is_playing() || podcastcache_is_episode(current_metadata_file) || dlna_owns_path(current_metadata_file);
+	bool kept_out = playlist_has_source() || nd_audio_source(current_metadata_file) || audiobook_is_playing() || podcastcache_is_episode(current_metadata_file) || dlna_owns_path(current_metadata_file);
 	playhistory_started(current_metadata_file, current_metadata.title, metadata_shown_artist(&current_metadata), kept_out, restored);
 }
 
@@ -1028,6 +1035,18 @@ void device_state_play_prepared(const char *path, const song_metadata_t *meta, b
 	load_and_play(path);
 	prepared_metadata = NULL;
 	prepared_paused = false;
+}
+
+void device_state_represent_source(const char *reference, const song_metadata_t *meta, double duration) {
+	if (!navidromeplay_reference(reference))
+		return;
+	if (strcmp(reference, current_metadata_file)) {
+		audio_stop();
+		scrub_cancel();
+	}
+	snprintf(current_metadata_file, sizeof(current_metadata_file), "%s", reference);
+	current_metadata = meta ? *meta : (song_metadata_t){0};
+	prepared_duration = duration;
 }
 
 void device_state_clear_prepared(void) {
@@ -1704,9 +1723,9 @@ static bool play_folder_beside(const char *file, bool forward) {
 // callers differ. A track running out has to ignore repeat-one, which is an
 // instruction to stay put; a key pressed on purpose is not the end of a queue
 // and does not.
-static bool chain_beside(bool forward) {
+static bool chain_beside(bool forward, bool automatic) {
 	if (playlist_has_source())
-		return false;
+		return navidromeplay_chain_boundary(forward, automatic);
 	const char *album = playlist_album();
 	if (album && album[0] && device_state_album_chaining()) {
 		char held[256];
@@ -1766,7 +1785,7 @@ bool device_state_advance_auto(char *out_path, size_t out_size) {
 	// the album would play through and start again -- exactly what the option is
 	// meant to stop. Repeat-one still wins here: it is an explicit instruction
 	// to stay on this track, not a queue that reached its end.
-	if (playlist_at_end() && playlist_get_mode() != PLAYBACK_MODE_REPEAT_ONE && chain_beside(true)) {
+	if (playlist_at_end() && playlist_get_mode() != PLAYBACK_MODE_REPEAT_ONE && chain_beside(true, true)) {
 		if (out_path && out_size > 0) {
 			playlist_current_path(out_path, out_size);
 		}
@@ -1779,8 +1798,10 @@ bool device_state_advance_auto(char *out_path, size_t out_size) {
 		playhistory_left();
 		return false;
 	}
-	if (!navidromeplay_auto(path))
+	if (!navidromeplay_auto(path)) {
+		navidromeplay_failed_selection(path);
 		return false;
+	}
 
 	load_and_play(path);
 
@@ -1881,7 +1902,7 @@ bool device_state_next(char *out_path, size_t out_size) {
 	// last track of a record went round to its first instead of moving on to
 	// the record after, which is the opposite of what "play albums back to
 	// back" says.
-	if (playlist_at_end() && chain_beside(true)) {
+	if (playlist_at_end() && chain_beside(true, false)) {
 		if (out_path && out_size > 0) {
 			playlist_current_path(out_path, out_size);
 		}
@@ -1910,7 +1931,7 @@ bool device_state_prev(char *out_path, size_t out_size) {
 	// And the mirror of it: from the first track of a record, back is the END
 	// of the record before, not the end of this one. Nothing automatic ever
 	// goes this way, so this direction exists only for the key.
-	if (playlist_current_index() <= 0 && chain_beside(false)) {
+	if (playlist_current_index() <= 0 && chain_beside(false, false)) {
 		if (out_path && out_size > 0) {
 			playlist_current_path(out_path, out_size);
 		}
@@ -1962,6 +1983,10 @@ audio_status_t device_state_toggle_play_pause(void) {
 		return AUDIO_STATUS_PLAYING;
 	}
 
+	if (navidromeplay_reference(current_metadata_file)) {
+		navidromeplay_prepare(current_metadata_file);
+		return AUDIO_STATUS_PLAYING;
+	}
 	switch (audio_get_status()) {
 	case AUDIO_STATUS_PLAYING:
 		audio_pause();
@@ -1982,7 +2007,7 @@ audio_status_t device_state_toggle_play_pause(void) {
 		return AUDIO_STATUS_PLAYING;
 	case AUDIO_STATUS_STOPPED:
 	default:
-		if (nd_audio_owns(current_metadata_file) && playlist_has_source()) {
+		if (nd_audio_source(current_metadata_file) && playlist_has_source()) {
 			char reference[80];
 			if (playlist_current_path(reference, sizeof(reference)) && navidromeplay_reference(reference)) {
 				navidromeplay_prepare(reference);

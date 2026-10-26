@@ -14,7 +14,7 @@ extern const lv_font_t lv_font_unscii_8;
 lv_style_t theme_style_icon;
 static const uint8_t fixture_pixel[4] = {255, 255, 255, 255};
 #define FIXTURE_ICON {.header = {.magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_ARGB8888, .w = 1, .h = 1, .stride = 4}, .data = fixture_pixel, .data_size = 4}
-const lv_image_dsc_t icon_album_big = FIXTURE_ICON, icon_shuffle = FIXTURE_ICON, icon_list_queue = FIXTURE_ICON, icon_star_plus = FIXTURE_ICON, icon_close = FIXTURE_ICON, icon_list_plus = FIXTURE_ICON, icon_ellipsis_vertical = FIXTURE_ICON, icon_check = FIXTURE_ICON;
+const lv_image_dsc_t icon_download = FIXTURE_ICON, icon_album_big = FIXTURE_ICON, icon_shuffle = FIXTURE_ICON, icon_list_queue = FIXTURE_ICON, icon_star_plus = FIXTURE_ICON, icon_close = FIXTURE_ICON, icon_list_plus = FIXTURE_ICON, icon_ellipsis_vertical = FIXTURE_ICON, icon_check = FIXTURE_ICON;
 #ifndef NAVIDROME_PLAYLIST_UI
 void navidromeplaylists_pick_source(int64_t session, int64_t generation, lv_obj_t *origin, bool favorites) {
 	(void)favorites;
@@ -57,10 +57,15 @@ lv_obj_t *navidromefavorites_page(void) { return navidrome_screen; }
 static bool dragging;
 #ifndef NAVIDROME_COORDINATOR_TEST
 static unsigned playback_selections;
-static char selected_track[ND_ID_MAX];
+static char selected_track[ND_ID_MAX], selected_album[ND_ID_MAX], queued_track[ND_ID_MAX];
+static nd_library_t marker_library;
+static unsigned fixture_queue_adds;
+static int64_t queued_session;
 bool navidromeplay_select(const nd_library_t *library, const nd_query_t *query, const char *id, void *origin) {
 	assert(library->ready && query->kind == ND_TRACKS && origin == lv_screen_active());
 	snprintf(selected_track, sizeof(selected_track), "%s", id);
+	marker_library = *library;
+	snprintf(selected_album,sizeof(selected_album),"%s", query->filter_kind==ND_ALBUMS?query->filter:"");
 	playback_selections++;
 	return true;
 }
@@ -69,6 +74,20 @@ bool navidromeplay_select(const nd_library_t *library, const nd_query_t *query, 
 bool navidromeplay_album(const nd_library_t *library, const nd_query_t *query, int action, void *origin) {
 	(void)library; (void)query; (void)action; (void)origin; return true;
 }
+bool navidromeplay_enqueuing(void) { return false; }
+bool navidromeplay_enqueue(const nd_library_t *library, nd_kind_t kind, const char *id, int64_t session) {
+    assert(library->ready && (kind==ND_TRACKS || kind==ND_ALBUMS));
+    fixture_queue_adds++; queued_session=session;
+    snprintf(queued_track,sizeof(queued_track),"%s",id?id:"");
+    return true;
+}
+bool navidromeplay_matches(const nd_library_t *library, nd_kind_t kind, const char *id) {
+    return library->card_epoch==marker_library.card_epoch && !strcmp(library->scope,marker_library.scope) &&
+        !strcmp(id,kind==ND_TRACKS?selected_track:kind==ND_ALBUMS?selected_album:"");
+}
+#endif
+#ifndef NAVIDROME_DOWNLOAD_UI
+
 #endif
 void back_btn_tint_on_screen(lv_obj_t *screen, bool on, lv_color_t color) { (void)screen; (void)on; (void)color; }
 void topbar_tint_on_screen(lv_obj_t *screen, bool on, lv_color_t bg, lv_color_t ink) { (void)screen; (void)on; (void)bg; (void)ink; }
@@ -273,6 +292,9 @@ static void seed(const nd_library_t *library) {
 		snprintf(text, sizeof(text), "INSERT INTO favorite_album SELECT gen,id,10 FROM entity WHERE gen=%lld AND kind=0; INSERT INTO favorite_song SELECT gen,id,1 FROM entity WHERE gen=%lld AND kind=1", (long long)store.generation, (long long)store.generation);
 		assert(sqlite3_exec(store.db, text, NULL, NULL, NULL) == SQLITE_OK);
 	}
+#ifdef NAVIDROME_POLISH_QUEUE_UI
+	assert(sqlite3_exec(store.db,"UPDATE entity SET cover='queue-fixture' WHERE kind=1",NULL,NULL,NULL)==SQLITE_OK);
+#endif
 	assert(nd_store_validate(&store) && nd_store_publish(&store));
 	nd_store_close(&store);
 }
@@ -336,6 +358,23 @@ int main(void) {
 	dragging = false;
 	lv_obj_send_event(pages[0].rows[pages[0].count - 1], LV_EVENT_CLICKED, NULL);
 	assert(playback_selections == 1 && !strcmp(selected_track, pages[0].data[pages[0].count - 1].id));
+	navidromebrowse_refresh();
+	lv_obj_update_layout(pages[0].screen);
+	for(int row=0;row<pages[0].count;row++) {
+		lv_obj_t *mark = pages[0].playmarks[row];
+		assert(lv_obj_is_hidden(mark) == !!strcmp(pages[0].data[row].id, selected_track));
+		assert(lv_obj_get_width(mark) == ui_px(6) && lv_obj_get_height(mark) == ui_px(52));
+		assert(lv_obj_get_style_radius(mark, 0) == LV_RADIUS_CIRCLE);
+	}
+	unsigned queued_before=fixture_queue_adds;
+	lv_obj_send_event(pages[0].menus[0],LV_EVENT_CLICKED,NULL);
+	bool found_queue=false;
+	for(int item=0;item<fixture_menu_count;item++) if(!strcmp(fixture_menu[item].label,"add_to_queue")) {
+		fixture_menu[item].action(fixture_menu[item].user); found_queue=true; break;
+	}
+	assert(found_queue && fixture_queue_adds==queued_before+1 && !queued_session && !strcmp(queued_track,pages[0].data[0].id));
+	assert(playback_selections==1);
+	puts("real LVGL exact-ID row Add to queue and selected-track accent without playback: passed");
 	puts("real LVGL deliberate track selection and gesture guard: passed");
 	assert(pages[0].index->enabled && pages[0].letters[26] == 25 * 654);
 	assert(pages[0].index->row[0] == 0 && pages[0].index->row[27] == 25 * 654);
@@ -459,6 +498,12 @@ int main(void) {
 	}
 	window_wait(0);
 	assert(pages[0].selected == 3 && pages[0].chosen[0]);
+	assert(!lv_obj_is_hidden(pages[0].select_queue));
+	queued_before=fixture_queue_adds;
+	lv_obj_send_event(pages[0].select_queue,LV_EVENT_CLICKED,NULL);
+	assert(fixture_queue_adds==queued_before+1 && queued_session==pages[0].session && !*queued_track);
+	navidromebrowse_refresh();
+	assert(!pages[0].select_busy && playback_selections==before_selection);
 	assert(playback_selections == before_selection);
 	lv_obj_send_event(pages[0].rows[1], LV_EVENT_CLICKED, NULL);
 	assert(pages[0].select_busy);
@@ -473,6 +518,12 @@ int main(void) {
 	assert(playback_selections == before_selection + 1);
 	puts("real LVGL long press, cross-window selection, concurrent letter jump/Cancel, and restored playback: passed");
 	library = artist_ui_checks(library, dir);
+	pages[0].picking=true;
+	assert(navidromebrowse_artist("artist-00000","Duplicate label")); window_wait(0);
+	assert(!pages[0].picking && pages[0].query.kind==ND_ALBUMS && !strcmp(pages[0].query.filter,"artist-00000") && pages[0].total==1700);
+	assert(navidromebrowse_album("album-00000","Album")); window_wait(0);
+	assert(!pages[0].picking && pages[0].query.kind==ND_TRACKS && pages[0].total==10);
+	puts("direct artist/album entry on the already active browser screen reloads exact IDs and clears playlist picking: passed");
 
 	navidromebrowse_open(ND_TRACKS); // Leave one window completion pending.
 	navidrome_lock();

@@ -29,8 +29,25 @@ static void answer_later(void) {
 static const uint8_t pixel[4] = {255, 255, 255, 255};
 #define TEST_IMAGE {.header = {.magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_ARGB8888, .w = 1, .h = 1, .stride = 4}, .data_size = 4, .data = pixel}
 const lv_image_dsc_t icon_eye = TEST_IMAGE, icon_eye_off = TEST_IMAGE;
-const char *tr(const char *key) { return key; }
-void gui_notify_popup(const char *key) { (void)key; }
+const char *tr(const char *key) { return !strcmp(key, "nd_cache_total") ? "Total: %llu.%02llu MiB" : key; }
+static bool fixture_cache_override;
+static nd_cache_usage_t fixture_cache_usage;
+void __real_nd_cache_usage_snapshot(nd_cache_usage_t *usage);
+void __wrap_nd_cache_usage_snapshot(nd_cache_usage_t *usage) {
+	if (fixture_cache_override) *usage = fixture_cache_usage;
+	else __real_nd_cache_usage_snapshot(usage);
+}
+void __real_navidrome_library_snapshot(nd_library_t *library);
+void __wrap_navidrome_library_snapshot(nd_library_t *library) {
+	__real_navidrome_library_snapshot(library);
+	if (fixture_cache_override) {
+		snprintf(library->path, sizeof(library->path), "./card/.local/navidrome/.cache/library.db");
+		library->writable = true;
+		library->card_epoch = fixture_cache_usage.card_epoch;
+	}
+}
+static char fixture_popup[100];
+void gui_notify_popup(const char *key) { snprintf(fixture_popup,sizeof(fixture_popup),"%s",key); }
 static bool fixture_navigation_drag;
 bool switcher_back_drag_active(void) { return fixture_navigation_drag; }
 bool player_sheet_drag_active(void) { return fixture_navigation_drag; }
@@ -81,8 +98,9 @@ void confirm_show(const char *title, const char *text, const char *ok, void (*cb
 	(void)title;
 	(void)text;
 	(void)ok;
-	(void)cb;
-	(void)user;
+	prompt_open = true;
+	prompt_yes = cb;
+	prompt_user = user;
 }
 keyboard_t *keyboard_create(lv_obj_t *parent, int w, int h, lv_obj_t *field, const lv_image_dsc_t *icon, const char *text, lv_event_cb_t cb, void *user) {
 	(void)parent;
@@ -312,6 +330,30 @@ int main(void) {
 	navidromesettings_refresh();
 	assert(prompt_count == 3);
 	puts("UI plain setup, cancellation, late completion and operation-origin guards: passed");
+	fixture_cache_override = true;
+	fixture_cache_usage = (nd_cache_usage_t){.audio = 1024 * 1024, .art = 512 * 1024, .ready = true, .card_epoch = 123};
+	cache_last_request = lv_tick_get();
+	cache_refresh();
+	assert(!lv_obj_has_state(cache_clear, LV_STATE_DISABLED));
+	assert(!strcmp(lv_label_get_text(cache_total), "Total: 1.50 MiB"));
+	fixture_cache_usage.busy = true; // A periodic usage scan keeps Clear available.
+	cache_refresh();
+	assert(!lv_obj_has_state(cache_clear, LV_STATE_DISABLED));
+	fixture_cache_usage.clearing = true;
+	cache_refresh();
+	assert(lv_obj_has_state(cache_clear, LV_STATE_DISABLED));
+	fixture_cache_override = false;
+	puts("UI Clear stays enabled during counting, disables during clearing, and total uses fractional MiB: passed");
+	cache_clear_cb(NULL); assert(prompt_open);
+	navidrome_set_root(NULL); // Card identity changes while the confirmation is open.
+	confirm_close(); assert(prompt_yes); prompt_yes(prompt_user);
+	assert(!strcmp(fixture_popup,"nd_cache_changed"));
+	nd_cache_usage_t cache_state; nd_cache_usage_snapshot(&cache_state); assert(!cache_state.busy);
+	nd_library_t no_card;
+	for(int i=0;i<10000;i++){navidrome_library_snapshot(&no_card);if(!no_card.loading)break;usleep(1000);}
+	cache_refresh();
+	assert(!strcmp(lv_label_get_text(cache_total),"nd_cache_storage") && lv_obj_has_state(cache_clear,LV_STATE_DISABLED));
+	puts("UI cache confirmation rejects a changed card before admission, and absent storage stops Working with a disabled Clear action: passed");
 	assert(navidrome_forget());
 	wait_idle();
 	navidrome_shutdown();

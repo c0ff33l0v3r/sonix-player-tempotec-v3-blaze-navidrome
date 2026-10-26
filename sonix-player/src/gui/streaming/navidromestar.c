@@ -16,7 +16,7 @@ typedef struct {
 } player_action_t;
 
 bool navidromestar_player_update(lv_obj_t *button, lv_obj_t *icon, const char *reference, lv_color_t ink) {
-	if (!nd_audio_owns(reference))
+	if (!nd_audio_source(reference))
 		return false;
 	nd_playrow_t track;
 	bool valid = navidromeplay_track(reference, &track, NULL);
@@ -49,7 +49,7 @@ static void player_done(nd_star_result_t *r, void *user) {
 	free(r);
 }
 bool navidromestar_player_toggle(const char *reference, void (*refresh)(void)) {
-	if (!nd_audio_owns(reference))
+	if (!nd_audio_source(reference))
 		return false;
 	if (player_sheet_drag_active() || switcher_back_drag_active() || coverflow_drag_active())
 		return true;

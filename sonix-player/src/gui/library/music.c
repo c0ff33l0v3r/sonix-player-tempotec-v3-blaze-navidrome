@@ -369,7 +369,7 @@ void music_init(gui_config_t *cfg) {
 	settingsrow_title_corner_slots(settingsrow_title(music_screen, cfg, "music"), cfg, 2);
 
 	lv_obj_t *settings_btn = corner_button(cfg, 0, &icon_music_settings);
-	lv_obj_add_event_cb(settings_btn, switch_screen_cb, LV_EVENT_CLICKED, musicsettings_screen);
+	lv_obj_add_event_cb(settings_btn, musicsettings_open_global_cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *search_btn = corner_button(cfg, 1, &icon_search);
 	lv_obj_add_event_cb(search_btn, search_cb, LV_EVENT_CLICKED, NULL);

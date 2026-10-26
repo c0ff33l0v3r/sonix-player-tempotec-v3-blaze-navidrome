@@ -1,3 +1,4 @@
+#include "src/system/streaming/navidromeplay.h"
 #include "navidromeplaylists.h"
 #include "navidromeart.h"
 #include "navidromebrowse.h"
@@ -9,6 +10,7 @@
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/keyboard.h"
 #include "src/gui/shell/popover.h"
+#include "src/gui/shell/playmark.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
@@ -27,6 +29,7 @@ typedef struct {
 	cover_image_t artwork[ND_WINDOW];
 	bool art_finished[ND_WINDOW], art_bound[ND_WINDOW];
 	lv_obj_t *rows[ND_WINDOW], *names[ND_WINDOW], *details[ND_WINDOW], *menus[ND_WINDOW], *checks[ND_WINDOW];
+	lv_obj_t *playmarks[ND_WINDOW];
 	nd_playlist_t playlists[ND_WINDOW], playlist;
 	nd_playlist_entry_t entries[ND_WINDOW];
 	int first, count, total, selected, pitch, offset;
@@ -615,6 +618,10 @@ void navidromeplaylists_refresh(void) {
 			switch_screen_return_to(navidrome_screen);
 			return;
 		}
+		if (i == 1) for (int row = 0; row < p->count; row++) {
+			bool marked = navidromeplay_matches(&lib, ND_TRACKS, p->entries[row].track.id);
+			playmark_show(p->playmarks[row], marked);
+		}
 		pl_take_art(p);
 		if (p->epoch != lib.epoch && !navidrome_playlists_busy()) {
 			pl_release_art(p);
@@ -791,6 +798,7 @@ void navidromeplaylists_init(gui_config_t *cfg) {
 		for (int i = 0; i < ND_WINDOW; i++) {
 			uintptr_t key = (uintptr_t)(page * ND_WINDOW + i);
 			lv_obj_t *row = p->rows[i] = pl_card(p->list, ui_px(page == 1 ? 100 : 88));
+			if (page == 1) p->playmarks[i] = playmark_create(row);
 			lv_obj_t *icon_parent = row;
 			if (page == 1) {
 				icon_parent = lv_obj_create(row);

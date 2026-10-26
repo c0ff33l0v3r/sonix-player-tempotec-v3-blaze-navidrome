@@ -9,6 +9,8 @@
 // from the icon in the corner of the Music page, opposite the back button.
 extern lv_obj_t *musicsettings_screen;
 
+void musicsettings_open(bool from_player);
+void musicsettings_open_global_cb(lv_event_t *event);
 void musicsettings_init(gui_config_t *cfg);
 
 // The EQ and MSEB pages, so the control centre's quick buttons can open them

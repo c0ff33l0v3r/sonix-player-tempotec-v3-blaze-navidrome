@@ -1,3 +1,4 @@
+#include "src/system/streaming/navidromecache.h"
 #include "navidromeart.h"
 #include "src/system/core/md5.h"
 #include "src/system/core/utils.h"
@@ -15,11 +16,11 @@
 #include <unistd.h>
 #include <utime.h>
 
-#define ART_BUDGET (32u * 1024u * 1024u)
+#define ART_BUDGET ND_ART_BUDGET
 typedef struct {
 	unsigned serial;
-	bool pending, done, found, player, album;
-	unsigned profile_epoch;
+	bool pending, done, found, player, playback, album;
+	unsigned profile_epoch, maintenance_epoch;
 	nd_library_t library;
 	char id[ND_ID_MAX];
 	int size;
@@ -82,7 +83,7 @@ static void cache_key(const art_slot_t *job, int size, char key[33]) {
 // Encoded artwork can be decoded at the new display size. Reads stay scoped to
 // the same profile/card and keep the existing byte/dimension limits.
 static bool cached_image(const art_slot_t *job, const nd_context_t *context, const char *path, int minimum, int *resolution, cover_image_t *out) {
-	bool leased = job->player ? navidrome_playback_begin(context) : navidrome_cache_begin(context->epoch, context->card_epoch);
+	bool leased = job->playback ? navidrome_playback_begin(context) : navidrome_cache_begin(context->epoch, context->card_epoch);
 	if (!leased)
 		return false;
 	int fd = open(path, O_RDONLY | O_NOFOLLOW);
@@ -119,7 +120,7 @@ static bool load(const art_slot_t *job, cover_image_t *out) {
 	nd_context_t context;
 	if (!navidrome_context(&context, false))
 		return false;
-	bool valid = (job->player ? context.profile_epoch == job->profile_epoch : context.epoch == job->library.epoch) && context.card_epoch == job->library.card_epoch;
+	bool valid = (job->playback ? context.profile_epoch == job->profile_epoch : context.epoch == job->library.epoch) && context.card_epoch == job->library.card_epoch;
 	char dir[1100], path[1200], key[33];
 	snprintf(dir, sizeof(dir), "%s", job->library.path);
 	char *slash = strrchr(dir, '/');
@@ -158,7 +159,7 @@ static bool load(const art_slot_t *job, cover_image_t *out) {
 		}
 	}
 	if (complete) {
-		valid = (job->player ? navidrome_playback_current(&context, false) : navidrome_context_current(&context, false));
+		valid = (job->playback ? navidrome_playback_current(&context, false) : navidrome_context_current(&context, false));
 		if (job->album && valid)
 			nd_log("navidrome: album artwork target_px=%d source_px=%d result=cached_complete\n", job->size, resolution);
 		nd_wipe(&context, sizeof(context));
@@ -170,7 +171,7 @@ static bool load(const art_slot_t *job, cover_image_t *out) {
 	for (int i = 0; i < ND_WINDOW; i++)
 		if (!strcmp(failures[i].key, key) && failures[i].network_epoch == context.network_epoch && failures[i].until > time(NULL))
 			cooldown = true;
-	bool online = job->player ? navidrome_playback_current(&context, true) : navidrome_context_current(&context, true);
+	bool online = job->playback ? navidrome_playback_current(&context, true) : navidrome_context_current(&context, true);
 	if (!cooldown && job->library.writable && online) {
 		attempted = true;
 		char *body = NULL;
@@ -178,11 +179,11 @@ static bool load(const art_slot_t *job, cover_image_t *out) {
 		const char *error = nd_api_artwork(context.host, context.user, context.password, job->id, job->size, &body, &length);
 		int w = 0, h = 0, components = 0;
 		cover_image_t downloaded = {0};
-		if (!error && stbi_info_from_memory((const stbi_uc *)body, (int)length, &w, &h, &components) && w > 0 && h > 0 && w <= 512 && h <= 512 && (job->player ? navidrome_playback_current(&context, true) : navidrome_context_current(&context, true)) && cover_load_image_memory(body, length, job->size, job->size, COVER_FIT_COVER, &downloaded)) {
+		if (!error && stbi_info_from_memory((const stbi_uc *)body, (int)length, &w, &h, &components) && w > 0 && h > 0 && w <= 512 && h <= 512 && (job->playback ? navidrome_playback_current(&context, true) : navidrome_context_current(&context, true)) && cover_load_image_memory(body, length, job->size, job->size, COVER_FIT_COVER, &downloaded)) {
 			cover_free(out);
 			*out = downloaded;
 			resolution = w < h ? w : h;
-			bool leased = (job->player ? navidrome_playback_begin(&context) : navidrome_cache_begin(context.epoch, context.card_epoch));
+			bool leased = (job->playback ? navidrome_playback_begin(&context) : navidrome_cache_begin(context.epoch, context.card_epoch));
 			if (leased) {
 				// Connected Search can request art before the first Sync.
 				for (char *p = dir + 1; *p; p++) {
@@ -194,7 +195,7 @@ static bool load(const art_slot_t *job, cover_image_t *out) {
 				}
 				mkdir(dir, 0700);
 			}
-			if (leased && trim(dir, length) && (job->player ? navidrome_playback_current(&context, true) : navidrome_context_current(&context, true))) {
+			if (leased && trim(dir, length) && (job->playback ? navidrome_playback_current(&context, true) : navidrome_context_current(&context, true))) {
 				char temp[1220];
 				snprintf(temp, sizeof(temp), "%s.tmp", path);
 				int fd = open(temp, O_CREAT | O_WRONLY | O_TRUNC | O_NOFOLLOW, 0600);
@@ -210,12 +211,12 @@ static bool load(const art_slot_t *job, cover_image_t *out) {
 				if (fd >= 0 && close(fd))
 					ok = false;
 				if (ok)
-					job->player ? navidrome_playback_publish(&context, temp, path) : navidrome_context_publish(&context, temp, path);
+					job->playback ? navidrome_playback_publish(&context, temp, path) : navidrome_context_publish(&context, temp, path);
 				unlink(temp);
 			}
 			if (leased)
 				navidrome_cache_end();
-			found = (job->player ? navidrome_playback_current(&context, true) : navidrome_context_current(&context, true));
+			found = (job->playback ? navidrome_playback_current(&context, true) : navidrome_context_current(&context, true));
 			complete = found;
 			if (!found)
 				cover_free(out);
@@ -224,7 +225,7 @@ static bool load(const art_slot_t *job, cover_image_t *out) {
 			nd_wipe(body, length);
 		free(body);
 	}
-	if (found && !(job->player ? navidrome_playback_current(&context, false) : navidrome_context_current(&context, false))) {
+	if (found && !(job->playback ? navidrome_playback_current(&context, false) : navidrome_context_current(&context, false))) {
 		cover_free(out);
 		found = false;
 	}
@@ -259,7 +260,9 @@ static void *art_worker(void *unused) {
 		slots[i].pending = false;
 		pthread_mutex_unlock(&art_lock);
 		cover_image_t image = {0}, backdrop = {0};
-		bool found = load(&job, &image);
+		bool admitted = nd_cache_io_begin(job.maintenance_epoch);
+		bool found = admitted && load(&job, &image);
+		if (admitted) nd_cache_io_end();
 		if (found && (i == ND_ART_ALBUM_SLOT || i == ND_ART_SEARCH_ALBUM_SLOT)) {
 			int luma;
 			image.has_tone = cover_page_tone(&image, COVER_PAGE_LIGHT_FROM, &image.tone, &luma, &image.tone_light);
@@ -268,10 +271,11 @@ static void *art_worker(void *unused) {
 		if (found && job.player && job.backdrop_w > 0 && job.backdrop_w <= 512 && job.backdrop_h > 0 && job.backdrop_h <= 1024)
 			cover_blur_fill(&image, job.backdrop_w, job.backdrop_h, &backdrop);
 		pthread_mutex_lock(&art_lock);
-		if (job.serial != slots[i].serial) {
+		if (job.serial != slots[i].serial || !nd_cache_io_current(job.maintenance_epoch)) {
 			if (found)
 				cover_free(&image);
 			cover_free(&backdrop);
+			if (job.serial == slots[i].serial) { slots[i].done = true; slots[i].found = false; }
 		} else {
 			slots[i].image = image;
 			slots[i].backdrop = backdrop;
@@ -303,7 +307,9 @@ static void request(int i, const nd_library_t *library, const char *id, int size
 	pthread_mutex_lock(&art_lock);
 	art_slot_t *slot = &slots[i];
 	slot->library = *library;
+	slot->maintenance_epoch = nd_cache_epoch();
 	slot->player = i == ND_WINDOW;
+	slot->playback = slot->player || i >= ND_ART_QUEUE_SLOT;
 	slot->album = i == ND_ART_ALBUM_SLOT || i == ND_ART_SEARCH_ALBUM_SLOT;
 	nd_context_t context;
 	if (navidrome_context(&context, false))
@@ -337,7 +343,7 @@ bool navidromeart_take(int i, cover_image_t *out, bool *finished) {
 	pthread_mutex_lock(&art_lock);
 	art_slot_t *slot = &slots[i];
 	nd_context_t context;
-	bool current = navidrome_context(&context, false) && context.card_epoch == slot->library.card_epoch && (slot->player ? context.profile_epoch == slot->profile_epoch : context.epoch == slot->library.epoch);
+	bool current = nd_cache_io_current(slot->maintenance_epoch) && navidrome_context(&context, false) && context.card_epoch == slot->library.card_epoch && (slot->playback ? context.profile_epoch == slot->profile_epoch : context.epoch == slot->library.epoch);
 	nd_wipe(&context, sizeof(context));
 	if (slot->done && slot->found && !current) {
 		cover_free(&slot->image);

@@ -107,7 +107,7 @@ bool nd_store_open_source(nd_store_t *s, const char *path, const char *scope, bo
 		return false;
 	}
 	if (write && version != expected_version && !legacy) {
-		if (!sql(s, "BEGIN; DROP TABLE IF EXISTS album_display; DROP TABLE IF EXISTS local_view; DROP TABLE IF EXISTS local_change; DROP TABLE IF EXISTS artist_state; DROP TABLE IF EXISTS favorite_song; DROP TABLE IF EXISTS favorite_album; DROP TABLE IF EXISTS seen; DROP TABLE IF EXISTS active; DROP TABLE IF EXISTS rel;"
+		if (!sql(s, "BEGIN; DROP TABLE IF EXISTS track_navigation; DROP TABLE IF EXISTS album_display; DROP TABLE IF EXISTS local_view; DROP TABLE IF EXISTS local_change; DROP TABLE IF EXISTS artist_state; DROP TABLE IF EXISTS favorite_song; DROP TABLE IF EXISTS favorite_album; DROP TABLE IF EXISTS seen; DROP TABLE IF EXISTS active; DROP TABLE IF EXISTS rel;"
 					"DROP TABLE IF EXISTS entity; DROP TABLE IF EXISTS snapshot;"
 					"CREATE TABLE snapshot(id INTEGER PRIMARY KEY,scope TEXT NOT NULL,complete INT NOT NULL DEFAULT 0,finished INT);"
 					"CREATE TABLE active(scope TEXT PRIMARY KEY,gen INT NOT NULL);"
@@ -134,6 +134,13 @@ bool nd_store_open_source(nd_store_t *s, const char *path, const char *scope, bo
 		sql(s, "ROLLBACK");
 		return false;
 	}
+	// Optional metadata must not make old/read-only snapshots unusable.
+	if (write && !sql(s, "CREATE TABLE IF NOT EXISTS track_navigation(gen INTEGER,id TEXT,artist TEXT,PRIMARY KEY(gen,id));"))
+		return false;
+	if (!prepare(s, &st, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='track_navigation'"))
+		return false;
+	s->navigation = sqlite3_step(st) == SQLITE_ROW;
+	sqlite3_finalize(st);
 	if (write && !sql(s, "CREATE TABLE IF NOT EXISTS album_display(gen INT NOT NULL,handle INT NOT NULL,year INT,genre TEXT,PRIMARY KEY(gen,handle));"))
 		return false;
 	if (favorites) {
@@ -303,8 +310,60 @@ static bool genre(nd_store_t *s, const char *album, const char *name) {
 	return ok && relation(s, album, ND_GENRES, name);
 }
 
+static void primary_artist(const json_doc_t *d, int obj, char out[ND_ID_MAX]) {
+	out[0] = 0;
+	if (!nd_api_field_unique(d, obj, "artistId", false) || !field(d, obj, "artistId", out, ND_ID_MAX, false)) {
+		out[0] = 0;
+		return;
+	}
+	int arr = json_get(d, obj, "artists");
+	if (!nd_api_field_unique(d, obj, "artists", false) || (arr >= 0 && d->toks[arr].type != JSON_NULL && d->toks[arr].type != JSON_ARRAY)) {
+		out[0] = 0;
+		return;
+	}
+	if (arr < 0 || d->toks[arr].type == JSON_NULL || !json_len(d, arr))
+		return;
+	bool matches = false;
+	for (int i = 0; i < json_len(d, arr); i++) {
+		char id[ND_ID_MAX];
+		if (field(d, json_at(d, arr, i), "id", id, sizeof(id), true) && !strcmp(id, out))
+			matches = true;
+	}
+	if (!matches)
+		out[0] = 0;
+}
 
+static bool navigation_put(nd_store_t *s, const char *id, const char *artist) {
+	if (!s->navigation)
+		return true;
+	sqlite3_stmt *st = NULL;
+	if (!prepare(s, &st, "INSERT OR REPLACE INTO track_navigation VALUES(?,?,?)"))
+		return false;
+	sqlite3_bind_int64(st, 1, s->generation);
+	bind(st, 2, id);
+	bind(st, 3, artist);
+	bool ok = sqlite3_step(st) == SQLITE_DONE;
+	sqlite3_finalize(st);
+	return ok;
+}
 
+static void navigation_get(nd_store_t *s, int64_t gen, const char *id, char out[ND_ID_MAX]) {
+	if (!s->navigation)
+		return;
+	sqlite3_stmt *st = NULL;
+	const char *query = s->local ?
+		"SELECT artist FROM track_navigation WHERE id=?1 AND gen<=?2 AND gen>=coalesce((SELECT base FROM local_view WHERE gen=?2),?2) ORDER BY gen DESC LIMIT 1" :
+		"SELECT artist FROM track_navigation WHERE id=?1 AND gen=?2";
+	if (!prepare(s, &st, query))
+		return;
+	bind(st, 1, id);
+	sqlite3_bind_int64(st, 2, gen);
+	if (sqlite3_step(st) == SQLITE_ROW) {
+		const char *value = (const char *)sqlite3_column_text(st, 0);
+		snprintf(out, ND_ID_MAX, "%s", value ? value : "");
+	}
+	sqlite3_finalize(st);
+}
 
 static bool memberships(nd_store_t *s, const json_doc_t *d, int obj, const char *album) {
 	char value[ND_ID_MAX];
@@ -518,6 +577,11 @@ bool nd_store_import(nd_store_t *s, nd_kind_t kind, const nd_document_t *documen
 			album_display_fields(d, obj, &display);
 			ok = album_display_put(s, album_handle, display.year, display.genre);
 		}
+		if (ok && kind == ND_TRACKS) {
+			char artist[ND_ID_MAX];
+			primary_artist(d, obj, artist);
+			ok = navigation_put(s, row.id, artist);
+		}
 		if (rc != SQLITE_DONE) {
 			nd_log("navidrome: sync insert kind=%d item=%d reason=%s code=%d\n", kind, i, rc == SQLITE_CONSTRAINT ? "duplicate_entity" : "database_error", rc);
 			s->error = rc == SQLITE_CONSTRAINT ? "nd_sync_inconsistent" : "nd_cache_error";
@@ -710,6 +774,8 @@ void nd_store_cleanup(nd_store_t *s) {
 		sql(s, "DELETE FROM seen");
 	if (sqlite3_db_readonly(s->db, "main") == 0)
 		sql(s, s->local ? "DELETE FROM album_display WHERE (handle>0 AND NOT EXISTS(SELECT 1 FROM entity e WHERE e.gen=album_display.gen AND e.rowid=album_display.handle)) OR (handle<0 AND NOT EXISTS(SELECT 1 FROM local_change c WHERE c.seq=album_display.gen AND c.key=-album_display.handle))" : "DELETE FROM album_display WHERE NOT EXISTS(SELECT 1 FROM entity e WHERE e.gen=album_display.gen AND e.rowid=album_display.handle)");
+	if (s->navigation)
+		sql(s, s->local ? "DELETE FROM track_navigation WHERE gen NOT IN(SELECT id FROM snapshot) AND gen NOT IN(SELECT seq FROM local_change)" : "DELETE FROM track_navigation WHERE gen NOT IN(SELECT id FROM snapshot)");
 	if (s->local)
 		sql(s, "DELETE FROM local_change WHERE seq<(SELECT coalesce(min(gen),9223372036854775807) FROM local_view) AND EXISTS(SELECT 1 FROM local_change n WHERE n.scope=local_change.scope AND n.kind=local_change.kind AND n.id=local_change.id AND n.seq>local_change.seq AND n.seq<=(SELECT coalesce(min(gen),9223372036854775807) FROM local_view))");
 	if (s->local)
@@ -929,7 +995,60 @@ bool nd_store_play_index(nd_store_t *s, int64_t gen, const nd_query_t *q, const 
 	return true;
 }
 
+bool nd_store_album_beside(nd_store_t *s, int64_t gen, const char *id, bool forward, char next[ND_ID_MAX]) {
+	if (!read_view(s, gen) || !nd_store_contains(s, gen, ND_ALBUMS, id)) return false;
+	char query[1024];
+	snprintf(query, sizeof(query),
+		"SELECT e.id FROM browse_entity e JOIN browse_entity a ON a.gen=e.gen AND a.kind=0 AND a.id=?2 "
+		"WHERE e.gen=?1 AND e.kind=0 AND e.id<>a.id "
+		"ORDER BY CASE WHEN e.sortkey %s a.sortkey OR (e.sortkey=a.sortkey AND e.id %s a.id) THEN 0 ELSE 1 END, "
+		"e.sortkey %s,e.id %s LIMIT 1", forward ? ">" : "<", forward ? ">" : "<", forward ? "ASC" : "DESC", forward ? "ASC" : "DESC");
+	sqlite3_stmt *st = NULL;
+	if (!prepare(s, &st, query)) return false;
+	sqlite3_bind_int64(st, 1, gen);
+	bind(st, 2, id);
+	bool ok = sqlite3_step(st) == SQLITE_ROW;
+	if (ok) snprintf(next, ND_ID_MAX, "%s", sqlite3_column_text(st, 0));
+	sqlite3_finalize(st);
+	return ok;
+}
 
+bool nd_store_queue_add(nd_store_t *s, int64_t gen, nd_kind_t kind, const char *id) {
+	if ((kind != ND_TRACKS && kind != ND_ALBUMS) || !id || !*id || !read_view(s, gen) ||
+		!sql(s, "CREATE TEMP TABLE IF NOT EXISTS queue_add(ordinal INTEGER PRIMARY KEY,handle INTEGER UNIQUE)"))
+		return false;
+	sqlite3_stmt *st = NULL;
+	const char *query = kind == ND_TRACKS
+		? "INSERT OR IGNORE INTO queue_add(handle) SELECT rowid FROM browse_entity WHERE gen=? AND kind=1 AND id=?"
+		: "INSERT OR IGNORE INTO queue_add(handle) SELECT rowid FROM browse_entity WHERE gen=? AND kind=1 AND album=? ORDER BY disc,track,sortkey,id";
+	if (!prepare(s, &st, query)) return false;
+	sqlite3_bind_int64(st, 1, gen);
+	bind(st, 2, id);
+	bool ok = sqlite3_step(st) == SQLITE_DONE;
+	sqlite3_finalize(st);
+	return ok;
+}
+bool nd_store_queue_finish(nd_store_t *s, int64_t **handles, int *count) {
+	*handles = NULL;
+	*count = 0;
+	sqlite3_stmt *st = NULL;
+	if (!prepare(s, &st, "SELECT count(*) FROM queue_add")) return false;
+	bool ok = sqlite3_step(st) == SQLITE_ROW;
+	sqlite3_int64 n = ok ? sqlite3_column_int64(st, 0) : 0;
+	sqlite3_finalize(st);
+	if (!ok || n <= 0 || n > INT_MAX || (uint64_t)n > SIZE_MAX / sizeof(int64_t)) return false;
+	int64_t *items = malloc((size_t)n * sizeof(*items));
+	if (!items || !prepare(s, &st, "SELECT handle FROM queue_add ORDER BY ordinal")) { free(items); return false; }
+	int used = 0, rc;
+	while ((rc = sqlite3_step(st)) == SQLITE_ROW && used < n)
+		items[used++] = sqlite3_column_int64(st, 0);
+	ok = rc == SQLITE_DONE && used == n;
+	sqlite3_finalize(st);
+	if (!ok) { free(items); return false; }
+	*handles = items;
+	*count = used;
+	return true;
+}
 
 bool nd_store_favorite(nd_store_t *s, int64_t gen, nd_kind_t kind, const char *id) {
 	if (!read_view(s, gen))
@@ -975,6 +1094,7 @@ bool nd_store_play_row(nd_store_t *s, int64_t gen, int64_t handle, nd_playrow_t 
 	}
 	sqlite3_finalize(st);
 	if (ok) {
+		navigation_get(s, gen, out->row.id, out->artist_id);
 		out->row.favorite_known = nd_store_annotation(s, gen, ND_TRACKS, out->row.id, &out->row.favorite);
 	}
 	return ok;
@@ -1073,6 +1193,11 @@ bool nd_batch_add(nd_batch_t *b, const json_doc_t *d, int obj) {
 	r->artist = batch_string(b, row.artist);
 	r->album = batch_string(b, album);
 	r->cover = batch_string(b, row.cover);
+	if (b->kind == ND_TRACKS) {
+		char artist[ND_ID_MAX];
+		primary_artist(d, obj, artist);
+		r->primary_artist = batch_string(b, artist);
+	}
 	r->duration = duration;
 	r->disc = disc;
 	r->track = track;
@@ -1176,6 +1301,8 @@ bool nd_store_import_batch(nd_store_t *s, const nd_batch_t *b) {
 			}
 			if (ok && b->kind == ND_ALBUMS)
 				ok = album_display_put(s, sqlite3_last_insert_rowid(s->db), r->year, (const char *)b->arena + r->genre);
+			if (ok && b->kind == ND_TRACKS)
+				ok = navigation_put(s, id, (const char *)b->arena + r->primary_artist);
 			for (uint32_t rel = r->relations; rel && ok;) {
 				const nd_batch_relation_t *v = (const void *)(b->arena + rel);
 				const char *name = (const char *)b->arena + v->id;
@@ -1357,6 +1484,8 @@ bool nd_store_local_put(nd_store_t *s, nd_kind_t kind, const nd_playrow_t *row, 
 	sqlite3_clear_bindings(st);
 	if (ok && kind == ND_ALBUMS)
 		ok = album_display_put(s, -sqlite3_last_insert_rowid(s->db), row->year, row->genre);
+	if (ok && kind == ND_TRACKS)
+		ok = navigation_put(s, row->row.id, row->artist_id);
 	return ok;
 }
 
@@ -1390,6 +1519,8 @@ static bool metadata_row(const json_doc_t *d, int obj, nd_kind_t kind, const cha
 		return false;
 	if (kind == ND_ALBUMS)
 		album_display_fields(d, obj, out);
+	if (kind == ND_TRACKS)
+		primary_artist(d, obj, out->artist_id);
 	long duration = json_obj_long(d, obj, "duration", 0), disc = json_obj_long(d, obj, "discNumber", 0), track = json_obj_long(d, obj, "track", 0);
 	if (duration < 0 || duration > INT_MAX || disc < 0 || disc > INT_MAX || track < 0 || track > INT_MAX)
 		return false;

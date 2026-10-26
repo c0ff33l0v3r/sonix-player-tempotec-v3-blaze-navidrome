@@ -1313,7 +1313,7 @@ static bool playing_local_file(const device_state_t *state) {
 		return false;
 	}
 	const char *f = state->current_file;
-	return !nd_audio_owns(f) && !qobuzcache_owns(f) && !tidalcache_owns(f) && !podcastcache_is_episode(f) && !dlna_owns_path(f) && !dlna_owns_playback();
+	return !nd_audio_source(f) && !qobuzcache_owns(f) && !tidalcache_owns(f) && !podcastcache_is_episode(f) && !dlna_owns_path(f) && !dlna_owns_playback();
 }
 
 // Puts the progress slider over the waveform, or back where it belongs.
@@ -3496,6 +3496,13 @@ static void refresh_cover(const char *filepath) {
 		return;
 	}
 
+	if (navidromeplay_reference(filepath)) {
+		cover_id_state = COVER_ID_IDLE;
+		cover_request_outstanding = false;
+		cover_drop_current(true);
+		return;
+	}
+
 	snprintf(cover_shown_path, sizeof(cover_shown_path), "%s", filepath ? filepath : "");
 
 	if (cover_shown_id != 0 && current_cover.pixels && filepath && filepath[0]) {
@@ -4148,7 +4155,7 @@ static void update_qobuz_badge(void) {
 	device_state_t source;
 	device_state_get(&source);
 	if (navidrome_badge) {
-		lv_obj_set_hidden(navidrome_badge, !nd_audio_owns(source.current_file));
+		lv_obj_set_hidden(navidrome_badge, !nd_audio_source(source.current_file));
 		lv_obj_move_foreground(navidrome_badge);
 	}
 	// The marks share one corner and can never appear together: a track comes
@@ -4234,7 +4241,7 @@ static void update_fav_button(void) {
 		device_state_get(&state);
 		// Read ahead while the previous track played when it can be (see
 		// device_state_prefetch); the database otherwise.
-		if (!state.current_file[0] || nd_audio_owns(state.current_file)) {
+		if (!state.current_file[0] || nd_audio_source(state.current_file)) {
 			starred = false;
 		} else if (!device_state_prefetched_fav(state.current_file, &starred)) {
 			starred = library_fav_contains(state.current_file);
@@ -4349,7 +4356,14 @@ static void fav_btn_event_cb(lv_event_t *e) {
 
 // The format line, the way the stock player writes it: "16/44.1 FLAC".
 static void update_format_label(const device_state_t *state) {
+	if (navidromeplay_reference(state->current_file) && !navidromeplay_preparing()) {
+		gui_label_set_text(format_label, "");
+		if (studio_quality_icon)
+			lv_obj_set_hidden(studio_quality_icon, true);
+		return;
+	}
 	if (navidromeplay_preparing()) {
+		if (studio_quality_icon) lv_obj_set_hidden(studio_quality_icon,true);
 		gui_label_set_text(format_label, tr("nd_audio_preparing"));
 		return;
 	}
@@ -4445,7 +4459,7 @@ static void update_format_label(const device_state_t *state) {
 		// AAC) the real average stands in -- but only once the download has
 		// finished, for the reason just given.
 		struct stat st;
-		if (kbps <= 0 && !nd_audio_owns(state->current_file) && !qobuzcache_owns(state->current_file) && !tidalcache_owns(state->current_file) && state->progress_total_secs > 0.5 && stat(state->current_file, &st) == 0 && st.st_size > 0) {
+		if (kbps <= 0 && !nd_audio_source(state->current_file) && !qobuzcache_owns(state->current_file) && !tidalcache_owns(state->current_file) && state->progress_total_secs > 0.5 && stat(state->current_file, &st) == 0 && st.st_size > 0) {
 			kbps = (int)((double)st.st_size * 8.0 / state->progress_total_secs / 1000.0 + 0.5);
 		}
 
@@ -4625,7 +4639,7 @@ static void update_progress(void) {
 
 	device_state_t state;
 	device_state_get(&state);
-	if (nd_audio_owns(state.current_file))
+	if (nd_audio_source(state.current_file))
 		update_fav_button();
 
 	// The live source moves under the player: the station's own name comes
@@ -6102,13 +6116,8 @@ void player_init(gui_config_t *cfg) {
 	lv_image_set_src(podcast_badge, &icon_podcast_badge);
 	lv_obj_align(podcast_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
 	lv_obj_set_hidden(podcast_badge, true);
-	navidrome_badge = lv_label_create(cover_panel);
-	lv_label_set_text(navidrome_badge, tr("navidrome"));
-	lv_obj_set_style_text_font(navidrome_badge, &font_ui_18, 0);
-	lv_obj_set_style_text_color(navidrome_badge, lv_color_white(), 0);
-	lv_obj_set_style_bg_color(navidrome_badge, lv_color_black(), 0);
-	lv_obj_set_style_bg_opa(navidrome_badge, LV_OPA_70, 0);
-	lv_obj_set_style_pad_all(navidrome_badge, ui_px(4), 0);
+	navidrome_badge = lv_image_create(cover_panel);
+	lv_image_set_src(navidrome_badge, &icon_navidrome_badge);
 	lv_obj_align(navidrome_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
 	lv_obj_set_hidden(navidrome_badge, true);
 

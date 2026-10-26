@@ -15,12 +15,15 @@
 #include "src/gui/streaming/qobuzpage.h"
 #include "src/gui/streaming/tidalpage.h"
 #include "src/gui/shell/popover.h"
+#include "src/gui/shell/playmark.h"
 #include "src/gui/settings/musicsettings.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
 #include "src/gui/nowplaying/cover.h"
+#include "src/gui/nowplaying/coverloader.h"
+#include "src/gui/streaming/navidromeart.h"
 #include "src/system/audio/audio.h"
 #include "src/system/audio/replaygain.h"
 #include "src/system/decode/decode.h"
@@ -83,13 +86,15 @@ lv_obj_t *details_screen;
 typedef struct {
 	lv_obj_t *button;
 	lv_obj_t *icon;
+	lv_obj_t *playmark;
 	lv_obj_t *label;
 	lv_obj_t *check; // the tick on a chosen row while choosing
 	lv_obj_t *grip;	 // the handle on a row that can be moved, while reordering
 	int vindex;		 // the row of the page it shows (see queue_vrow_y), or -1
 	int index;		 // its position in the queue, or -1 on a row of the history
 	int hist;		 // its entry of queue_hist, or -1 on a row of the queue
-	bool has_thumb;
+	bool has_thumb, art_requested, art_finished, art_navidrome;
+	char art_path[512], art_id[ND_ID_MAX];
 	cover_image_t thumb;
 } queue_row_t;
 
@@ -361,6 +366,11 @@ static queue_row_t *queue_row_of(lv_obj_t *button) {
 }
 
 static void queue_row_drop_thumb(queue_row_t *row) {
+	int slot = (int)(row - queue_rows);
+	coverloader_release(COVERLOADER_QUEUE_BASE + slot);
+	navidromeart_release(ND_ART_QUEUE_SLOT + slot);
+	row->art_requested = row->art_finished = false;
+	row->art_path[0] = row->art_id[0] = 0;
 	if (row->has_thumb) {
 		// The widget must stop pointing at the pixels before they go.
 		lv_image_set_src(row->icon, &icon_music2);
@@ -371,27 +381,59 @@ static void queue_row_drop_thumb(queue_row_t *row) {
 	}
 }
 
-// No artwork on these rows: a queue is a list of what is coming, and a column
-// of covers is slower to read and slower to build. The playing track gets the
-// now-playing mark in the accent colour instead; everything else gets the plain
-// note.
-//
-// Its own function because the mark changes without the row changing: painting
-// it only where a row is bound would leave the mark on a finished track until
-// the list scrolled far enough to rebind that row.
+// Covers and the current-entry accent have independent lifetimes.
 static void queue_row_paint_mark(queue_row_t *row) {
-	if (!row->icon || row->vindex < 0) {
-		return;
+	if (!row->icon || row->vindex < 0) return;
+	bool selected = row->index >= 0 && row->index == playlist_current_index();
+	playmark_show(row->playmark, selected);
+	if (!row->has_thumb) {
+		lv_image_set_src(row->icon, &icon_music2);
+		lv_obj_add_style(row->icon, &theme_style_icon, 0);
+		lv_obj_set_style_image_recolor_opa(row->icon, LV_OPA_COVER, 0);
 	}
-	bool is_playing_row = row->index >= 0 && row->index == playlist_current_index();
-	lv_image_set_src(row->icon, is_playing_row ? &icon_now_playing : &icon_music2);
-	lv_obj_add_style(row->icon, &theme_style_icon, 0);
-	if (is_playing_row) {
-		lv_obj_set_style_image_recolor(row->icon, theme()->accent, 0);
+}
+static void queue_row_art(queue_row_t *row, const char *path) {
+	if (strcmp(row->art_path, path)) {
+		queue_row_drop_thumb(row);
+		snprintf(row->art_path, sizeof(row->art_path), "%s", path);
+	}
+	if (row->art_requested) return;
+	int slot = (int)(row - queue_rows);
+	row->art_navidrome = navidromeplay_reference(path);
+	if (row->art_navidrome) {
+		nd_playrow_t track;
+		nd_library_t lib;
+		if (!navidromeplay_lookup(path, &track, &lib)) return;
+		snprintf(row->art_id, sizeof(row->art_id), "%s", track.row.cover);
+		if (track.row.cover[0]) navidromeart_request(ND_ART_QUEUE_SLOT + slot, &lib, track.row.cover, QUEUE_THUMB_SIZE);
+		else row->art_finished = true;
 	} else {
-		lv_obj_remove_local_style_prop(row->icon, LV_STYLE_IMAGE_RECOLOR, 0);
+		coverloader_request(COVERLOADER_QUEUE_BASE + slot, path, QUEUE_THUMB_SIZE);
 	}
-	lv_obj_set_style_image_recolor_opa(row->icon, LV_OPA_COVER, 0);
+	row->art_requested = true;
+}
+static void queue_art_tick(lv_timer_t *timer) {
+	(void)timer;
+	if (!queue_screen || lv_screen_active() != queue_screen) return;
+	for (int i = 0; i < QUEUE_ROW_POOL; i++) {
+		queue_row_t *row = &queue_rows[i];
+		if (row->vindex < 0 || !row->art_path[0]) continue;
+		queue_row_art(row, row->art_path);
+		if (!row->art_requested || row->art_finished) continue;
+		cover_image_t image = {0};
+		bool found = row->art_navidrome
+			? navidromeart_take(ND_ART_QUEUE_SLOT + i, &image, &row->art_finished)
+			: coverloader_take(COVERLOADER_QUEUE_BASE + i, &image, &row->art_finished);
+		if (found) {
+			if (row->has_thumb) { lv_image_set_src(row->icon, &icon_music2); cover_free(&row->thumb); }
+			row->thumb = image;
+			row->has_thumb = true;
+			lv_obj_remove_style(row->icon, &theme_style_icon, 0);
+			lv_obj_set_style_image_recolor_opa(row->icon, LV_OPA_TRANSP, 0);
+			lv_image_set_inner_align(row->icon, LV_IMAGE_ALIGN_CONTAIN);
+			lv_image_set_src(row->icon, &row->thumb.dsc);
+		}
+	}
 }
 
 // A title for a file with none: its name, without the extension.
@@ -411,7 +453,7 @@ static void queue_row_bind(queue_row_t *row, int vindex) {
 		return;
 	}
 
-	queue_row_drop_thumb(row);
+	if (row->vindex != vindex) queue_row_drop_thumb(row);
 	row->vindex = vindex;
 	row->index = -1;
 	row->hist = -1;
@@ -438,6 +480,7 @@ static void queue_row_bind(queue_row_t *row, int vindex) {
 		lv_obj_set_hidden(row->button, false);
 		lv_obj_set_y(row->button, queue_vrow_y(vindex));
 		lv_label_set_text(row->label, title);
+		queue_row_art(row, path);
 		queue_row_paint_mark(row);
 		queue_row_paint_tools(row);
 		return;
@@ -453,6 +496,7 @@ static void queue_row_bind(queue_row_t *row, int vindex) {
 	}
 
 	if (navidromeplay_reference(path)) {
+		if (strcmp(row->art_path,path)) navidromeplay_retry_metadata(path);
 		song_metadata_t meta;
 		if (playlist_metadata_at(index, &meta))
 			snprintf(title, sizeof(title), "%.250s", meta.title);
@@ -475,7 +519,7 @@ static void queue_row_bind(queue_row_t *row, int vindex) {
 	lv_obj_set_hidden(row->button, false);
 	lv_obj_set_y(row->button, queue_row_y(index));
 	lv_label_set_text(row->label, title);
-
+	queue_row_art(row, path);
 	queue_row_paint_mark(row);
 	queue_row_paint_tools(row);
 }
@@ -1217,6 +1261,10 @@ static void queue_unloaded_cb(lv_event_t *e) {
 	(void)e;
 	queue_drag_end(false);
 	queue_mode_set(QUEUE_IDLE);
+	for (int i = 0; i < QUEUE_ROW_POOL; i++) {
+		queue_row_drop_thumb(&queue_rows[i]);
+		queue_rows[i].vindex = -2;
+	}
 }
 
 static lv_obj_t *queue_corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph, lv_event_cb_t cb) {
@@ -1316,6 +1364,7 @@ static void build_queue_page(gui_config_t *cfg) {
 		lv_obj_set_style_border_width(row->button, 0, 0);
 		lv_obj_set_style_shadow_width(row->button, 0, 0);
 		lv_obj_set_style_pad_all(row->button, ui_px(8), 0);
+		lv_obj_set_style_pad_hor(row->button, ui_px(14), 0);
 		lv_obj_set_style_pad_column(row->button, ui_px(14), 0);
 		lv_obj_set_hidden(row->button, true);
 		lv_obj_set_event_bubble(row->button, true);
@@ -1327,10 +1376,11 @@ static void build_queue_page(gui_config_t *cfg) {
 		lv_obj_add_event_cb(row->button, queue_drag_cb, LV_EVENT_PRESS_LOST, NULL);
 		lv_obj_set_flex_flow(row->button, LV_FLEX_FLOW_ROW);
 		lv_obj_set_flex_align(row->button, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+		row->playmark = playmark_create(row->button);
 
 		row->icon = lv_image_create(row->button);
 		lv_obj_set_size(row->icon, QUEUE_THUMB_SIZE, QUEUE_THUMB_SIZE);
-		lv_image_set_inner_align(row->icon, LV_IMAGE_ALIGN_CENTER);
+		lv_image_set_inner_align(row->icon, LV_IMAGE_ALIGN_CONTAIN);
 
 		row->label = lv_label_create(row->button);
 		lv_label_set_long_mode(row->label, LV_LABEL_LONG_DOT);
@@ -1392,6 +1442,7 @@ static void build_queue_page(gui_config_t *cfg) {
 	switcher_attach_back_gesture(queue_list);
 	lv_obj_add_event_cb(queue_screen, queue_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 	lv_obj_add_event_cb(queue_screen, queue_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
+	lv_timer_create(queue_art_tick, 200, NULL);
 }
 
 // ---------------------------------------------------------------------------
@@ -1552,7 +1603,7 @@ static void details_fill(const char *file, const song_metadata_t *tags, int bits
 	// which may still be downloading -- a number that grows on screen by itself
 	// and describes the download, not the track.
 	struct stat st;
-	if (!nd_audio_owns(file) && !qobuzcache_owns(file) && !tidalcache_owns(file) && stat(file, &st) == 0) {
+	if (!nd_audio_source(file) && !qobuzcache_owns(file) && !tidalcache_owns(file) && stat(file, &st) == 0) {
 		snprintf(buffer, sizeof(buffer), "%.1f MB", st.st_size / (1024.0 * 1024.0));
 		details_add_row("trackmenu_size", buffer);
 	}
@@ -1560,7 +1611,7 @@ static void details_fill(const char *file, const song_metadata_t *tags, int bits
 	// The path, except for a streamed track: that lives in a cache directory
 	// nobody chose, under a numeric name, and showing it implies a file of the
 	// user's own that does not exist. The source service is shown instead.
-	if (nd_audio_owns(file)) {
+	if (nd_audio_source(file)) {
 		details_add_row("trackmenu_source", tr("navidrome"));
 	} else if (qobuzcache_owns(file)) {
 		details_add_row("trackmenu_source", "qobuz");
@@ -1735,7 +1786,7 @@ static void add_to_playlist_cb(void *user) {
 	(void)user;
 	device_state_t source_state;
 	device_state_get(&source_state);
-	if (nd_audio_owns(source_state.current_file)) {
+	if (nd_audio_source(source_state.current_file)) {
 		gui_notify_popup("nd_audio_unavailable");
 		return;
 	}
@@ -1848,10 +1899,18 @@ static void open_artist_cb(void *user) {
 
 	device_state_t state;
 	device_state_get(&state);
-	if (nd_audio_owns(state.current_file)) {
-		gui_notify_popup("nd_audio_unavailable");
+	if (nd_audio_source(state.current_file)) {
+		nd_playrow_t track;
+		if (!navidromeplay_track(state.current_file, &track, NULL) || !track.artist_id[0]) {
+			gui_notify_popup("nd_audio_unavailable");
+			return;
+		}
+		player_sheet_close(false);
+		if (!navidromebrowse_artist(track.artist_id, track.row.artist)) gui_notify_popup("nd_audio_unavailable");
+		else switcher_set_player_return(lv_screen_active());
 		return;
 	}
+
 	if (!state.current_file[0]) {
 		return;
 	}
@@ -1874,7 +1933,7 @@ static void open_artist_cb(void *user) {
 static void open_settings_cb(void *user) {
 	(void)user;
 	player_sheet_close(false);
-	switch_screen(musicsettings_screen);
+	musicsettings_open(true);
 	switcher_set_player_return(musicsettings_screen);
 }
 

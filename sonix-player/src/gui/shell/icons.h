@@ -268,5 +268,6 @@ extern const lv_image_dsc_t icon_menu_metronome;
 extern const lv_image_dsc_t icon_qobuz_badge;
 extern const lv_image_dsc_t icon_tidal_badge;
 extern const lv_image_dsc_t icon_podcast_badge;
+extern const lv_image_dsc_t icon_navidrome_badge;
 
 #endif // ICONS_H

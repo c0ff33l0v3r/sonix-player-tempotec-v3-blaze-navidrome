@@ -1406,3 +1406,51 @@ bool navidrome_playback_pin_source(const nd_library_t *library) {
 	pthread_mutex_unlock(&lock);
 	return ok;
 }
+
+// Independent from the service lock: cache maintenance waits for network/storage
+// owners only after releasing service admission locks and card leases.
+static pthread_mutex_t cache_io_lock = PTHREAD_MUTEX_INITIALIZER;
+static unsigned cache_io_epoch = 1, cache_io_active;
+static bool cache_maintenance;
+unsigned nd_cache_epoch(void) {
+	pthread_mutex_lock(&cache_io_lock);
+	unsigned epoch = cache_io_epoch;
+	pthread_mutex_unlock(&cache_io_lock);
+	return epoch;
+}
+bool nd_cache_io_begin(unsigned epoch) {
+	pthread_mutex_lock(&cache_io_lock);
+	bool ok = !cache_maintenance && epoch == cache_io_epoch;
+	if (ok) cache_io_active++;
+	pthread_mutex_unlock(&cache_io_lock);
+	return ok;
+}
+void nd_cache_io_end(void) {
+	pthread_mutex_lock(&cache_io_lock);
+	if (cache_io_active) cache_io_active--;
+	pthread_mutex_unlock(&cache_io_lock);
+}
+bool nd_cache_io_current(unsigned epoch) {
+	pthread_mutex_lock(&cache_io_lock);
+	bool ok = !cache_maintenance && epoch == cache_io_epoch;
+	pthread_mutex_unlock(&cache_io_lock);
+	return ok;
+}
+bool nd_cache_maintenance_begin(void) {
+	pthread_mutex_lock(&cache_io_lock);
+	bool ok = !cache_maintenance;
+	if (ok) { cache_maintenance = true; cache_io_epoch++; }
+	pthread_mutex_unlock(&cache_io_lock);
+	return ok;
+}
+void nd_cache_maintenance_end(void) {
+	pthread_mutex_lock(&cache_io_lock);
+	cache_maintenance = false;
+	pthread_mutex_unlock(&cache_io_lock);
+}
+unsigned nd_cache_io_count(void) {
+	pthread_mutex_lock(&cache_io_lock);
+	unsigned count = cache_io_active;
+	pthread_mutex_unlock(&cache_io_lock);
+	return count;
+}

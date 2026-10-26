@@ -504,6 +504,7 @@ static void layout_check(nd_library_t lib, const char *card) {
 	puts("nested cache layout: read-only legacy reuse, worker migration, metadata/order/art/audio preservation, failed/stale staging recovery, destination conflicts, corrupt-store recovery and unrelated-file preservation: passed");
 }
 
+#include "navidrome_polish_store_fixture.h"
 
 int main(int argc, char **argv) {
 	assert(argc == 3 || argc == 4);
@@ -526,6 +527,7 @@ int main(int argc, char **argv) {
 		puts("process restart starts locked and restores snapshot after offline unlock: passed");
 		return 0;
 	}
+	polish_store_check(argv[2]);
 	artist_filter_checks(argv[2]);
 	assert(!mkdir(card, 0700));
 	navidrome_init();

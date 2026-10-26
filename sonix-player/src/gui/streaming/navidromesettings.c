@@ -13,6 +13,8 @@
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/streaming/navidrome.h"
+#include "src/system/streaming/navidromecache.h"
+#include "src/system/streaming/navidromeplay.h"
 #include "src/system/streaming/navidromedebug.h"
 #include <stdint.h>
 #include <string.h>
@@ -25,15 +27,19 @@ typedef struct {
 } form_t;
 typedef enum { PASSPHRASE_CREATE, PASSPHRASE_UNLOCK, PASSPHRASE_CHANGE, PASSPHRASE_ENCRYPT, PASSPHRASE_PLAIN } pass_mode_t;
 static form_t main_form, pass_form, settings_form;
-static lv_obj_t *album_view_switch;
 static lv_obj_t *encrypt_switch, *encrypt_row, *protection_note, *pass_return;
 static bool encrypt_selected;
-static lv_obj_t *debug_switch, *debug_note;
+static lv_obj_t *debug_switch, *debug_note, *album_view_switch;
 static gui_config_t *config;
 static lv_obj_t *save_button, *update_button, *reconnect_button, *unlock_button;
 static lv_obj_t *lock_button, *forget_button, *change_button, *pass_button;
 static bool updating, pass_waiting;
 static lv_obj_t *sync_button, *sync_cancel_button, *library_status, *sync_status;
+static lv_obj_t *cache_clear, *cache_total, *cache_values[2], *cache_bars[2];
+static uint32_t cache_last_request;
+static unsigned cache_notice;
+static bool cache_was_clearing;
+static unsigned clear_card_epoch, clear_profile_epoch;
 static unsigned shown_offer;
 static pass_mode_t pass_mode;
 static unsigned loaded_revision;
@@ -174,7 +180,6 @@ static void form_init(form_t *f, const char *title) {
 static bool identical(const navidrome_snapshot_t *s) { return !strcmp(lv_textarea_get_text(main_form.fields[0]), s->host) && !strcmp(lv_textarea_get_text(main_form.fields[1]), s->user); }
 
 static void actions(void) {
-	lv_obj_set_state(album_view_switch, LV_STATE_CHECKED, navidromealbum_enabled());
 	navidrome_snapshot_t s;
 	navidrome_snapshot(&s);
 	bool editable = (!s.configured || s.unlocked) && !s.busy;
@@ -212,6 +217,7 @@ static void actions(void) {
 	enable(encrypt_row, !s.busy && !s.invalid);
 	enable(encrypt_switch, !s.busy && !s.invalid);
 	lv_label_set_text(protection_note, tr(encrypted ? "nd_encryption_on_note" : "nd_encryption_off_note"));
+	lv_obj_set_state(album_view_switch, LV_STATE_CHECKED, navidromealbum_enabled());
 	nd_debug_state_t debug;
 	nd_debug_snapshot(&debug);
 	if (debug.enabled)
@@ -412,6 +418,113 @@ static void pass_unloaded_cb(lv_event_t *e) {
 	keyboard_visible(&pass_form, false);
 }
 
+static void cache_clear_confirmed(void *unused) {
+	(void)unused;
+	nd_library_t lib;
+	navidrome_library_snapshot(&lib);
+	navidrome_snapshot_t snapshot;
+	navidrome_snapshot(&snapshot);
+	if (!snapshot.unlocked) { gui_notify_popup("nd_unlock_required"); return; }
+	nd_context_t identity = {0};
+	bool same = navidrome_context(&identity,false) && identity.card_epoch==clear_card_epoch && identity.profile_epoch==clear_profile_epoch;
+	nd_wipe(&identity,sizeof(identity));
+	if (!same) { gui_notify_popup("nd_cache_changed"); return; }
+	if (nd_cache_clear_request(&lib, navidromeplay_cache_reader_active)) {
+		navidromeplay_cache_stop();
+		cache_was_clearing = true;
+	} else gui_notify_popup(lib.writable ? "nd_cache_busy" : "nd_cache_readonly");
+}
+static void cache_clear_cb(lv_event_t *event) {
+	(void)event;
+	if (gesture()) return;
+	nd_context_t identity = {0};
+	bool available = navidrome_context(&identity,false);
+	clear_card_epoch=identity.card_epoch;clear_profile_epoch=identity.profile_epoch;
+	nd_wipe(&identity,sizeof(identity));
+	if (!available) { gui_notify_popup("nd_unlock_required"); return; }
+	confirm_show("nd_cache_clear", "nd_cache_clear_confirm", "nd_cache_clear", cache_clear_confirmed, NULL);
+}
+static void cache_refresh(void) {
+	nd_library_t lib;
+	navidrome_library_snapshot(&lib);
+	nd_cache_usage_t usage;
+	nd_cache_usage_snapshot(&usage);
+	if (cache_was_clearing && !usage.busy && usage.revision != cache_notice) {
+		cache_notice = usage.revision;
+		cache_was_clearing = false;
+		if (usage.card_epoch == lib.card_epoch && lv_screen_active() == settings_form.screen)
+			gui_notify_popup(usage.error ? usage.error : "nd_cache_cleared");
+	}
+	if (!cache_total || lv_screen_active() != settings_form.screen) return;
+	navidrome_snapshot_t snapshot;
+	navidrome_snapshot(&snapshot);
+	// Periodic byte counting must not change the action's enabled appearance.
+	enable(cache_clear, snapshot.unlocked && lib.writable && *lib.path && !snapshot.busy && !usage.clearing);
+	bool ready = usage.ready && usage.card_epoch == lib.card_epoch;
+	char text[128];
+	if (!snapshot.unlocked) lv_label_set_text(cache_total, tr("nd_unlock_required"));
+	else if (!*lib.path && !lib.loading) lv_label_set_text(cache_total, tr("nd_cache_storage"));
+	else if (usage.clearing) lv_label_set_text(cache_total, tr("nd_cache_clearing"));
+	else if (usage.error && usage.card_epoch == lib.card_epoch) lv_label_set_text(cache_total, tr(usage.error));
+	else if (ready) {
+		uint64_t total = usage.audio + usage.art;
+		lv_snprintf(text, sizeof(text), tr("nd_cache_total"), (unsigned long long)(total / (1024 * 1024)), (unsigned long long)(total % (1024 * 1024) * 100 / (1024 * 1024)));
+		lv_label_set_text(cache_total, text);
+	} else lv_label_set_text(cache_total, tr(snapshot.unlocked ? "nd_working" : "nd_unlock_required"));
+	const uint64_t bytes[] = {usage.audio, usage.art}, budgets[] = {ND_AUDIO_BUDGET, ND_ART_BUDGET};
+	const char *names[] = {"nd_cache_audio", "nd_cache_artwork"};
+	for (int i = 0; i < 2; i++) {
+		lv_snprintf(text, sizeof(text), "%s: %llu / %llu MiB", tr(names[i]), (unsigned long long)(ready ? bytes[i] / (1024 * 1024) : 0), (unsigned long long)(budgets[i] / (1024 * 1024)));
+		lv_label_set_text(cache_values[i], text);
+		lv_bar_set_value(cache_bars[i], ready ? (int)(bytes[i] >= budgets[i] ? 100 : bytes[i] * 100 / budgets[i]) : 0, LV_ANIM_OFF);
+		lv_obj_set_style_bg_color(cache_bars[i], theme()->accent, LV_PART_INDICATOR);
+	}
+	if (!usage.busy && snapshot.unlocked && *lib.path && lv_tick_elaps(cache_last_request) >= 2000) {
+		cache_last_request = lv_tick_get();
+		nd_cache_usage_request(&lib);
+	}
+}
+static void cache_card_build(void) {
+	lv_obj_t *card = lv_obj_create(settings_form.body);
+	lv_obj_set_width(card, lv_pct(100));
+	lv_obj_set_height(card, LV_SIZE_CONTENT);
+	lv_obj_add_style(card, &theme_style_card, 0);
+	lv_obj_set_style_radius(card, ui_px(12), 0);
+	lv_obj_set_style_border_width(card, 0, 0);
+	lv_obj_set_style_shadow_width(card, 0, 0);
+	lv_obj_set_style_pad_hor(card, ui_px(20), 0);
+	lv_obj_set_style_pad_ver(card, ui_px(16), 0);
+	lv_obj_set_style_pad_row(card, ui_px(12), 0);
+	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_scrollable(card, false);
+	lv_obj_t *name = lv_label_create(card);
+	lv_label_set_text(name, tr("nd_cache_size"));
+	lv_obj_add_style(name, &theme_style_text, 0);
+	lv_obj_set_style_text_font(name, &font_ui_24, 0);
+	for (int i = 0; i < 2; i++) {
+		cache_values[i] = lv_label_create(card);
+		lv_obj_set_width(cache_values[i], lv_pct(100));
+		lv_label_set_long_mode(cache_values[i], LV_LABEL_LONG_WRAP);
+		lv_obj_add_style(cache_values[i], &theme_style_text_dim, 0);
+		lv_obj_set_style_text_font(cache_values[i], &font_ui_20, 0);
+		cache_bars[i] = lv_bar_create(card);
+		lv_obj_set_width(cache_bars[i], lv_pct(100));
+		lv_obj_set_height(cache_bars[i], ui_px(10));
+		lv_bar_set_range(cache_bars[i], 0, 100);
+		lv_obj_set_style_radius(cache_bars[i], LV_RADIUS_CIRCLE, LV_PART_MAIN);
+		lv_obj_set_style_bg_color(cache_bars[i], theme()->text_secondary, LV_PART_MAIN);
+		lv_obj_set_style_bg_opa(cache_bars[i], LV_OPA_40, LV_PART_MAIN);
+		lv_obj_set_style_radius(cache_bars[i], LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
+		lv_obj_set_style_bg_color(cache_bars[i], theme()->accent, LV_PART_INDICATOR);
+	}
+	cache_total = lv_label_create(card);
+	lv_obj_set_width(cache_total, lv_pct(100));
+	lv_label_set_long_mode(cache_total, LV_LABEL_LONG_WRAP);
+	lv_obj_add_style(cache_total, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(cache_total, &font_ui_18, 0);
+	cache_clear = action(&settings_form, "nd_cache_clear", cache_clear_cb);
+}
+
 void navidromesettings_refresh(void) {
 	if (!main_form.screen)
 		return;
@@ -444,12 +557,14 @@ void navidromesettings_refresh(void) {
 	if (lv_screen_active() == pass_form.screen && pass_waiting && s.busy)
 		lv_label_set_text(pass_form.status, tr(s.state == ND_CONNECTING ? "nd_connecting" : "nd_working"));
 	offer_sync();
+	cache_refresh();
 }
 
 void navidromesettings_open(void) { switch_screen(settings_form.screen); }
 
 static void refresh_tick(lv_timer_t *timer) {
 	(void)timer;
+	cache_refresh();
 	// A full GUI post queue may drop a completion notice. Reading the snapshot
 	// here is local and also keeps an active unlock password page from staying busy.
 	if (lv_screen_active() == main_form.screen || lv_screen_active() == settings_form.screen || lv_screen_active() == pass_form.screen)
@@ -651,6 +766,7 @@ void navidromesettings_init(gui_config_t *cfg) {
 	}
 	sync_button = action(&settings_form, "nd_sync_library", sync_cb);
 	sync_cancel_button = action(&settings_form, "nd_sync_cancel", sync_cancel_cb);
+	cache_card_build();
 	settingsrow_toggle(settings_form.body, "nd_debug_mode", &debug_switch, debug_cb);
 	debug_note = lv_label_create(settings_form.body);
 	lv_obj_set_width(debug_note, lv_pct(100));

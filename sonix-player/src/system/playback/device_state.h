@@ -202,6 +202,8 @@ void device_state_stop(void);
 // supplies metadata without opening tag files on the GUI thread.
 void device_state_play_prepared(const char *path, const song_metadata_t *metadata, bool paused, double duration);
 void device_state_clear_prepared(void);
+// Represent an installed source selection before its audio is available.
+void device_state_represent_source(const char *reference, const song_metadata_t *metadata, double duration);
 
 // Call just before stopping playback because the storage it is reading from is
 // being taken away -- the card removed, or exported to a computer. It notes
