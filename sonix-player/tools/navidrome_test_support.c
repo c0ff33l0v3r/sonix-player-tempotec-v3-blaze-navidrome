@@ -87,3 +87,14 @@ __attribute__((weak)) void nd_reports_start(const nd_context_t *context, const n
 		const char *id, const char *path, double duration) {
 	(void)context; (void)library; (void)id; (void)path; (void)duration;
 }
+
+// Suites outside offline status omit its independent local worker.
+__attribute__((weak)) void nd_offline_shutdown(void) {}
+
+#include "src/system/streaming/navidromeoffline.h"
+__attribute__((weak)) unsigned nd_offline_submit(const nd_off_request_t *q, nd_off_done_cb cb, void *user) { (void)q; (void)cb; (void)user; return 0; }
+__attribute__((weak)) void nd_offline_cancel(unsigned token) { (void)token; }
+__attribute__((weak)) bool nd_offline_busy(unsigned token) { (void)token; return false; }
+__attribute__((weak)) void nd_offline_poll(void) {}
+__attribute__((weak)) unsigned nd_dl_availability_revision(void) { return 1; }
+__attribute__((weak)) bool navidromeplay_preparing(void) { return false; }

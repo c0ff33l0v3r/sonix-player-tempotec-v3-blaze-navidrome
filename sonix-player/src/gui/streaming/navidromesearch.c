@@ -1,4 +1,5 @@
 #include "navidromesearch.h"
+#include "navidromeofflinebadge.h"
 #include "navidromealbum.h"
 #include "navidromeart.h"
 #include "navidromepage.h"
@@ -27,6 +28,7 @@ typedef struct {
 	cover_image_t art[ND_WINDOW];
 	lv_obj_t *numbers[ND_WINDOW];
 	nd_album_view_t album_view;
+	nd_off_badges_t offline;
 	char anchor[ND_ID_MAX];
 	int anchor_delta;
 	bool art_done[ND_WINDOW], loading, populated;
@@ -91,6 +93,7 @@ static void search_art_release(search_page_t *p) {
 	}
 }
 static void search_rows_hide(search_page_t *p) {
+	navidromeofflinebadge_release(&p->offline);
 	search_art_release(p);
 	for (int i = 0; i < ND_WINDOW; i++)
 		lv_obj_set_hidden(p->rows[i], true);
@@ -179,6 +182,12 @@ static void search_paint_rows(search_page_t *p) {
 		if (*row->cover && !p->album_view.active)
 			navidromeart_request(ND_ART_SEARCH_SLOT + i, &p->data.library, row->cover, ui_px(ND_ART_THUMB_SIZE));
 		navidromealbum_row(&p->album_view, p->rows[i], p->names[i], p->details[i], p->numbers[i], p->images[i], row, p->album_view.active && p->data.album.heading[i]);
+	}
+	if (p->kind == ND_TRACKS || p->kind == ND_ALBUMS) {
+		nd_off_request_t q = {.library = p->data.library, .kind = p->kind == ND_TRACKS ? ND_OFF_TRACK : ND_OFF_ALBUM, .count = p->data.count};
+		for (int i = 0; i < q.count; i++)
+			if (!p->album_view.active || !p->data.album.heading[i]) memcpy(q.items[i].id, p->data.rows[i].id, ND_ID_MAX);
+		navidromeofflinebadge_bind(&p->offline, p->screen, &q, p->details);
 	}
 }
 static void search_done(void *value) {
@@ -553,6 +562,7 @@ static void search_loaded(lv_event_t *e) {
 }
 static void search_unloaded(lv_event_t *e) {
 	search_page_t *p = lv_event_get_user_data(e);
+	navidromeofflinebadge_release(&p->offline);
 	p->serial++;
 	p->loading = false;
 	search_art_release(p);
@@ -625,6 +635,7 @@ void navidromesearch_refresh(void) {
 		for (int i = 0; i < p->data.count; i++)
 			navidromealbum_row(&p->album_view, p->rows[i], p->names[i], p->details[i], p->numbers[i], p->images[i], &p->data.rows[i], p->data.album.heading[i]);
 	}
+	navidromeofflinebadge_tick(&p->offline);
 	for (int i = 0; i < p->data.count; i++)
 		if (!p->art_done[i] && navidromeart_take(ND_ART_SEARCH_SLOT + i, &p->art[i], &p->art_done[i])) {
 			lv_obj_remove_style(p->images[i], &theme_style_icon, 0);

@@ -251,6 +251,19 @@ Publication requires native atomic no-replace rename support from the running
 kernel and card filesystem; unsupported storage reports an error with no unsafe
 fallback. Actual Blaze/card support still needs device verification.
 
+Track, album and saved-playlist rows show a small download icon beside their
+secondary text. Green means a track is permanently downloaded, or every track
+in the album/playlist is downloaded; grey means an album/playlist is partly
+downloaded. No icon means none are downloaded or availability is still unknown.
+Disposable playback-cache files do not count. Albums need complete known track
+lists; saved playlists use their current saved contents, including repeated
+tracks, without requiring Library Sync. Library/Favorites, Search and playlist
+rows share these rules. Clearing download history or disposable cache preserves
+valid permanent-download status. Local checks refresh on download changes and
+page entry, and periodically while visible, so externally removed/changed files
+lose their indicators after revalidation. Checks do not download music, connect
+to the server or change playback.
+
 Downloads are ordinary user-owned music, outside the cache budget. They survive
 Forget Server and can be opened through Folders/Music without credentials; that
 playback uses local controls, history and battery accounting. Durable download

@@ -1,4 +1,5 @@
 #include "navidrome.h"
+#include "navidromeoffline.h"
 #include "navidromecache.h"
 #include "navidromeapi.h"
 #include "navidromebatch.h"
@@ -1109,6 +1110,7 @@ void navidrome_shutdown(void) {
 	g.listener = NULL;
 	void (*shutdown_downloads)(void) = g.shutdown_downloads;
 	pthread_mutex_unlock(&lock);
+	nd_offline_shutdown();
 	if (shutdown_downloads)
 		shutdown_downloads();
 	if (join)

@@ -1,4 +1,5 @@
 #include "navidromebrowse.h"
+#include "navidromeofflinebadge.h"
 #include "src/system/streaming/navidromedownloads.h"
 #include "src/system/core/config.h"
 #include "navidromealbum.h"
@@ -34,6 +35,7 @@ typedef struct {
 	lv_obj_t *screen, *list, *extent, *title, *status, *selection_status;
 	lv_obj_t *rows[ND_WINDOW], *names[ND_WINDOW], *details[ND_WINDOW], *images[ND_WINDOW], *checks[ND_WINDOW];
 	lv_obj_t *playmarks[ND_WINDOW];
+	nd_off_badges_t offline;
 	cover_image_t artwork[ND_WINDOW];
 	lv_obj_t *numbers[ND_WINDOW];
 	nd_album_view_t album;
@@ -199,6 +201,7 @@ static void window_done(void *value) {
         lv_obj_scroll_to_y(p->list, lv_obj_get_scroll_y(p->list) + p->album.height - old_height, LV_ANIM_OFF);
     }
 
+	navidromeofflinebadge_release(&p->offline);
 	for (int i = 0; i < ND_WINDOW; i++) {
 		lv_obj_set_hidden(p->rows[i], i >= p->count);
 		lv_obj_set_hidden(p->menus[i], (result->alternate && result->album.heading[i]) || p->selecting || (p->query.kind != ND_TRACKS && p->query.kind != ND_ALBUMS && p->query.kind != ND_ARTISTS));
@@ -231,6 +234,12 @@ static void window_done(void *value) {
 		navidromealbum_icon(&p->album, lv_obj_get_child(p->menus[i], 0));
 		navidromealbum_icon(&p->album, p->checks[i]);
 		lv_obj_set_style_bg_opa(p->rows[i], result->alternate && result->album.heading[i] ? LV_OPA_TRANSP : p->chosen[i] ? LV_OPA_50 : LV_OPA_COVER, 0);
+	}
+	if (p->query.kind == ND_TRACKS || p->query.kind == ND_ALBUMS) {
+		nd_off_request_t q = {.library = p->library, .kind = p->query.kind == ND_TRACKS ? ND_OFF_TRACK : ND_OFF_ALBUM, .count = p->count};
+		for (int i = 0; i < p->count; i++)
+			if (!result->alternate || !result->album.heading[i]) memcpy(q.items[i].id, p->data[i].id, ND_ID_MAX);
+		navidromeofflinebadge_bind(&p->offline, p->screen, &q, p->details);
 	}
 	browse_selection_ui(p);
 	free(result);
@@ -471,6 +480,7 @@ static void loaded(lv_event_t *e) {
 
 static void unloaded(lv_event_t *e) {
 	browse_page_t *p = lv_event_get_user_data(e);
+	navidromeofflinebadge_release(&p->offline);
 	p->serial++;
 	p->loading = false;
 	p->map_bound = false;
@@ -564,6 +574,7 @@ void navidromebrowse_refresh(void) {
             }
             browse_selection_ui(p);
 		}
+		navidromeofflinebadge_tick(&p->offline);
 		for (int i = 0; i < p->count; i++) {
 			if (p->album.active || p->art_finished[i])
 				continue;

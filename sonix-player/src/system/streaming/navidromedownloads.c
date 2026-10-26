@@ -124,8 +124,10 @@ static bool save_job(run_t *r, nd_dl_job_t *j) {
 	if (ok)
 		ok = navidrome_playback_action(&r->context, false, commit_sql, s.db);
 	close_store(&s);
-	if (ok && j->state == NDDL_COMPLETE)
+	if (ok && j->state == NDDL_COMPLETE) {
 		accept_repaired_mapping(r, j);
+		nd_dl_availability_changed();
+	}
 	return ok;
 }
 static void deliver(void *unused) {
@@ -192,28 +194,7 @@ bool navidromedownloads_take_saved(nd_library_t *library) {
 	return ready;
 }
 static bool mapping_valid(const char *root, nd_dl_job_t *j, char path[ND_DL_PATH], run_t *r) {
-	const char *suffix = strrchr(j->path, '.');
-	size_t prefix = strlen(j->destination);
-	if (!nd_dl_destination(j->destination) || j->path[0] == '.' || strstr(j->path, "/.") || strlen(j->digest) != 64 || strspn(j->digest, "0123456789abcdef") != 64 || !suffix || !j->extension[0] || strcmp(suffix, j->extension) || (prefix && (strncmp(j->path, j->destination, prefix) || j->path[prefix] != '/')))
-		return false;
-	char relative[ND_DL_PATH];
-	snprintf(relative, sizeof(relative), "%s", j->path);
-	char *leaf = strrchr(relative, '/');
-	if (!leaf || !j->digest[0] || j->bytes <= 0)
-		return false;
-	*leaf++ = 0;
-	int dir = nd_dl_directory(root, relative, false);
-	struct stat st;
-	bool ok = dir >= 0 && !fstatat(dir, leaf, &st, AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode) && st.st_size == j->bytes;
-	if (ok && (st.st_mtime != j->mtime || (int64_t)st.st_ino != j->inode)) {
-		char digest[65];
-		ok = nd_dl_fingerprint(dir, leaf, digest, &st, context_current, r) && !strcmp(digest, j->digest);
-	}
-	if (ok)
-		ok = snprintf(path, ND_DL_PATH, "%s/%s", root, j->path) < ND_DL_PATH && nd_audio_valid(path);
-	if (dir >= 0)
-		close(dir);
-	return ok && context_current(r);
+	return nd_dl_mapping_valid(root, j, path, nd_audio_valid, context_current, r);
 }
 
 bool nd_download_resolve(const nd_library_t *lib, const nd_context_t *ctx, const char *id, char path[ND_DL_PATH]) {
@@ -241,6 +222,7 @@ bool nd_download_resolve(const nd_library_t *lib, const nd_context_t *ctx, const
 	bool ok = nd_dl_paths(lib, root, db) && mapping_valid(root, &j, path, &r);
 	navidrome_cache_end();
 	if (!ok) {
+		nd_dl_availability_changed();
 		pthread_mutex_lock(&mutex);
 		unsigned slot = retired_next++ % 32;
 		retired[slot].profile = ctx->profile_epoch;

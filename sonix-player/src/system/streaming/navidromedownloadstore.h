@@ -41,6 +41,11 @@ bool nd_dl_clear_history(nd_dl_store_t *store);
 const char *nd_dl_history_visible(const nd_dl_store_t *store);
 bool nd_dl_update(nd_dl_store_t *store, const nd_dl_job_t *job);
 bool nd_dl_find(nd_dl_store_t *store, const char *id, nd_dl_job_t *job);
+// Passive worker checks. Caller owns the short card lease; no job writes.
+bool nd_dl_mapping_valid(const char *root, const nd_dl_job_t *job, char path[ND_DL_PATH], bool (*media)(const char *), bool (*current)(void *), void *user);
+int nd_dl_probe(nd_dl_store_t *store, const char *id, bool (*media)(const char *), bool (*current)(void *), void *user); // -1 unknown, 0 absent, 1 valid
+unsigned nd_dl_availability_revision(void);
+void nd_dl_availability_changed(void);
 // Opens validated in-card directory components using O_NOFOLLOW. Caller closes.
 int nd_dl_directory(const char *root, const char *relative, bool create);
 bool nd_dl_destination(const char *relative);

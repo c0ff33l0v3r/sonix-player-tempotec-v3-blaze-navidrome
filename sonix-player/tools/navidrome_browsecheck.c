@@ -5,6 +5,15 @@
 #undef main
 #undef gui_post
 #include "src/gui/shell/azindex.c"
+#ifdef icon_download
+#undef icon_download
+extern const lv_image_dsc_t icon_download;
+#include "src/gui/streaming/navidromeofflinebadge.c"
+#define icon_download fixture_download_stub
+extern const lv_image_dsc_t fixture_download_stub;
+#else
+#include "src/gui/streaming/navidromeofflinebadge.c"
+#endif
 #include "src/gui/streaming/navidromebrowse.c"
 #include "src/gui/streaming/navidromealbum.c"
 

@@ -249,6 +249,7 @@ static void repeated_playlist_marks(const nd_library_t *lib) {
 	puts("playlist LVGL header/menu downloads, real glyph bounds, selection/gesture/stale guards and repeated exact-ID markers: passed");
 }
 
+#ifndef NAVIDROME_OFFLINE_UI
 int main(int argc, char **argv) {
 	ui_panel_width = argc > 1 ? atoi(argv[1]) : 320;
 	assert(ui_panel_width == 320 || ui_panel_width == 480);
@@ -745,3 +746,5 @@ int main(int argc, char **argv) {
 	printf("Music-style playlists at %dx%d: cards, scoped picking, naming/Back, bounded art, import return and named copies passed\n", ui_panel_width, panel_height);
 	puts("real LVGL playlist creation, empty Add tracks, album expansion/dedupe, selection/removal, rename, gestures, offline/no-snapshot/read-only/lock: passed");
 }
+
+#endif

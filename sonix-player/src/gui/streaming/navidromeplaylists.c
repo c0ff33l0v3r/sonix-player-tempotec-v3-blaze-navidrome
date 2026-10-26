@@ -1,5 +1,6 @@
 #include "src/system/streaming/navidromeplay.h"
 #include "navidromeplaylists.h"
+#include "navidromeofflinebadge.h"
 #include "navidromeart.h"
 #include "navidromebrowse.h"
 #include "navidromepage.h"
@@ -37,6 +38,7 @@ typedef struct {
 	bool art_finished[ND_WINDOW], art_bound[ND_WINDOW];
 	lv_obj_t *rows[ND_WINDOW], *names[ND_WINDOW], *details[ND_WINDOW], *menus[ND_WINDOW], *checks[ND_WINDOW];
 	lv_obj_t *playmarks[ND_WINDOW];
+	nd_off_badges_t offline;
 	nd_playlist_t playlists[ND_WINDOW], playlist;
 	nd_playlist_entry_t entries[ND_WINDOW];
 	int first, count, total, selected, pitch, offset;
@@ -141,6 +143,7 @@ static void pl_take_art(pl_page_t *p) {
 	}
 }
 static void pl_show_rows(pl_page_t *p, const bool keep_art[ND_WINDOW]) {
+	navidromeofflinebadge_release(&p->offline);
 	int page = (int)(p - pl_pages);
 	nd_library_t library;
 	navidrome_library_snapshot(&library);
@@ -172,6 +175,14 @@ static void pl_show_rows(pl_page_t *p, const bool keep_art[ND_WINDOW]) {
 		lv_obj_set_hidden(p->menus[i], (page == 1 && p->selecting) || page == 2 || page == 3);
 		lv_obj_set_hidden(p->checks[i], page != 1 || !p->entries[i].selected);
 		lv_obj_set_style_bg_opa(p->rows[i], page == 1 && p->entries[i].selected ? LV_OPA_50 : LV_OPA_COVER, 0);
+	}
+	if (page != 3) {
+		nd_off_request_t q = {.library = library, .kind = page == 1 ? ND_OFF_TRACK : ND_OFF_PLAYLIST, .count = p->count};
+		for (int i = 0; i < q.count; i++) {
+			if (page == 1) memcpy(q.items[i].id, p->entries[i].track.id, ND_ID_MAX);
+			else { q.items[i].playlist = p->playlists[i].id; q.items[i].revision = p->playlists[i].revision; }
+		}
+		navidromeofflinebadge_bind(&p->offline, p->screen, &q, p->details);
 	}
 	pl_status(p);
 	pl_buttons(p);
@@ -642,6 +653,7 @@ static void pl_loaded(lv_event_t *event) {
 }
 static void pl_unloaded(lv_event_t *event) {
 	pl_page_t *p = lv_event_get_user_data(event);
+	navidromeofflinebadge_release(&p->offline);
 	p->download_token = ++pl_download_token;
 	pl_download_menu_token++;
 	p->download_pending = false;
@@ -691,6 +703,7 @@ void navidromeplaylists_refresh(void) {
 			bool marked = navidromeplay_matches(&lib, ND_TRACKS, p->entries[row].track.id);
 			playmark_show(p->playmarks[row], marked);
 		}
+		navidromeofflinebadge_tick(&p->offline);
 		pl_take_art(p);
 		if (p->epoch != lib.epoch && !navidrome_playlists_busy()) {
 			pl_release_art(p);

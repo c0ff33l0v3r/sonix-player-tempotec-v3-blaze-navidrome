@@ -8,6 +8,11 @@
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
+#include <stdatomic.h>
+
+static atomic_uint availability_revision = 1;
+unsigned nd_dl_availability_revision(void) { return atomic_load(&availability_revision); }
+void nd_dl_availability_changed(void) { atomic_fetch_add(&availability_revision, 1); }
 
 void nd_dl_bind(sqlite3_stmt *s, int at, const char *text) { sqlite3_bind_text(s, at, text ? text : "", -1, SQLITE_TRANSIENT); }
 bool nd_dl_sql(nd_dl_store_t *s, const char *sql) {
@@ -158,6 +163,55 @@ static bool query_one(nd_dl_store_t *s, const char *where, int64_t key, const ch
 bool nd_dl_get(nd_dl_store_t *s, int64_t key, nd_dl_job_t *j) { return query_one(s, "key=?", key, NULL, j); }
 bool nd_dl_next(nd_dl_store_t *s, nd_dl_job_t *j) { return query_one(s, "state=0 ORDER BY key LIMIT 1", 0, NULL, j); }
 bool nd_dl_find(nd_dl_store_t *s, const char *id, nd_dl_job_t *j) { return query_one(s, "track=? AND state=4 ORDER BY key DESC LIMIT 1", 0, id, j); }
+
+bool nd_dl_mapping_valid(const char *root, const nd_dl_job_t *j, char path[ND_DL_PATH], bool (*media)(const char *), bool (*current)(void *), void *user) {
+	const char *suffix = strrchr(j->path, '.');
+	size_t prefix = strlen(j->destination);
+	if (!nd_dl_destination(j->destination) || j->path[0] == '.' || strstr(j->path, "/.") || strlen(j->digest) != 64 || strspn(j->digest, "0123456789abcdef") != 64 || !suffix || !j->extension[0] || strcmp(suffix, j->extension) || (prefix && (strncmp(j->path, j->destination, prefix) || j->path[prefix] != '/')))
+		return false;
+	char relative[ND_DL_PATH];
+	snprintf(relative, sizeof(relative), "%s", j->path);
+	char *leaf = strrchr(relative, '/');
+	if (!leaf || j->bytes <= 0 || (current && !current(user)))
+		return false;
+	*leaf++ = 0;
+	int dir = nd_dl_directory(root, relative, false);
+	struct stat st;
+	bool ok = dir >= 0 && !fstatat(dir, leaf, &st, AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode) && st.st_size == j->bytes;
+	if (ok && (st.st_mtime != j->mtime || (int64_t)st.st_ino != j->inode)) {
+		char digest[65];
+		ok = nd_dl_fingerprint(dir, leaf, digest, &st, current, user) && !strcmp(digest, j->digest);
+	}
+	if (ok)
+		ok = snprintf(path, ND_DL_PATH, "%s/%s", root, j->path) < ND_DL_PATH && media(path);
+	if (dir >= 0)
+		close(dir);
+	return ok && (!current || current(user));
+}
+
+int nd_dl_probe(nd_dl_store_t *s, const char *id, bool (*media)(const char *), bool (*current)(void *), void *user) {
+	char sql[900];
+	snprintf(sql, sizeof(sql), "SELECT %s FROM job WHERE track=? AND state=4 ORDER BY key DESC", columns);
+	sqlite3_stmt *st = NULL;
+	if (!nd_dl_prepare(s, &st, sql))
+		return -1;
+	nd_dl_bind(st, 1, id);
+	int result = 0, rc;
+	while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+		if (current && !current(user)) { result = -1; break; }
+		nd_dl_job_t job;
+		char path[ND_DL_PATH];
+		decode(st, &job);
+		errno = 0;
+		if (nd_dl_mapping_valid(s->root, &job, path, media, current, user)) { result = 1; break; }
+		if (errno == EACCES || errno == EIO || errno == EMFILE || errno == ENFILE || errno == ENOMEM)
+			result = -1;
+	}
+	if ((rc != SQLITE_ROW && rc != SQLITE_DONE) || (current && !current(user)))
+		result = -1;
+	sqlite3_finalize(st);
+	return result;
+}
 bool nd_dl_insert(nd_dl_store_t *s, int64_t batch, const char *dest, const nd_playrow_t *r, int multi, int *added, int *skipped) {
 	sqlite3_stmt *st = NULL;
 	if (!nd_dl_prepare(s, &st, "SELECT 1 FROM job WHERE track=? AND state NOT IN(6,7) LIMIT 1"))
