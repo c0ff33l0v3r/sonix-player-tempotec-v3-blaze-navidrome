@@ -350,8 +350,31 @@ without adding an Artists category. Disposable Favorites data lives in
 
 Show album opens the exact Navidrome album. Show artist opens that primary
 artist's local Albums page by ID, including offline; it is unavailable when the
-snapshot has no authoritative primary artist ID. Lyrics integration and
-listening reports remain deferred.
+snapshot has no authoritative primary artist ID. Lyrics integration remains deferred.
+
+Navidrome listening reports run silently in the background, independently of
+Last.fm. A track at least 30 seconds long counts after you actually listen to
+half of it or four minutes, whichever comes first. Pauses, buffering and seek
+jumps do not count. Counts use the exact server track identity, including cached
+or permanent originals played through Navidrome; opening the same file through
+Music remains local playback.
+
+Reports never pause audio, block transport controls, disconnect playback or show
+popups/toasts on failure. Audio transfers take priority, so reports can be delayed
+or dropped. Qualified offline listens retain their original start times in a
+bounded selected-card queue at `.local/navidrome/listens-<scope>.db`, outside
+**Clear cache**: up to 1,024 events, 30 days and 2 MiB including storage overhead.
+Missing/read-only/full storage uses bounded temporary memory or loses reports.
+Delivery needs a valid clock and an already connected profile; startup and Wi-Fi
+recovery do not reconnect. An uncertain or attempted counting report is never
+retried automatically, including after restart, so delivery is best effort.
+
+Compatible servers receive current playback state/position with counting disabled;
+older servers receive a legacy Now Playing announcement. Past playback states
+are never replayed as current activity. Direct player Last.fm settings stay
+independent: if Navidrome also forwards to the same external account, choose one
+of those routes to avoid external duplicates. No Last.fm login is needed for
+Navidrome's own statistics.
 
 Navidrome → **Playlists** stores playlists of Navidrome track references on the
 selected card. Like Music’s Playlists page, it starts with a **New playlist** row

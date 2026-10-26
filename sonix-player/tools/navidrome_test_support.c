@@ -76,3 +76,14 @@ __attribute__((weak)) void nd_audio_set_source(const char *path) { (void)path; }
 // fixtures link its real implementation instead of these weak boundaries.
 __attribute__((weak)) void navidromedownloadpage_init(void *config) { (void)config; }
 __attribute__((weak)) void navidromedownloadpage_open(void) {}
+
+// Unrelated focused suites omit the independent reporter; reporting fixtures
+// link its strong production implementation and the real observation boundary.
+#include "src/system/streaming/navidromereports.h"
+__attribute__((weak)) void nd_reports_init(void) {}
+__attribute__((weak)) void nd_reports_shutdown(void) {}
+__attribute__((weak)) void nd_reports_defer(void) {}
+__attribute__((weak)) void nd_reports_start(const nd_context_t *context, const nd_library_t *library,
+		const char *id, const char *path, double duration) {
+	(void)context; (void)library; (void)id; (void)path; (void)duration;
+}

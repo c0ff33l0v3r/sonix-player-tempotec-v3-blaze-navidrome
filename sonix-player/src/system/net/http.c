@@ -1386,6 +1386,7 @@ struct http_session {
 	const char *error;
 	bool chunked, closing, complete, chunk_crlf;
 	bool binary;
+	bool no_redirect;
 	size_t wire_limit, decoded_limit, declared;
 	int deadline_ms;
 	char content_type[64];
@@ -1436,9 +1437,11 @@ static bool finite_wait(void *arg, bool write) {
 // At most two unresolved jobs may exist, even when libc name resolution stalls.
 static pthread_mutex_t resolve_lock = PTHREAD_MUTEX_INITIALIZER;
 static unsigned resolve_jobs;
+static unsigned report_resolve_jobs;
 typedef struct {
 	pthread_mutex_t lock;
 	bool done, abandoned;
+	bool report;
 	char host[256], port[16];
 	struct addrinfo *result;
 } finite_resolve_t;
@@ -1454,7 +1457,8 @@ static void *finite_resolver(void *arg) {
 	dns_follow_resolv_conf();
 	getaddrinfo(r->host, r->port, &hints, &r->result);
 	pthread_mutex_lock(&resolve_lock);
-	resolve_jobs--;
+	if (r->report) report_resolve_jobs--;
+	else resolve_jobs--;
 	pthread_mutex_unlock(&resolve_lock);
 	pthread_mutex_lock(&r->lock);
 	r->done = true;
@@ -1477,10 +1481,12 @@ static struct addrinfo *finite_resolve(http_session_t *s, const url_t *u) {
 	}
 	snprintf(r->host, sizeof(r->host), "%s", u->host);
 	snprintf(r->port, sizeof(r->port), "%d", u->port);
+	r->report = s->no_redirect;
 	pthread_mutex_lock(&resolve_lock);
-	bool available = resolve_jobs < 2;
-	if (available)
-		resolve_jobs++;
+	// A stalled reporting DNS job must never consume either audio/sync slot.
+	unsigned *jobs = r->report ? &report_resolve_jobs : &resolve_jobs;
+	bool available = *jobs < (r->report ? 1u : 2u);
+	if (available) (*jobs)++;
 	pthread_mutex_unlock(&resolve_lock);
 	pthread_t thread;
 	pthread_attr_t attr;
@@ -1497,7 +1503,7 @@ static struct addrinfo *finite_resolve(http_session_t *s, const url_t *u) {
 	if (rc) {
 		if (available) {
 			pthread_mutex_lock(&resolve_lock);
-			resolve_jobs--;
+			(*jobs)--;
 			pthread_mutex_unlock(&resolve_lock);
 		}
 		resolve_free(r);
@@ -1737,6 +1743,13 @@ bool http_session_binary(http_session_t *s, size_t max_bytes, int seconds) {
 	s->deadline_ms = seconds * 1000;
 	return true;
 }
+bool http_session_report(http_session_t *s, size_t max_bytes) {
+	if (!s || s->conn.fd >= 0 || !max_bytes || max_bytes > 65536)
+		return false;
+	s->wire_limit = s->decoded_limit = max_bytes;
+	s->no_redirect = true;
+	return true;
+}
 const char *http_session_content_type(const http_session_t *s) { return s->content_type; }
 size_t http_session_length(const http_session_t *s) { return s->declared; }
 void http_session_free(http_session_t *s) {
@@ -1902,6 +1915,10 @@ bool http_session_get(http_session_t *s, const char *url, bool gzip, bool reuse)
 			break;
 		}
 		if (s->status >= 300 && s->status < 400 && *location) {
+			if (s->no_redirect) {
+				s->error = "redirect";
+				break;
+			}
 			finite_close(s);
 			int n = location[0] == '/' ? snprintf(current, sizeof(current), "%s://%s:%d%s", u.secure ? "https" : "http", u.host, u.port, location) : snprintf(current, sizeof(current), "%s", location);
 			if (n >= (int)sizeof(current)) {

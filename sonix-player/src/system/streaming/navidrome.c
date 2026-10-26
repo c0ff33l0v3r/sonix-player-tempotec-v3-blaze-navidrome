@@ -37,6 +37,7 @@ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t ready = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t io_drained = PTHREAD_COND_INITIALIZER;
 static unsigned cache_users, sync_owners, external_users;
+static unsigned report_connection;
 static pthread_t worker;
 static struct {
 	bool initialized, started, stop, pending, busy, configured, invalid, unlocked, checking, connected;
@@ -818,6 +819,8 @@ static void *work(void *unused) {
 			g.busy = g.checking = false;
 			if (check) {
 				g.connected = !error || !strcmp(error, "nd_history_error");
+				if (g.connected)
+					report_connection++;
 				if (g.connected && job.offer)
 					g.offer = job.generation;
 			}
@@ -1489,4 +1492,42 @@ unsigned nd_cache_io_count(void) {
 	unsigned count = cache_io_active;
 	pthread_mutex_unlock(&cache_io_lock);
 	return count;
+}
+
+bool navidrome_report_context(nd_report_context_t *out, nd_context_t *credentials) {
+	memset(out, 0, sizeof(*out));
+	if (credentials) memset(credentials, 0, sizeof(*credentials));
+	pthread_mutex_lock(&lock);
+	out->profile = g.profile_epoch;
+	out->card = g.card_epoch;
+	out->connection = report_connection;
+	out->busy = g.busy || external_users || sync_owners;
+	out->available = !g.stop && g.unlocked && !g.invalid && g.library.scope[0] && g.library.path[0];
+	out->connected = out->available && g.connected;
+	out->writable = g.library.writable;
+	snprintf(out->scope, sizeof(out->scope), "%s", g.library.scope);
+	// Current and read-only legacy library paths have the same durable parent.
+	const char *slash = strrchr(g.library.path, '/');
+	if (slash) {
+		size_t parent = (size_t)(slash - g.library.path);
+		if (parent >= 7 && !memcmp(g.library.path + parent - 7, "/.cache", 7)) parent -= 7;
+		int n = snprintf(out->path, sizeof(out->path), "%.*s/listens-%s.db", (int)parent, g.library.path, out->scope);
+		if (n < 0 || n >= (int)sizeof(out->path)) out->available = out->connected = false;
+	} else out->available = out->connected = false;
+	if (credentials && out->connected) {
+		snprintf(credentials->host, sizeof(credentials->host), "%s", g.record.host);
+		snprintf(credentials->user, sizeof(credentials->user), "%s", g.record.user);
+		memcpy(credentials->password, g.password, sizeof(credentials->password));
+	}
+	pthread_mutex_unlock(&lock);
+	return out->available;
+}
+bool navidrome_report_current(const nd_report_context_t *c, bool network, bool lease) {
+	pthread_mutex_lock(&lock);
+	bool ok = !g.stop && g.unlocked && !g.invalid && c->profile == g.profile_epoch &&
+		c->card == g.card_epoch && !strcmp(c->scope, g.library.scope) &&
+		(!network || (g.connected && c->connection == report_connection && !g.busy && !external_users && !sync_owners));
+	if (ok && lease) cache_users++;
+	pthread_mutex_unlock(&lock);
+	return ok;
 }

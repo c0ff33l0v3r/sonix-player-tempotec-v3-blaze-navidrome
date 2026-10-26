@@ -257,11 +257,12 @@ bool nd_api_field_unique(const json_doc_t *doc, int object, const char *name, bo
 
 // Scan checks share the finite deadline/cancellation contract, without retaining
 // a third connection alongside the two enumeration workers.
-static const char *finite_json(const char *host, const char *user, const char *password, const char *method, const char *query, size_t limit, bool control, bool (*current)(void *), void *arg, nd_document_t *out) {
+static const char *finite_json(const char *host, const char *user, const char *password, const char *method, const char *query, size_t limit, bool control, bool (*current)(void *), void *arg, nd_document_t *out, bool report, int *response_status) {
 	memset(out, 0, sizeof(*out));
 	http_session_t *session = http_session_new(current, arg);
 	if (!session)
 		return "nd_json_memory";
+	if (report) http_session_report(session, 65536);
 	char url[2500];
 	const char *error = request_url(host, user, password, method, query, url, sizeof(url));
 	if (!error && !http_session_get(session, url, false, false)) {
@@ -292,7 +293,7 @@ static const char *finite_json(const char *host, const char *user, const char *p
 	}
 	if (!error) {
 		body[used] = 0;
-		json_parse_result_t parsed = json_parse_detailed(body, &out->doc, ND_API_TOKENS);
+		json_parse_result_t parsed = json_parse_detailed(body, &out->doc, report ? 4096 : ND_API_TOKENS);
 		if (parsed != JSON_PARSE_OK)
 			error = parsed == JSON_PARSE_MEMORY ? "nd_json_memory" : !control && parsed == JSON_PARSE_TOKENS ? "nd_page_large" : !control && parsed == JSON_PARSE_DEPTH ? "nd_json_depth" : "nd_response_error";
 		else {
@@ -318,6 +319,7 @@ static const char *finite_json(const char *host, const char *user, const char *p
 				json_free(&out->doc);
 		}
 	}
+	if (response_status) *response_status = http_session_status(session);
 	if (http_session_error(session) && !strcmp(http_session_error(session), "cancelled"))
 		error = "nd_sync_cancelled";
 	http_session_free(session);
@@ -331,12 +333,20 @@ static const char *finite_json(const char *host, const char *user, const char *p
 	return error;
 }
 
-const char *nd_api_control(const char *host, const char *user, const char *password, bool (*current)(void *), void *arg, nd_document_t *out) { return finite_json(host, user, password, "getScanStatus", NULL, 16384, true, current, arg, out); }
+const char *nd_api_control(const char *host, const char *user, const char *password, bool (*current)(void *), void *arg, nd_document_t *out) { return finite_json(host, user, password, "getScanStatus", NULL, 16384, true, current, arg, out, false, NULL); }
 
 const char *nd_api_finite_json(const char *host, const char *user, const char *password, const char *method, const char *query, size_t limit, bool (*current)(void *), void *arg, nd_document_t *out) {
 	if (limit < 2 || limit > ND_API_BYTES)
 		return "nd_input_long";
-	const char *error = finite_json(host, user, password, method, query, limit, false, current, arg, out);
+	const char *error = finite_json(host, user, password, method, query, limit, false, current, arg, out, false, NULL);
 	nd_log("navidrome: finite request method=%s result=%s\n", method, error ? error : "ok");
 	return error;
+}
+
+const char *nd_api_report(const char *host, const char *user, const char *password,
+		const char *method, const char *query, bool (*current)(void *), void *arg,
+		nd_document_t *out, int *status) {
+	*status = 0;
+	return finite_json(host, user, password, method, query, 65537, false,
+		current, arg, out, true, status);
 }

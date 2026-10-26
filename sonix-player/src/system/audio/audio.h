@@ -23,6 +23,16 @@ typedef enum {
 	AUDIO_STATUS_PAUSED,
 } audio_status_t;
 
+// Passive, coherent, nonblocking observation. New starts and discontinuities
+// are explicit: a seek back to zero must not look like repeat-one.
+typedef struct {
+	char path[512];
+	unsigned serial, discontinuity;
+	audio_status_t status;
+	double position, duration, rate;
+} audio_observation_t;
+bool audio_observe(audio_observation_t *out);
+
 int audio_init();
 
 // Closes any currently playing file first.

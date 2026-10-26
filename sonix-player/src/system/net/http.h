@@ -232,6 +232,8 @@ typedef struct {
 	double connect_seconds, transfer_seconds;
 } http_session_stats_t;
 http_session_t *http_session_new(bool (*current)(void *), void *user);
+// Reporting has one HTTP attempt: no redirect replay, small finite body budget.
+bool http_session_report(http_session_t *session, size_t max_bytes);
 // Opt-in original binary transfers. Defaults for finite JSON remain unchanged.
 bool http_session_binary(http_session_t *session, size_t max_bytes, int deadline_seconds);
 const char *http_session_content_type(const http_session_t *session);

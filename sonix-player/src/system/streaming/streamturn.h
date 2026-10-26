@@ -30,6 +30,8 @@ void streamturn_release(void);
 // Waits until nothing is downloading, without taking the turn. For work that
 // should only run ahead when it disturbs nobody.
 void streamturn_wait_idle(void);
+// Advisory only; observers never own the turn or block its participants.
+unsigned streamturn_observe(bool *idle);
 
 // ---------------------------------------------------------------------------
 // Abandoning every download, whoever owns it

@@ -2,11 +2,19 @@
 
 #include <pthread.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <time.h>
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
 static bool busy;
+static atomic_uint demand, demand_epoch;
+static void demand_begin(void) { atomic_fetch_add(&demand, 1); atomic_fetch_add(&demand_epoch, 1); }
+static void demand_end(void) { atomic_fetch_sub(&demand, 1); atomic_fetch_add(&demand_epoch, 1); }
+unsigned streamturn_observe(bool *idle) {
+	*idle = atomic_load(&demand) == 0;
+	return atomic_load(&demand_epoch);
+}
 static unsigned playback_waiters;
 static bool background_busy;
 static void (*background_cancel)(void);
@@ -20,6 +28,7 @@ bool streamturn_set_background_cancel(void (*cancel)(void)) {
 }
 
 void streamturn_acquire(void) {
+	demand_begin();
 	pthread_mutex_lock(&lock);
 	playback_waiters++;
 	void (*cancel)(void) = background_busy ? background_cancel : NULL;
@@ -35,6 +44,7 @@ void streamturn_acquire(void) {
 }
 
 bool streamturn_acquire_current(bool (*current)(void *), void *user) {
+	demand_begin();
 	pthread_mutex_lock(&lock);
 	playback_waiters++;
 	void (*cancel)(void) = background_busy ? background_cancel : NULL;
@@ -46,6 +56,7 @@ bool streamturn_acquire_current(bool (*current)(void *), void *user) {
 			playback_waiters--;
 			pthread_cond_broadcast(&changed);
 			pthread_mutex_unlock(&lock);
+			demand_end();
 			return false;
 		}
 		pthread_mutex_lock(&lock);
@@ -68,6 +79,7 @@ bool streamturn_acquire_current(bool (*current)(void *), void *user) {
 }
 
 bool streamturn_acquire_background(bool (*current)(void *), void *user) {
+	demand_begin();
 	while (current(user)) {
 		pthread_mutex_lock(&lock);
 		if (!busy && !playback_waiters) {
@@ -83,6 +95,7 @@ bool streamturn_acquire_background(bool (*current)(void *), void *user) {
 		pthread_cond_timedwait(&changed, &lock, &deadline);
 		pthread_mutex_unlock(&lock);
 	}
+	demand_end();
 	return false;
 }
 
@@ -95,6 +108,7 @@ void streamturn_release(void) {
 	// stuck until someone else comes through.
 	pthread_cond_broadcast(&changed);
 	pthread_mutex_unlock(&lock);
+	demand_end();
 }
 
 // Three registrants -- Qobuz, Tidal, podcasts -- plus margin.

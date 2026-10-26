@@ -26,5 +26,8 @@ bool nd_api_field_unique(const json_doc_t *document, int object, const char *nam
 // Opt-in finite, cancellable protected JSON for Favorites; legacy callers retain behavior.
 const char *nd_api_finite_json(const char *host, const char *user, const char *password, const char *method, const char *query, size_t limit, bool (*current)(void *), void *arg, nd_document_t *out);
 const char *nd_api_control(const char *host, const char *user, const char *password, bool (*current)(void *), void *arg, nd_document_t *out);
+const char *nd_api_report(const char *host, const char *user, const char *password,
+		const char *method, const char *query, bool (*current)(void *), void *arg,
+		nd_document_t *out, int *status);
 
 #endif

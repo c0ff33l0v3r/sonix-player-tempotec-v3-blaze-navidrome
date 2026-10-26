@@ -1,4 +1,5 @@
 #include "navidromeplay.h"
+#include "navidromereports.h"
 #include "navidromeplaycatalog.h"
 #include "navidromeplayliststore.h"
 #include "src/gui/nowplaying/player.h"
@@ -429,6 +430,7 @@ static void result_done(void *user) {
 	pthread_mutex_unlock(&lock);
 	nd_audio_set_source(r->path);
 	device_state_play_prepared(r->path, &meta, paused, r->row.row.duration);
+	nd_reports_start(&s->context, &s->library, r->row.row.id, r->path, r->row.row.duration);
 	player_refresh_now_playing();
 	if (job->initial && config_get_bool("player", "open_player_on_tap", true) && lv_obj_is_valid(s->origin) && lv_screen_active() == s->origin)
 		player_sheet_open(true);
@@ -908,6 +910,7 @@ void navidromeplay_other(const char *path) {
 }
 static bool submit(source_t *s, int entry, bool initial, bool foreground, const char *ref, const char *failure) {
 	if (foreground) {
+		nd_reports_defer();
 		device_state_t state;
 		device_state_get(&state);
 		if (nd_audio_source(state.current_file) && growfile_is_growing(state.current_file))
@@ -1333,6 +1336,7 @@ void navidromeplay_init(void) {
 		return;
 	}
 	started = true;
+	nd_reports_init();
 	timer = lv_timer_create(tick, 250, NULL);
 	lv_timer_pause(timer);
 	navidrome_set_playback_invalidator(invalidate);
@@ -1341,6 +1345,7 @@ void navidromeplay_init(void) {
 void navidromeplay_shutdown(void) {
 	if (!started)
 		return;
+	nd_reports_shutdown();
 	navidrome_set_playback_invalidator(NULL);
 	navidrome_set_playback_network_stop(NULL);
 	pthread_mutex_lock(&lock);

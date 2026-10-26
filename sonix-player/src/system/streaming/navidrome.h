@@ -84,4 +84,14 @@ void navidrome_test_online(int online); // -1 production behavior, 0/1 injected 
 bool navidrome_search_current(const nd_context_t *context, bool network);
 void navidrome_search_failed(const nd_context_t *context, const char *reason);
 
+// Reporter-only worker snapshots. No busy reservation, network failure effect,
+// filesystem access or SQL commit while holding the service mutex.
+typedef struct {
+	unsigned profile, card, connection;
+	char scope[33], path[1200];
+	bool available, connected, writable, busy;
+} nd_report_context_t;
+bool navidrome_report_context(nd_report_context_t *out, nd_context_t *credentials);
+bool navidrome_report_current(const nd_report_context_t *context, bool network, bool lease);
+
 #endif

@@ -243,6 +243,7 @@ static pthread_mutex_t output_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static pthread_t playback_thread;
 static pthread_mutex_t audio_mutex = PTHREAD_MUTEX_INITIALIZER;
+static unsigned observation_serial, observation_discontinuity;
 static pthread_cond_t audio_cond = PTHREAD_COND_INITIALIZER;
 
 static audio_command_t audio_command = AUDIO_CMD_NONE;
@@ -4677,6 +4678,7 @@ int audio_play(const char *filepath) {
 	// The playback thread routes at track start, the stock engine's way.
 
 	pthread_mutex_lock(&audio_mutex);
+	observation_serial++;
 	restart_fresh_pending = false; // an explicit play beats the armed restart
 	strncpy(current_filepath, filepath, sizeof(current_filepath) - 1);
 	play_request = true;
@@ -4715,10 +4717,11 @@ int audio_play(const char *filepath) {
 // a play followed by a seek because both halves are set under one hold of the
 // mutex: otherwise the playback thread could open the file and push its first
 // second out of the speakers before the seek reached it.
-int audio_play_at(const char *filepath, double start_secs) {
+static int play_at(const char *filepath, double start_secs, bool continuation) {
 	fprintf(stderr, "audio[%ld]: play requested '%s' from %.1f s\n", log_ms(), filepath, start_secs);
 
 	pthread_mutex_lock(&audio_mutex);
+	if (!continuation) observation_serial++;
 	restart_fresh_pending = false; // an explicit play beats the armed restart
 	strncpy(current_filepath, filepath, sizeof(current_filepath) - 1);
 	current_filepath[sizeof(current_filepath) - 1] = '\0';
@@ -4741,10 +4744,13 @@ int audio_play_at(const char *filepath, double start_secs) {
 	return 0;
 }
 
+int audio_play_at(const char *filepath, double start_secs) { return play_at(filepath, start_secs, false); }
+
 int audio_play_paused(const char *filepath, double start_secs) {
 	fprintf(stderr, "audio[%ld]: restore requested '%s' at %.1f s (paused)\n", log_ms(), filepath, start_secs);
 
 	pthread_mutex_lock(&audio_mutex);
+	observation_serial++;
 	restart_fresh_pending = false; // an explicit play beats the armed restart
 	strncpy(current_filepath, filepath, sizeof(current_filepath) - 1);
 	current_filepath[sizeof(current_filepath) - 1] = '\0';
@@ -4899,6 +4905,7 @@ bool audio_suspend_freeze(int timeout_ms) {
 void audio_pause(void) {
 	printf("pausing\n");
 	pthread_mutex_lock(&audio_mutex);
+	observation_discontinuity++;
 	audio_command = AUDIO_CMD_PAUSE;
 
 	// Report the new state immediately instead of waiting for the playback
@@ -4917,6 +4924,7 @@ void audio_resume(void) {
 	// rebuilding everything from scratch at the right point -- fresh decoder,
 	// fresh route, fresh PCM. That is the same path every track start takes.
 	pthread_mutex_lock(&audio_mutex);
+	observation_discontinuity++;
 	if (restart_fresh_pending && restart_fresh_path[0]) {
 		char path[512];
 		snprintf(path, sizeof(path), "%s", restart_fresh_path);
@@ -4924,7 +4932,7 @@ void audio_resume(void) {
 		restart_fresh_pending = false;
 		pthread_mutex_unlock(&audio_mutex);
 		fprintf(stderr, "audio: resume after mem -> fresh start of '%s' at %.1f s\n", path, pos);
-		audio_play_at(path, pos);
+		play_at(path, pos, true);
 		return;
 	}
 	pthread_mutex_unlock(&audio_mutex);
@@ -4946,6 +4954,7 @@ void audio_resume(void) {
 void audio_stop(void) {
 	printf("stopping\n");
 	pthread_mutex_lock(&audio_mutex);
+	observation_discontinuity++;
 	audio_command = AUDIO_CMD_STOP;
 	playback_status = AUDIO_STATUS_STOPPED;
 	seek_request = false;
@@ -4960,6 +4969,17 @@ audio_status_t audio_get_status(void) {
 	audio_status_t status = playback_status;
 	pthread_mutex_unlock(&audio_mutex);
 	return status;
+}
+
+bool audio_observe(audio_observation_t *out) {
+	if (!out || pthread_mutex_trylock(&audio_mutex))
+		return false;
+	*out = (audio_observation_t){.serial = observation_serial,
+		.discontinuity = observation_discontinuity, .status = playback_status,
+		.position = progress_current_secs, .duration = progress_total_secs, .rate = playback_speed};
+	snprintf(out->path, sizeof(out->path), "%s", current_filepath);
+	pthread_mutex_unlock(&audio_mutex);
+	return true;
 }
 
 bool audio_take_completion(void) {
@@ -5061,6 +5081,7 @@ void audio_seek(double seconds) {
 	printf("seeking to %.2f seconds\n", seconds);
 
 	pthread_mutex_lock(&audio_mutex);
+	observation_discontinuity++;
 	progress_current_secs = seconds; // the bar follows the finger, not the decoder
 	progress_floor_secs = -1.0;		// and a deliberate jump outranks the pause floor
 	if (restart_fresh_pending) {
