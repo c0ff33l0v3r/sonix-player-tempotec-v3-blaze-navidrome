@@ -19,7 +19,13 @@ extern const lv_image_dsc_t fixture_download_stub;
 #define NAVIDROME_BROWSE_SOURCE "src/gui/streaming/navidromebrowse.c"
 #endif
 #include NAVIDROME_BROWSE_SOURCE
+#if defined(NAVIDROME_OFFLINE_UI) || defined(NAVIDROME_DISCOVERY_OFFLINE_UI)
+#undef icon_download
 #include "src/gui/streaming/navidromealbum.c"
+#define icon_download fixture_download_stub
+#else
+#include "src/gui/streaming/navidromealbum.c"
+#endif
 
 int32_t ui_panel_width = 320;
 lv_font_t font_ui_14, font_ui_18, font_ui_20, font_ui_64_bold, font_ui_24, font_ui_28, font_ui_24_bold;

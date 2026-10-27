@@ -114,6 +114,123 @@ static void badge_pixels(nd_off_badges_t *v, int row, nd_off_state_t expected) {
 	assert(painted >= 6);
 	lv_draw_buf_destroy(pixels);
 }
+static void header_pixels(nd_album_view_t *v, nd_off_state_t state) {
+	assert(v->active && v->download_state == state);
+	lv_obj_t *button = v->controls[ND_ALBUM_DOWNLOAD];
+	lv_obj_t *image = lv_obj_get_child(button, 0);
+	assert(lv_image_get_src(image) == &icon_download && icon_download.header.w > 1);
+	assert(lv_obj_get_width(button) == ui_px(56) && lv_obj_get_height(button) == ui_px(56));
+	assert(lv_obj_get_style_bg_opa(button, 0) == LV_OPA_TRANSP);
+	lv_color_t expected = state == ND_OFF_COMPLETE || state == ND_OFF_PARTIAL ? nd_offline_color(state, v->tinted ? v->bg : theme()->screen_bg) : v->tinted ? v->ink : theme()->text_primary;
+	assert(lv_color_eq(lv_obj_get_style_image_recolor(image, 0), expected));
+	lv_obj_set_style_image_recolor_opa(image, LV_OPA_COVER, 0);
+	lv_obj_update_layout(v->screen);
+	lv_draw_buf_t *pixels = lv_snapshot_take(image, LV_COLOR_FORMAT_ARGB8888);
+	assert(pixels);
+	unsigned solid = 0;
+	for (unsigned y = 0; y < pixels->header.h; y++)
+		for (unsigned x = 0; x < pixels->header.w; x++) {
+			const unsigned char *p = pixels->data + y * pixels->header.stride + x * 4;
+			if (p[3] == 255) {
+				assert(p[2] == expected.red && p[1] == expected.green && p[0] == expected.blue);
+				solid++;
+			}
+		}
+	assert(solid > 10);
+	lv_draw_buf_destroy(pixels);
+}
+static void header_regression(browse_page_t *p) {
+	nd_album_view_t *v = &p->album;
+	header_pixels(v, ND_OFF_COMPLETE);
+	theme_palette_t *palette = (theme_palette_t *)theme();
+	theme_palette_t saved_palette = *palette;
+	const unsigned backgrounds[] = {0xf5f5f5, 0x202020, 0x000000};
+	const unsigned accents[] = {0x3584e4, 0xe66100, 0xf5c211, 0x26a269, 0x9141ac, 0xd56199};
+	for (unsigned t = 0; t < 3; t++) {
+		palette->screen_bg = lv_color_hex(backgrounds[t]);
+		palette->text_primary = t ? lv_color_white() : lv_color_hex(0x161616);
+		lv_style_set_image_recolor(&theme_style_icon, palette->text_primary);
+		lv_style_set_image_recolor_opa(&theme_style_icon, LV_OPA_COVER);
+		for (unsigned a = 0; a < 6; a++) {
+			palette->accent = lv_color_hex(accents[a]);
+			for (int state = ND_OFF_UNKNOWN; state <= ND_OFF_COMPLETE; state++) {
+				navidromealbum_download_state(v, state);
+				v->tinted = false;
+				album_theme_refresh();
+				header_pixels(v, state);
+				for (int light = 0; light < 2; light++) {
+					v->image.has_tone = true;
+					v->image.tone_light = light;
+					v->image.tone_luma = light ? 210 : 50;
+					v->image.tone = light ? 0xded9c8 : 0x203b28;
+					album_tone(v); // the production late-artwork repaint path
+					header_pixels(v, state);
+					lv_obj_t *play = lv_obj_get_child(v->controls[ND_ALBUM_PLAY], 0);
+					assert(lv_color_eq(lv_obj_get_style_image_recolor(play, 0), v->ink));
+				}
+			}
+		}
+	}
+	*palette = saved_palette;
+	lv_style_set_image_recolor(&theme_style_icon, palette->text_primary);
+	v->tinted = false;
+	v->image.has_tone = false;
+	navidromealbum_download_state(v, ND_OFF_COMPLETE);
+	album_theme_refresh();
+	// Generic pressed/disabled feedback does not erase the semantic hue.
+	lv_obj_t *button = v->controls[ND_ALBUM_DOWNLOAD];
+	lv_obj_add_state(button, LV_STATE_PRESSED);
+	assert(lv_obj_get_style_opa(button, 0) == LV_OPA_50);
+	lv_obj_remove_state(button, LV_STATE_PRESSED);
+	lv_obj_add_state(button, LV_STATE_DISABLED);
+	assert(lv_obj_get_style_opa(button, 0) == LV_OPA_40);
+	assert(lv_color_eq(lv_obj_get_style_image_recolor(lv_obj_get_child(button, 0), 0), nd_offline_color(ND_OFF_COMPLETE, palette->screen_bg)));
+	lv_obj_remove_state(button, LV_STATE_DISABLED);
+	unsigned submissions = download_submissions;
+	for (int state = ND_OFF_NONE; state <= ND_OFF_COMPLETE; state++) {
+		navidromealbum_download_state(v, state);
+		lv_obj_send_event(button, LV_EVENT_CLICKED, NULL);
+		assert(download_submissions == ++submissions && captured_download.kind == ND_ALBUMS && !strcmp(captured_download.id, p->query.filter));
+		captured_download_cb(true, NULL, 0, 10, captured_download_user);
+	}
+	dragging = true;
+	lv_obj_send_event(button, LV_EVENT_CLICKED, NULL);
+	dragging = false;
+	p->selecting = true; browse_selection_ui(p);
+	assert(lv_obj_is_hidden(v->buttons));
+	lv_obj_send_event(button, LV_EVENT_CLICKED, NULL);
+	p->selecting = false; p->picking = true; browse_selection_ui(p);
+	assert(lv_obj_is_hidden(v->buttons));
+	lv_obj_send_event(button, LV_EVENT_CLICKED, NULL);
+	p->picking = false; browse_selection_ui(p);
+	assert(!lv_obj_is_hidden(v->buttons) && download_submissions == submissions);
+	download_submissions = 0;
+	navidromealbum_download_state(v, ND_OFF_COMPLETE);
+	unsigned retired = p->offline.token;
+	submit_window(p);
+	window_wait((int)(p - pages));
+	assert(v->download_state == ND_OFF_COMPLETE); // row rebinding keeps settled status
+	badge_wait(&p->offline);
+	badge_done(retired, ND_OFF_HEADER, ND_OFF_PARTIAL, &p->offline);
+	assert(v->download_state == ND_OFF_COMPLETE);
+	p->offline.settled = lv_tick_get() - OFF_REFRESH_MS;
+	navidromeofflinebadge_tick(&p->offline);
+	assert(v->download_state == ND_OFF_COMPLETE); // periodic refresh has no color flash
+	badge_wait(&p->offline);
+	header_pixels(v, ND_OFF_COMPLETE);
+	retired = p->offline.token;
+	lv_obj_t *outside = lv_obj_create(NULL);
+	switch_screen(outside);
+	assert(v->download_state == ND_OFF_UNKNOWN && !p->offline.bound);
+	badge_done(retired, ND_OFF_HEADER, ND_OFF_COMPLETE, &p->offline);
+	assert(v->download_state == ND_OFF_UNKNOWN);
+	switch_screen(p->screen);
+	window_wait((int)(p - pages));
+	badge_wait(&p->offline);
+	header_pixels(v, ND_OFF_COMPLETE);
+	lv_obj_delete(outside);
+	puts("PASS production header native pixels across three palettes/six accents/light-dark artwork, pressed/disabled feedback, normal/partial/green taps, gestures and settled refresh");
+}
 static void footer_geometry(lv_obj_t *detail, lv_obj_t *duration, lv_obj_t *badge, int seconds) {
 	lv_obj_update_layout(detail);
 	if (!seconds) { assert(lv_obj_is_hidden(duration)); return; }
@@ -262,6 +379,7 @@ int main(int argc, char **argv) {
 	window_wait(0);
 	badge_wait(&pages[0].offline);
 	assert(pages[0].album.active);
+	header_regression(&pages[0]);
 	badge_pixels(&pages[0].offline, 0, ND_OFF_COMPLETE);
 	footer_geometry(pages[0].details[0], pages[0].durations[0], pages[0].offline.icons[0], pages[0].query.kind == ND_TRACKS ? pages[0].data[0].duration : 0);
 	lv_obj_set_style_bg_color(pages[0].rows[0], lv_color_hex(0x151515), 0);

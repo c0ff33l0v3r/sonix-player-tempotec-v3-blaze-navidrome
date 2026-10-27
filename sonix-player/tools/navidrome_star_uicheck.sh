@@ -17,7 +17,7 @@ find "$check_objects" -name '*.o' -print > "$check_dir/lvgl-objects"
 ${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -Wno-unused-function -O1 -g \
     -ffunction-sections -fdata-sections ${NAVIDROME_CHECK_FLAGS:-} \
     -DHOST_BUILD -DNAVIDROME_TEST -DLV_CONF_INCLUDE_SIMPLE -DLV_FONT_UNSCII_8=1 -I. -I"$check_source/.." -I"$check_source" \
-    tools/navidrome_star_uicheck.c src/gui/streaming/navidromestar.c tools/navidrome_test_support.c "$check_source/src/font/lv_font_unscii_8.c" \
+    tools/navidrome_star_uicheck.c src/gui/streaming/navidromestar.c tools/navidrome_test_support.c src/system/streaming/navidromemembership.c "$check_source/src/font/lv_font_unscii_8.c" \
     src/system/streaming/navidromedebug.c src/system/streaming/navidrome.c src/system/streaming/navidromeapi.c src/system/streaming/navidromebatch.c \
     src/system/streaming/navidromeplaycatalog.c src/system/streaming/navidromeplaylists.c src/system/streaming/navidromeplayliststore.c src/system/core/sha256.c \
     src/system/streaming/navidromestars.c src/system/streaming/navidromestore.c src/system/streaming/navidromelibrary.c \

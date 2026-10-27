@@ -1,6 +1,11 @@
 #ifndef NAVIDROMEOFFLINE_H
 #define NAVIDROMEOFFLINE_H
 #include "navidrome.h"
+#include "navidromemembership.h"
+
+// Optional header completion uses this fixed slot, beyond the visible rows.
+#define ND_OFF_HEADER ND_WINDOW
+#define ND_OFF_ITEMS (ND_WINDOW + 1)
 
 typedef enum { ND_OFF_UNKNOWN, ND_OFF_NONE, ND_OFF_PARTIAL, ND_OFF_COMPLETE } nd_off_state_t;
 typedef enum { ND_OFF_TRACK, ND_OFF_ALBUM, ND_OFF_PLAYLIST } nd_off_kind_t;
@@ -13,6 +18,10 @@ typedef struct {
 	nd_off_kind_t kind;
 	int count;
 	nd_off_item_t items[ND_WINDOW];
+	struct {
+		char id[ND_ID_MAX];
+		nd_album_membership_t *members; // NULL selects pinned local membership
+	} header;
 } nd_off_request_t;
 typedef void (*nd_off_done_cb)(unsigned token, int row, nd_off_state_t state, void *user);
 // One active visible window, one coalesced replacement. GUI thread only.

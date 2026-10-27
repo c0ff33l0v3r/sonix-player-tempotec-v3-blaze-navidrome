@@ -108,6 +108,9 @@ nd_owned_rows_t *nd_search_child_retain(nd_search_t *search, int level) {
 		return NULL;
 	if (child->owner)
 		return nd_owned_retain(child->owner);
+	// Album-only passive membership already owns this immutable child.
+	if (child->members)
+		return NULL;
 	pthread_mutex_lock(&child_owners_lock);
 	if (!child_cleanup_started) {
 		pthread_t thread;

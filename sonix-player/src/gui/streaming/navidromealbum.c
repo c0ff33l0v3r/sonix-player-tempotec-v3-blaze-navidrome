@@ -1,4 +1,5 @@
 #include "navidromealbum.h"
+#include "navidromeofflinecolor.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/nowplaying/coverflow.h"
 #include "src/gui/nowplaying/player.h"
@@ -70,11 +71,23 @@ static void album_paint(nd_album_view_t *v) {
 	for (int i = 0; i < 4; i++) {
 		lv_obj_t *inside = lv_obj_get_child(v->controls[i], 0);
 		album_color(inside, LV_STYLE_IMAGE_RECOLOR, v->tinted, v->ink);
+		if (i == ND_ALBUM_DOWNLOAD && (v->download_state == ND_OFF_COMPLETE || v->download_state == ND_OFF_PARTIAL))
+			album_color(inside, LV_STYLE_IMAGE_RECOLOR, true, nd_offline_color(v->download_state, v->tinted ? v->bg : theme()->screen_bg));
 	}
 	back_btn_tint_on_screen(v->screen, v->tinted, v->ink);
 	lv_color_t bar = lv_color_darken(v->bg, LV_OPA_20);
 	int luma = (bar.red * 299 + bar.green * 587 + bar.blue * 114) / 1000;
 	topbar_tint_on_screen(v->screen, v->tinted, bar, luma >= COVER_PAGE_LIGHT_FROM ? lv_color_hex(0x161616) : lv_color_white());
+}
+void navidromealbum_download_state(nd_album_view_t *v, nd_off_state_t state) {
+	if (!v || !v->head)
+		return;
+	if (!v->active || v->revision != album_revision || !navidromealbum_enabled())
+		state = ND_OFF_UNKNOWN;
+	if (v->download_state != state) {
+		v->download_state = state;
+		album_paint(v);
+	}
 }
 static void album_tone(nd_album_view_t *v) {
 	if (!v->image.has_tone)
@@ -224,6 +237,7 @@ void navidromealbum_release(nd_album_view_t *v) {
 	v->art_done = true;
 	v->art_network_epoch = 0;
 	v->tinted = false;
+	v->download_state = ND_OFF_UNKNOWN;
 	album_paint(v);
 	lv_obj_set_hidden(v->mask, true);
 }

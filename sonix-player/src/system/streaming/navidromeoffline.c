@@ -22,14 +22,15 @@
 typedef struct {
 	nd_off_request_t request;
 	nd_context_t context; // epoch fields only; no credentials
-	unsigned token;
+	unsigned token, revision;
 	nd_off_done_cb done;
 	void *user;
 	bool pinned;
 	struct {
 		int offset, total, hits, misses;
 		bool finished;
-	} rows[ND_WINDOW];
+		nd_off_state_t state;
+	} rows[ND_OFF_ITEMS];
 	struct {
 		char id[ND_ID_MAX];
 		int state;
@@ -39,14 +40,14 @@ typedef struct {
 static pthread_mutex_t off_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t off_ready = PTHREAD_COND_INITIALIZER;
 static pthread_t off_thread;
-static bool off_started, off_stop, off_active;
+static bool off_started, off_stop, off_active, off_cleanup;
 static unsigned off_serial;
 static off_job_t *off_pending;
 // Fixed delivery mailbox; a GUI queue rejection never leaks or loses results.
 static struct {
 	unsigned token;
-	nd_off_state_t state[ND_WINDOW];
-	bool ready[ND_WINDOW];
+	nd_off_state_t state[ND_OFF_ITEMS];
+	bool ready[ND_OFF_ITEMS];
 	nd_context_t context;
 	nd_off_done_cb done;
 	void *user;
@@ -57,6 +58,7 @@ static void off_free(off_job_t *j) {
 		return;
 	if (j->pinned)
 		nd_store_release_source(&j->request.library);
+	nd_album_membership_release(j->request.header.members);
 	free(j);
 }
 static bool off_current(void *value) {
@@ -78,15 +80,15 @@ static void off_deliver(void *unused) {
 	nd_off_done_cb done = off_delivery.done;
 	void *user = off_delivery.user;
 	nd_context_t context = off_delivery.context;
-	nd_off_state_t state[ND_WINDOW];
-	bool ready[ND_WINDOW];
+	nd_off_state_t state[ND_OFF_ITEMS];
+	bool ready[ND_OFF_ITEMS];
 	memcpy(state, off_delivery.state, sizeof(state));
 	memcpy(ready, off_delivery.ready, sizeof(ready));
 	memset(off_delivery.ready, 0, sizeof(off_delivery.ready));
 	bool valid = !off_stop && token == off_serial;
 	pthread_mutex_unlock(&off_lock);
 	if (valid && done && navidrome_playback_current(&context, false))
-		for (int i = 0; i < ND_WINDOW; i++)
+		for (int i = 0; i < ND_OFF_ITEMS; i++)
 			if (ready[i])
 				done(token, i, state[i], user);
 }
@@ -96,7 +98,7 @@ static void off_publish(off_job_t *j, int row, nd_off_state_t state) {
 	pthread_mutex_lock(&off_lock);
 	if (!off_stop && j->token == off_serial) {
 		bool queued = false;
-		for (int i = 0; i < ND_WINDOW; i++)
+		for (int i = 0; i < ND_OFF_ITEMS; i++)
 			queued |= off_delivery.ready[i];
 		off_delivery.token = j->token;
 		off_delivery.done = j->done;
@@ -114,11 +116,15 @@ static void off_publish(off_job_t *j, int row, nd_off_state_t state) {
 // All handles/leases are scoped to this finite membership slice.
 static bool off_members(off_job_t *j, int row, nd_row_t rows[ND_WINDOW], int *count, int *total) {
 	const nd_off_request_t *q = &j->request;
-	const nd_off_item_t *item = &q->items[row];
+	const nd_off_item_t *item = row == ND_OFF_HEADER ? NULL : &q->items[row];
+	nd_off_kind_t kind = row == ND_OFF_HEADER ? ND_OFF_ALBUM : q->kind;
 	if (!off_current(j) || !navidrome_playback_begin(&j->context))
 		return false;
 	bool ok = false;
-	if (q->kind == ND_OFF_PLAYLIST) {
+	if (row == ND_OFF_HEADER && q->header.members) {
+		ok = nd_album_membership_matches(q->header.members, &q->library, q->header.id) &&
+			nd_album_membership_read(q->header.members, j->rows[row].offset, rows, count, total);
+	} else if (kind == ND_OFF_PLAYLIST) {
 		nd_playlist_store_t store = {0};
 		char path[1200];
 		nd_playlist_entry_t entries[ND_WINDOW];
@@ -127,12 +133,12 @@ static bool off_members(off_job_t *j, int row, nd_row_t rows[ND_WINDOW], int *co
 			for (int i = 0; i < *count; i++)
 				rows[i] = entries[i].track;
 		nd_pl_close(&store);
-	} else if (q->kind == ND_OFF_ALBUM && q->library.ready) {
+	} else if (kind == ND_OFF_ALBUM && q->library.ready) {
 		nd_store_t store = {0};
 		nd_playrow_t album;
 		nd_query_t query = {.kind = ND_TRACKS, .filter_kind = ND_ALBUMS, .favorites = q->library.favorites};
-		memcpy(query.filter, item->id, sizeof(query.filter));
-		ok = nd_store_open_source(&store, q->library.path, q->library.scope, false, false, q->library.favorites) && nd_store_metadata(&store, q->library.generation, ND_ALBUMS, item->id, &album) && !album.row.details && nd_store_query(&store, q->library.generation, &query, j->rows[row].offset, rows, count, total);
+		memcpy(query.filter, row == ND_OFF_HEADER ? q->header.id : item->id, sizeof(query.filter));
+		ok = nd_store_open_source(&store, q->library.path, q->library.scope, false, false, q->library.favorites) && nd_store_metadata(&store, q->library.generation, ND_ALBUMS, query.filter, &album) && !album.row.details && nd_store_query(&store, q->library.generation, &query, j->rows[row].offset, rows, count, total);
 		nd_store_close(&store);
 	}
 	navidrome_cache_end();
@@ -169,7 +175,7 @@ static void off_step(off_job_t *j, int row) {
 	nd_row_t rows[ND_WINDOW];
 	int count = 0, total = 0;
 	nd_off_state_t state = ND_OFF_UNKNOWN;
-	if (j->request.kind == ND_OFF_TRACK) {
+	if (row != ND_OFF_HEADER && j->request.kind == ND_OFF_TRACK) {
 		int found = j->request.items[row].id[0] ? off_track(j, j->request.items[row].id) : -1;
 		if (found < 0 && off_current(j) && !off_io_current(j))
 			return; // preparation interrupted validation; retain settled UI and retry later
@@ -180,7 +186,7 @@ static void off_step(off_job_t *j, int row) {
 		for (int i = 0; i < count; i++) {
 			int found = off_track(j, rows[i].id);
 			if (found < 0) {
-				if (off_current(j) && !off_io_current(j)) {
+				if (!off_current(j) || !off_io_current(j)) {
 					j->rows[row].hits = hits;
 					j->rows[row].misses = misses;
 					return;
@@ -199,28 +205,55 @@ static void off_step(off_job_t *j, int row) {
 			state = !j->rows[row].hits ? ND_OFF_NONE : j->rows[row].misses ? ND_OFF_PARTIAL : ND_OFF_COMPLETE;
 	}
 finish:
+	if (!off_current(j))
+		return;
+	j->rows[row].state = state;
 	j->rows[row].finished = true;
 	off_publish(j, row, state);
+}
+static void off_wake_cleanup(void) {
+	pthread_mutex_lock(&off_lock);
+	off_cleanup = true;
+	pthread_cond_signal(&off_ready);
+	pthread_mutex_unlock(&off_lock);
+}
+static bool off_same_header(const off_job_t *a, const off_job_t *b) {
+	return a && b && *a->request.header.id && a->revision == b->revision &&
+		a->context.profile_epoch == b->context.profile_epoch && a->context.card_epoch == b->context.card_epoch &&
+		a->request.header.members == b->request.header.members && !strcmp(a->request.header.id, b->request.header.id) &&
+		a->request.library.epoch == b->request.library.epoch && a->request.library.generation == b->request.library.generation &&
+		a->request.library.favorites == b->request.library.favorites && !strcmp(a->request.library.path, b->request.library.path) &&
+		!strcmp(a->request.library.scope, b->request.library.scope);
 }
 static void *off_run(void *unused) {
 	(void)unused;
 	(void)setpriority(PRIO_PROCESS, 0, 10);
 	for (;;) {
+		nd_album_membership_collect();
 		pthread_mutex_lock(&off_lock);
-		while (!off_stop && !off_pending)
+		while (!off_stop && !off_pending && !off_cleanup)
 			pthread_cond_wait(&off_ready, &off_lock);
 		off_job_t *j = off_pending;
 		off_pending = NULL;
+		off_cleanup = false;
 		bool stop = off_stop;
 		pthread_mutex_unlock(&off_lock);
 		if (stop) {
 			off_free(j);
 			return NULL;
 		}
+		if (!j)
+			continue;
+		if (*j->request.header.id && j->rows[ND_OFF_HEADER].finished)
+			off_publish(j, ND_OFF_HEADER, j->rows[ND_OFF_HEADER].state);
 		bool remaining = true;
 		while (remaining && off_current(j)) {
 			remaining = false;
-			for (int i = 0; i < j->request.count && off_current(j); i++) {
+			for (int item = 0; item < ND_OFF_ITEMS && off_current(j); item++) {
+				// Header first, then a bounded turn for every represented row.
+				int i = item ? item - 1 : ND_OFF_HEADER;
+				if ((i == ND_OFF_HEADER && !*j->request.header.id) || (i != ND_OFF_HEADER && i >= j->request.count))
+					continue;
 				if (j->rows[i].finished)
 					continue;
 				bool idle;
@@ -238,6 +271,9 @@ static void *off_run(void *unused) {
 		pthread_mutex_lock(&off_lock);
 		if (j->token == off_serial)
 			off_active = false;
+		else if (off_same_header(j, off_pending)) {
+			off_pending->rows[ND_OFF_HEADER] = j->rows[ND_OFF_HEADER];
+		}
 		pthread_mutex_unlock(&off_lock);
 		off_free(j);
 	}
@@ -253,6 +289,8 @@ unsigned nd_offline_submit(const nd_off_request_t *q, nd_off_done_cb done, void 
 	off_job_t *j = calloc(1, sizeof(*j));
 	if (j) {
 		j->request = *q;
+		j->request.header.members = nd_album_membership_retain(q->header.members);
+		j->revision = nd_dl_availability_revision();
 		j->context.profile_epoch = secret.profile_epoch;
 		j->context.card_epoch = secret.card_epoch;
 		j->done = done;
@@ -265,7 +303,7 @@ unsigned nd_offline_submit(const nd_off_request_t *q, nd_off_done_cb done, void 
 		off_free(j);
 		return 0;
 	}
-	if (q->kind == ND_OFF_ALBUM && q->library.ready) {
+	if ((q->kind == ND_OFF_ALBUM || (*q->header.id && !q->header.members)) && q->library.ready) {
 		j->pinned = navidrome_playback_pin_source(&q->library);
 		if (!j->pinned) {
 			off_free(j);
@@ -295,6 +333,7 @@ unsigned nd_offline_submit(const nd_off_request_t *q, nd_off_done_cb done, void 
 	unsigned token = j->token;
 	pthread_mutex_unlock(&off_lock);
 	off_free(old);
+	nd_album_membership_cleanup_waker(off_wake_cleanup);
 	return token;
 }
 void nd_offline_cancel(unsigned token) {
@@ -313,6 +352,7 @@ bool nd_offline_busy(unsigned token) {
 	return busy;
 }
 void nd_offline_shutdown(void) {
+	nd_album_membership_cleanup_waker(NULL);
 	pthread_mutex_lock(&off_lock);
 	off_stop = true;
 	off_serial++;
@@ -321,6 +361,7 @@ void nd_offline_shutdown(void) {
 	pthread_mutex_unlock(&off_lock);
 	if (join)
 		pthread_join(off_thread, NULL);
+	nd_album_membership_collect();
 	pthread_mutex_lock(&off_lock);
 	off_started = off_active = false;
 	memset(&off_delivery, 0, sizeof(off_delivery));

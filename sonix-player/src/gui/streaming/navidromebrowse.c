@@ -129,6 +129,7 @@ static void window_done(void *value) {
 	memcpy(p->chosen, result->chosen, sizeof(p->chosen));
 	browse_selection_ui(p);
 	if (!result->ok) {
+		navidromeofflinebadge_release(&p->offline);
 		lv_label_set_text(p->status, tr("nd_cache_error"));
 		free(result);
 		return;
@@ -145,6 +146,8 @@ static void window_done(void *value) {
 		submit_window(p);
 		return;
 	}
+	if (p->query.kind != ND_TRACKS && p->query.kind != ND_ALBUMS)
+		navidromeofflinebadge_release(&p->offline);
 	bool keep_art[ND_WINDOW] = {0};
 	int map[ND_WINDOW];
 	bool claimed[ND_WINDOW] = {0};
@@ -161,7 +164,6 @@ static void window_done(void *value) {
 				}
 	}
 	nd_row_complete_map(map);
-	navidromeofflinebadge_release(&p->offline);
 	ND_ROW_REORDER(p->rows, map);
 	ND_ROW_REORDER(p->names, map);
 	ND_ROW_REORDER(p->details, map);
@@ -199,6 +201,7 @@ static void window_done(void *value) {
 	}
 	memcpy(p->data, result->rows, sizeof(p->data));
 	if (p->total > INT_MAX / pitch) {
+		navidromeofflinebadge_release(&p->offline);
 		lv_label_set_text(p->status, tr("nd_cache_error"));
 		free(result);
 		return;
@@ -220,6 +223,7 @@ static void window_done(void *value) {
     }
     int extent = result->alternate ? result->album.extent : p->total * pitch;
     if (extent > INT_MAX - p->album.height) {
+        navidromeofflinebadge_release(&p->offline);
         free(result);
         lv_label_set_text(p->status, tr("nd_cache_error"));
         return;
@@ -232,7 +236,6 @@ static void window_done(void *value) {
         lv_obj_scroll_to_y(p->list, lv_obj_get_scroll_y(p->list) + p->album.height - old_height, LV_ANIM_OFF);
     }
 
-	navidromeofflinebadge_release(&p->offline);
 	for (int i = 0; i < ND_WINDOW; i++) {
 		lv_obj_set_hidden(p->rows[i], i >= p->count);
 		lv_obj_set_hidden(p->menus[i], (result->alternate && result->album.heading[i]) || p->selecting || (p->query.kind != ND_TRACKS && p->query.kind != ND_ALBUMS && p->query.kind != ND_ARTISTS));
@@ -269,7 +272,9 @@ static void window_done(void *value) {
 		nd_off_request_t q = {.library = p->library, .kind = p->query.kind == ND_TRACKS ? ND_OFF_TRACK : ND_OFF_ALBUM, .count = p->count};
 		for (int i = 0; i < p->count; i++)
 			if (!result->alternate || !result->album.heading[i]) memcpy(q.items[i].id, p->data[i].id, ND_ID_MAX);
-		navidromeofflinebadge_bind(&p->offline, p->screen, &q, p->details);
+		if (p->album.active && *p->album.info.row.id)
+			memcpy(q.header.id, p->album.info.row.id, ND_ID_MAX);
+		navidromeofflinebadge_bind_album(&p->offline, p->screen, &q, p->details, p->album.active ? &p->album : NULL);
 	}
 	browse_selection_ui(p);
 	free(result);
@@ -567,6 +572,7 @@ void navidromebrowse_refresh(void) {
 			return;
 		}
 		if (p->library.epoch != library.epoch || p->library.generation != library.generation) {
+			navidromeofflinebadge_release(&p->offline);
 			p->map_ready = p->map_bound = false;
 			azindex_set_rows(p->index, NULL, 0, false);
 		}

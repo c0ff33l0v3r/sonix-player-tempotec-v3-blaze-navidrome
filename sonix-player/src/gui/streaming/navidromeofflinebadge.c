@@ -1,4 +1,5 @@
 #include "navidromeofflinebadge.h"
+#include "navidromeofflinecolor.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/uiscale.h"
 #include "src/system/streaming/navidromedownloadstore.h"
@@ -20,14 +21,13 @@ static void badge_paint(nd_off_badges_t *v, int i) {
 	while (lv_obj_get_parent(bg) && lv_obj_get_style_bg_opa(bg, 0) < LV_OPA_COVER)
 		bg = lv_obj_get_parent(bg);
 	lv_color_t color = lv_obj_get_style_bg_color(bg, 0);
-	bool light = (color.red * 299 + color.green * 587 + color.blue * 114) / 1000 > 150;
-	lv_obj_set_style_image_recolor(v->icons[i], lv_color_hex(v->state[i] == ND_OFF_COMPLETE ? (light ? 0x147a32 : 0x58cf78) : (light ? 0x666666 : 0xaaaaaa)), 0);
+	lv_obj_set_style_image_recolor(v->icons[i], nd_offline_color(v->state[i], color), 0);
 }
 static void badge_done(unsigned token, int row, nd_off_state_t state, void *user) {
 	nd_off_badges_t *v = user;
-	if (!v->bound || token != v->token || row < 0 || row >= v->request.count || lv_screen_active() != v->screen || v->revision != nd_dl_availability_revision())
+	if (!v->bound || token != v->token || row < 0 || (row != ND_OFF_HEADER && row >= v->request.count) || lv_screen_active() != v->screen || v->revision != nd_dl_availability_revision())
 		return;
-	if (v->request.kind == ND_OFF_ALBUM) {
+	if (v->request.kind == ND_OFF_ALBUM || (row == ND_OFF_HEADER && !v->request.header.members)) {
 		nd_library_t current;
 		if (v->request.library.favorites)
 			navidrome_favorites_snapshot(&current);
@@ -36,6 +36,13 @@ static void badge_done(unsigned token, int row, nd_off_state_t state, void *user
 		if (current.generation != v->request.library.generation || current.epoch != v->request.library.epoch)
 			return;
 	}
+	if (row == ND_OFF_HEADER) {
+		if (v->request.header.members && !nd_album_membership_matches(v->request.header.members, &v->request.library, v->request.header.id))
+			state = ND_OFF_UNKNOWN;
+		if (v->album && *v->request.header.id && !strcmp(v->request.header.id, v->album->info.row.id))
+			navidromealbum_download_state(v->album, state);
+		return;
+	}
 	v->state[row] = state;
 	badge_paint(v, row);
 }
@@ -43,6 +50,10 @@ void navidromeofflinebadge_release(nd_off_badges_t *v) {
 	nd_offline_cancel(v->token);
 	v->bound = v->busy = false;
 	v->token = 0;
+	navidromealbum_download_state(v->album, ND_OFF_UNKNOWN);
+	v->album = NULL;
+	nd_album_membership_release(v->request.header.members);
+	memset(&v->request.header, 0, sizeof(v->request.header));
 	for (int i = 0; i < ND_WINDOW; i++) {
 		v->state[i] = ND_OFF_UNKNOWN;
 		if (v->icons[i])
@@ -52,7 +63,22 @@ void navidromeofflinebadge_release(nd_off_badges_t *v) {
 	}
 }
 void navidromeofflinebadge_bind(nd_off_badges_t *v, lv_obj_t *screen, const nd_off_request_t *q, lv_obj_t *const details[ND_WINDOW]) {
-	nd_offline_cancel(v->token);
+	navidromeofflinebadge_bind_album(v, screen, q, details, NULL);
+}
+void navidromeofflinebadge_bind_album(nd_off_badges_t *v, lv_obj_t *screen, const nd_off_request_t *q, lv_obj_t *const details[ND_WINDOW], nd_album_view_t *album) {
+	bool same = v->bound && v->album == album && *q->header.id &&
+		v->request.header.members == q->header.members && !strcmp(v->request.header.id, q->header.id) &&
+		v->request.library.epoch == q->library.epoch && v->request.library.card_epoch == q->library.card_epoch &&
+		v->request.library.generation == q->library.generation && v->request.library.favorites == q->library.favorites &&
+		!strcmp(v->request.library.scope, q->library.scope) && !strcmp(v->request.library.path, q->library.path);
+	if (!same) {
+		navidromealbum_download_state(v->album, ND_OFF_UNKNOWN);
+		navidromealbum_download_state(album, ND_OFF_UNKNOWN);
+	}
+	nd_album_membership_retain(q->header.members);
+	nd_album_membership_release(v->request.header.members);
+	unsigned old_token = v->token;
+	v->album = album;
 	memset(v->state, 0, sizeof(v->state));
 	v->screen = screen;
 	v->request = *q;
@@ -75,6 +101,10 @@ void navidromeofflinebadge_bind(nd_off_badges_t *v, lv_obj_t *screen, const nd_o
 		badge_paint(v, i);
 	}
 	v->token = nd_offline_submit(q, badge_done, v);
+	if (!v->token) {
+		nd_offline_cancel(old_token);
+		navidromealbum_download_state(v->album, ND_OFF_UNKNOWN);
+	}
 	v->busy = v->token != 0;
 	v->settled = lv_tick_get();
 }
@@ -88,6 +118,16 @@ void navidromeofflinebadge_tick(nd_off_badges_t *v) {
 	nd_context_t context;
 	bool valid = navidrome_context(&context, false) && navidrome_playback_scope(&context, &v->request.library);
 	nd_wipe(&context, sizeof(context));
+	if (valid && v->request.header.members)
+		valid = nd_album_membership_matches(v->request.header.members, &v->request.library, v->request.header.id);
+	if (valid && *v->request.header.id && !v->request.header.members) {
+		nd_library_t current;
+		if (v->request.library.favorites)
+			navidrome_favorites_snapshot(&current);
+		else
+			navidrome_library_snapshot(&current);
+		valid = current.ready && current.generation == v->request.library.generation && current.epoch == v->request.library.epoch;
+	}
 	if (!valid) {
 		navidromeofflinebadge_release(v);
 		return;
@@ -103,9 +143,11 @@ void navidromeofflinebadge_tick(nd_off_badges_t *v) {
 		v->token = nd_offline_submit(&v->request, badge_done, v);
 		v->busy = v->token != 0;
 		v->settled = lv_tick_get();
-		if (!v->token)
+		if (!v->token) {
+			navidromealbum_download_state(v->album, ND_OFF_UNKNOWN);
 			for (int i = 0; i < v->request.count; i++)
 				v->state[i] = ND_OFF_UNKNOWN;
+		}
 	}
 	for (int i = 0; i < v->request.count; i++)
 		badge_paint(v, i);

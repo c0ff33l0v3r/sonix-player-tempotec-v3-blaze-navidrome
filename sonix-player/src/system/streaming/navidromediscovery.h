@@ -13,4 +13,5 @@ void nd_discovery_read(nd_discovery_t *session, int first, nd_search_result_t *o
 void nd_discovery_album_open(nd_discovery_t *session, const char *id, nd_search_result_t *out);
 void nd_discovery_album_read(nd_discovery_t *session, int offset, int pitch, int disc_pitch, bool alternate, nd_search_result_t *out);
 bool nd_discovery_album_position(nd_discovery_t *session, const char *id, int pitch, int disc_pitch, bool alternate, int *position);
+nd_album_membership_t *nd_discovery_album_membership(nd_discovery_t *session);
 #endif

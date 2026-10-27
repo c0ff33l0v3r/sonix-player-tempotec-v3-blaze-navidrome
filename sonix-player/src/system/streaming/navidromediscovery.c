@@ -243,3 +243,7 @@ void nd_discovery_album_read(nd_discovery_t *s, int offset, int pitch, int disc_
 	nd_cache_io_end();
 }
 bool nd_discovery_album_position(nd_discovery_t *s, const char *id, int pitch, int disc_pitch, bool alternate, int *position) { return nd_album_reader_position(s->album, id, pitch, disc_pitch, alternate, position); }
+
+nd_album_membership_t *nd_discovery_album_membership(nd_discovery_t *s) {
+	return s && current(s) ? nd_album_reader_membership(s->album) : NULL;
+}

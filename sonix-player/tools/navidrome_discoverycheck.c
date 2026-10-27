@@ -86,8 +86,15 @@ int main(int argc, char **argv) {
 		assert(!r.error && r.total == 12);
 		nd_discovery_album_read(s, 0, 108, 44, true, &r);
 		assert(!r.error && r.alternate && r.album.extent > 0);
+		nd_album_membership_t *small_members = nd_discovery_album_membership(s);
+		assert(small_members);
 		nd_discovery_album_open(s, "wrong", &r);
 		assert(r.error);
+		nd_row_t member_window[ND_WINDOW]; int member_count, member_total;
+		assert(nd_album_membership_read(small_members, 0, member_window, &member_count, &member_total));
+		assert(member_count == 12 && member_total == 12 && !strcmp(member_window[0].id, "track-0"));
+		nd_album_membership_release(small_members);
+		nd_album_membership_collect();
 		nd_discovery_album_open(s, "large", &r);
 		assert(r.error && !strcmp(r.error, "nd_cache_storage"));
 		nd_discovery_free(s);
@@ -164,6 +171,8 @@ int main(int argc, char **argv) {
 	s = nd_discovery_create(ND_DISCOVERY_RECENT);
 	nd_discovery_album_open(s, "large", &r);
 	assert(!r.error && r.total == 65 && r.card_backed);
+	nd_album_membership_t *staged_members = nd_discovery_album_membership(s);
+	assert(staged_members);
 	nd_discovery_album_read(s, 60, 108, 44, false, &r);
 	assert(!r.error && r.first == 60 && r.count == 5);
 	nd_search_t *search = nd_search_create("empty");
@@ -179,6 +188,11 @@ int main(int argc, char **argv) {
 	nd_playcatalog_t *c = nd_playcatalog_capture(&lib, &identity, &q, "track-64", capture_current, &identity, &error);
 	assert(c && !error && nd_playcatalog_count(c) == 65 && nd_playcatalog_start(c) == 64);
 	nd_discovery_free(s);
+	nd_row_t member_window[ND_WINDOW]; int member_count, member_total;
+	assert(nd_album_membership_read(staged_members, 64, member_window, &member_count, &member_total));
+	assert(member_count == 1 && member_total == 65 && !strcmp(member_window[0].id, "track-64"));
+	nd_album_membership_release(staged_members);
+	nd_album_membership_collect();
 	nd_playrow_t row;
 	assert(nd_playcatalog_read(c, 64, &row));
 	nd_playcatalog_free(c);
@@ -231,10 +245,14 @@ int main(int argc, char **argv) {
 	s = nd_discovery_create(ND_DISCOVERY_RECENT);
 	nd_discovery_album_open(s, "large", &r);
 	assert(!r.error && r.card_backed);
+	staged_members = nd_discovery_album_membership(s);
+	assert(staged_members);
 	assert(nd_cache_maintenance_begin());
 	nd_cache_maintenance_end();
 	nd_discovery_album_read(s, 0, 108, 44, false, &r);
 	assert(r.error && !r.count);
+	assert(!nd_album_membership_read(staged_members, 0, member_window, &member_count, &member_total));
+	nd_album_membership_release(staged_members);
 	nd_discovery_free(s);
 	assert(!chmod(card, 0500));
 	navidrome_set_root(card);
@@ -260,7 +278,7 @@ int main(int argc, char **argv) {
 	assert(r.error && !r.count);
 	nd_discovery_free(s);
 	puts("Discovery: exact 64/65 read-only boundary, oversized album, cache epoch revocation and card detach passed");
-	puts("Discovery: staged 65-track child, alternate layout, independent Search cleanup and complete playback capture survive session retirement: passed");
+	puts("Discovery: retained passive 12/65-track membership survives reader replacement/retirement and rejects cache revocation; staged 65-track child, alternate layout, independent Search cleanup and complete playback capture survive session retirement: passed");
 	navidrome_shutdown();
 	return 0;
 }

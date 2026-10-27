@@ -1,8 +1,14 @@
 // Production Discovery controller/widgets, real LVGL and loopback service.
 #define NAVIDROME_BROWSE_FIXTURE_ONLY 1
+#define NAVIDROME_DISCOVERY_OFFLINE_UI 1
+#define icon_download fixture_download_stub
 #define NAVIDROME_DOWNLOAD_UI 1
 #include "navidrome_browsecheck.c"
 #undef NAVIDROME_BROWSE_FIXTURE_ONLY
+#undef icon_download
+#include "src/system/decode/decode.h"
+#include <fcntl.h>
+#include "src/system/streaming/navidromeoffline.c"
 static bool fixture_discovery_star_submit(const nd_star_request_t *, void (*)(nd_star_result_t *, void *), void *);
 #define navidrome_star_submit fixture_discovery_star_submit
 #include "src/gui/streaming/navidromediscovery.c"
@@ -181,6 +187,88 @@ static void discovery_refresh_pixels(void) {
 		lv_draw_buf_destroy(pixels);
 	}
 }
+decode_format_t decode_detect_format(const char *path) { (void)path; return DECODE_FORMAT_UNKNOWN; }
+decoder_t *decoder_open_info(const char *path, decode_format_t format) { (void)path; (void)format; return NULL; }
+int decoder_sample_rate(const decoder_t *decoder) { (void)decoder; return 0; }
+int decoder_channels(const decoder_t *decoder) { (void)decoder; return 0; }
+void decoder_close(decoder_t *decoder) { (void)decoder; }
+static void discovery_coverage_wait(discovery_page_t *p, nd_off_state_t state) {
+	for (int i = 0; i < 10000; i++) {
+		drain();
+		navidromeofflinebadge_tick(&p->offline);
+		if (!nd_offline_busy(p->offline.token) && p->album_view.download_state == state)
+			return;
+		usleep(1000);
+	}
+	fprintf(stderr, "coverage expected=%d actual=%d token=%u bound=%d busy=%d active=%d membership_current=%d\n", state, p->album_view.download_state, p->offline.token, p->offline.bound, nd_offline_busy(p->offline.token), p->album_view.active, nd_album_membership_matches(p->members, &p->data.library, p->album_view.info.row.id));
+	assert(!"Discovery coverage timeout");
+}
+static void discovery_original(discovery_page_t *p, int index) {
+	nd_dl_store_t store;
+	assert(nd_dl_open(&store, &p->data.library, true));
+	assert(nd_dl_sql(&store, "INSERT OR IGNORE INTO batch(id,destination,created) VALUES(1,'Music/Navidrome',0)"));
+	nd_playrow_t row = {0};
+	nd_row_t members[ND_WINDOW];
+	int count, total;
+	assert(nd_album_membership_read(p->members, index, members, &count, &total) && count > 0);
+	strcpy(row.row.id, members[0].id);
+	int added = 0, skipped = 0;
+	assert(nd_dl_insert(&store, 1, "Music/Navidrome", &row, 0, &added, &skipped) && added == 1);
+	nd_dl_job_t job;
+	assert(nd_dl_next(&store, &job));
+	int folder = nd_dl_directory(store.root, "Music/Navidrome/Discovery", true);
+	char leaf[32]; snprintf(leaf, sizeof(leaf), "%d.wav", index);
+	int in = open(getenv("SONIX_CHECK_WAV"), O_RDONLY), out = openat(folder, leaf, O_WRONLY | O_CREAT | O_EXCL, 0600);
+	assert(folder >= 0 && in >= 0 && out >= 0);
+	char data[4096]; ssize_t n;
+	while ((n = read(in, data, sizeof(data))) > 0) assert(write(out, data, n) == n);
+	assert(!n && !close(in) && !close(out));
+	struct stat st;
+	assert(nd_dl_fingerprint(folder, leaf, job.digest, &st, NULL, NULL));
+	close(folder);
+	job.state = NDDL_COMPLETE; job.bytes = st.st_size; job.mtime = st.st_mtime; job.inode = st.st_ino;
+	snprintf(job.path, sizeof(job.path), "Music/Navidrome/Discovery/%s", leaf);
+	strcpy(job.extension, ".wav");
+	assert(nd_dl_update(&store, &job)); nd_dl_close(&store);
+	nd_dl_availability_changed(); // the production publisher emits this event
+}
+static void discovery_header_coverage(discovery_page_t *p) {
+	assert(!p->data.library.ready && p->members && p->offline.request.header.members == p->members);
+	discovery_coverage_wait(p, ND_OFF_NONE);
+	unsigned submissions = header_downloads;
+	discovery_original(p, 0);
+	discovery_coverage_wait(p, ND_OFF_PARTIAL);
+	for (int i = 1; i < p->data.total; i++) discovery_original(p, i);
+	discovery_coverage_wait(p, ND_OFF_COMPLETE);
+	assert(header_downloads == submissions);
+	lv_obj_t *icon = lv_obj_get_child(p->album_view.controls[ND_ALBUM_DOWNLOAD], 0);
+	assert(lv_image_get_src(icon) == &icon_download && icon_download.header.w > 1);
+	assert(lv_color_eq(lv_obj_get_style_image_recolor(icon, 0), nd_offline_color(ND_OFF_COMPLETE, theme()->screen_bg)));
+	unsigned retired = p->offline.token;
+	discovery_paint_rows(p);
+	assert(p->album_view.download_state == ND_OFF_COMPLETE);
+	discovery_coverage_wait(p, ND_OFF_COMPLETE);
+	badge_done(retired, ND_OFF_HEADER, ND_OFF_PARTIAL, &p->offline);
+	assert(p->album_view.download_state == ND_OFF_COMPLETE);
+	// Removing a completed original is detected by periodic passive validation.
+	char missing[1400];
+	nd_dl_store_t store;
+	assert(nd_dl_open(&store, &p->data.library, false));
+	snprintf(missing, sizeof(missing), "%s/Music/Navidrome/Discovery/0.wav", store.root);
+	nd_dl_close(&store);
+	assert(!unlink(missing));
+	p->offline.settled = lv_tick_get() - OFF_REFRESH_MS;
+	discovery_coverage_wait(p, ND_OFF_PARTIAL);
+	assert(header_downloads == submissions);
+	// A source/card mismatch invalidates even a completed but delayed header delivery.
+	p->offline.request.library.scope[0] ^= 1;
+	badge_done(p->offline.token, ND_OFF_HEADER, ND_OFF_COMPLETE, &p->offline);
+	assert(p->album_view.download_state == ND_OFF_UNKNOWN);
+	p->offline.request.library.scope[0] ^= 1;
+	discovery_paint_rows(p);
+	discovery_coverage_wait(p, ND_OFF_PARTIAL);
+	puts("PASS Discovery unsynced complete child with real worker/permanent WAVs: normal/partial/green, retained repaint, stale delivery and external deletion; no status-triggered actions");
+}
 int main(int argc, char **argv) {
 	assert(argc == 5);
 	alarm(90);
@@ -241,6 +329,16 @@ int main(int argc, char **argv) {
 	fixture_menu[1].action(fixture_menu[1].user);
 	assert(menu_queues == 1);
 	discovery_visit = old_visit;
+	// Make a writable card available without Sync; retained Discovery membership stays remote.
+	navidrome_set_root(argv[2]);
+	nd_library_t status_library;
+	for (int i = 0; i < 10000; i++) {
+		drain(); navidrome_library_snapshot(&status_library);
+		if (!status_library.loading) break;
+		usleep(1000);
+	}
+	assert(status_library.writable && !status_library.ready);
+	navidromediscovery_refresh();
 	// A real row tap owns the parent album identity before widget reuse.
 	discovery_page_t *child = &discovery_pages[1];
 	fixture_click(discovery_pages[0].rows[0]);
@@ -265,6 +363,7 @@ int main(int argc, char **argv) {
 	assert(lv_obj_get_width(child->numbers[0]) == ui_px(44));
 	assert(lv_obj_get_style_text_align(child->numbers[0], 0) == LV_TEXT_ALIGN_CENTER);
 	assert(child->album_view.active && !lv_obj_is_hidden(child->album_view.buttons));
+	discovery_header_coverage(child);
 	for (int i = 0; i < 3; i++) {
 		fixture_click(child->album_view.controls[i]);
 		assert(header_actions[i] == 1);
@@ -284,6 +383,8 @@ int main(int argc, char **argv) {
 	fixture_album_art_ready = true;
 	navidromediscovery_refresh();
 	assert(child->album_view.tinted && child->album_view.image.pixels);
+	discovery_coverage_wait(child, ND_OFF_PARTIAL);
+	assert(lv_color_eq(lv_obj_get_style_image_recolor(lv_obj_get_child(child->album_view.controls[ND_ALBUM_DOWNLOAD], 0), 0), nd_offline_color(ND_OFF_PARTIAL, child->album_view.bg)));
 	lv_color_t bg = lv_obj_get_style_bg_color(child->screen, 0);
 	assert(bg.green > bg.red && bg.green > bg.blue);
 	assert(lv_color_eq(bg, child->album_view.bg));

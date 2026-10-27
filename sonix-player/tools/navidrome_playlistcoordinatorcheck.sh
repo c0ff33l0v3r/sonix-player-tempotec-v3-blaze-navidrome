@@ -11,7 +11,7 @@ find build_host/lvgl -name '*.o' -print > "$check_dir/objects"
 ${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -Wno-unused-function -O1 -g \
     -ffunction-sections -fdata-sections ${NAVIDROME_CHECK_FLAGS:-} \
     -DHOST_BUILD -DNAVIDROME_TEST -DLV_CONF_INCLUDE_SIMPLE -DLV_FONT_UNSCII_8=1 -I. -Ilvgl \
-    tools/navidrome_playlistcoordinatorcheck.c tools/navidrome_test_support.c lvgl/src/font/lv_font_unscii_8.c \
+    tools/navidrome_playlistcoordinatorcheck.c tools/navidrome_test_support.c src/system/streaming/navidromemembership.c lvgl/src/font/lv_font_unscii_8.c \
     src/system/streaming/navidromeplay.c src/system/playback/sessionstore.c src/system/playback/playlist.c src/system/decode/growfile.c \
     src/system/streaming/streamturn.c src/system/streaming/navidromedebug.c \
     src/system/streaming/navidromeplaycatalog.c src/system/streaming/navidrome.c src/system/streaming/navidromeapi.c \

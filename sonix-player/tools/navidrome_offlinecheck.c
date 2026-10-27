@@ -5,6 +5,11 @@
 #undef main
 #include "src/system/streaming/navidromeoffline.c"
 
+bool navidrome_cache_begin(unsigned epoch, unsigned card_epoch) {
+	if (epoch != library.epoch || card_epoch != context.card_epoch)
+		return false;
+	return navidrome_playback_begin(&context);
+}
 static atomic_bool local_preparing;
 static atomic_int prepare_countdown;
 bool navidromeplay_preparing(void) {
@@ -12,12 +17,12 @@ bool navidromeplay_preparing(void) {
 		atomic_store(&local_preparing, true);
 	return atomic_load(&local_preparing);
 }
-static nd_off_state_t observed[ND_WINDOW];
-static bool delivered[ND_WINDOW];
+static nd_off_state_t observed[ND_OFF_ITEMS];
+static bool delivered[ND_OFF_ITEMS];
 static unsigned wanted_token;
 static void offline_done(unsigned token, int row, nd_off_state_t state, void *user) {
 	(void)user;
-	assert(token == wanted_token && row >= 0 && row < ND_WINDOW);
+	assert(token == wanted_token && row >= 0 && row < ND_OFF_ITEMS);
 	observed[row] = state;
 	delivered[row] = true;
 }
@@ -40,6 +45,88 @@ static void offline_check(nd_off_request_t *q, nd_off_state_t state) {
 	offline_wait();
 	for (int i = 0; i < q->count; i++)
 		assert(delivered[i] && observed[i] == state);
+}
+static atomic_bool fail_next_calloc;
+void *__real_calloc(size_t count, size_t size);
+void *__wrap_calloc(size_t count, size_t size) {
+	if (atomic_exchange(&fail_next_calloc, false))
+		return NULL;
+	return __real_calloc(count, size);
+}
+static void header_check(nd_off_request_t *q, nd_off_state_t header, nd_off_state_t row) {
+	memset(delivered, 0, sizeof(delivered));
+	wanted_token = nd_offline_submit(q, offline_done, NULL);
+	assert(wanted_token);
+	offline_wait();
+	assert(delivered[ND_OFF_HEADER] && observed[ND_OFF_HEADER] == header);
+	for (int i = 0; i < q->count; i++)
+		assert(delivered[i] && observed[i] == row);
+}
+static void remote_header_checks(void) {
+	nd_row_t *rows = calloc(2, sizeof(*rows));
+	assert(rows);
+	strcpy(rows[0].id, "A");
+	strcpy(rows[1].id, "remote-only");
+	atomic_store(&fail_next_calloc, true);
+	assert(!nd_album_membership_create(&library, "album", rows, 2, "", 0, 0));
+	nd_album_membership_t *members = nd_album_membership_create(&library, "album", rows, 2, "", 0, 0);
+	assert(members);
+	nd_off_request_t q = {.library = library, .kind = ND_OFF_TRACK, .count = 1};
+	q.library.ready = false; // No Sync; represented remote membership differs from local A/B.
+	strcpy(q.items[0].id, "A");
+	strcpy(q.header.id, "album");
+	q.header.members = members;
+	atomic_store(&fail_next_calloc, true);
+	assert(!nd_offline_submit(&q, offline_done, NULL));
+	header_check(&q, ND_OFF_PARTIAL, ND_OFF_COMPLETE);
+	q.library.writable = false;
+	bool was_online = online;
+	online = false;
+	header_check(&q, ND_OFF_PARTIAL, ND_OFF_COMPLETE);
+	online = was_online;
+	q.library.writable = library.writable;
+	for (int profile_change = 0; profile_change < 2; profile_change++) {
+		memset(delivered, 0, sizeof(delivered));
+		wanted_token = nd_offline_submit(&q, offline_done, NULL);
+		assert(wanted_token);
+		while (nd_offline_busy(wanted_token)) usleep(1000);
+		if (profile_change) context.profile_epoch++; else context.card_epoch++;
+		pump(); nd_offline_poll();
+		assert(!delivered[ND_OFF_HEADER] && !delivered[0]);
+		if (profile_change) context.profile_epoch--; else context.card_epoch--;
+	}
+	strcpy(q.header.id, "wrong-album");
+	header_check(&q, ND_OFF_UNKNOWN, ND_OFF_COMPLETE);
+	strcpy(q.header.id, "album");
+	unsigned profile = context.profile_epoch++;
+	assert(!nd_album_membership_matches(members, &library, "album"));
+	context.profile_epoch = profile;
+	header_check(&q, ND_OFF_PARTIAL, ND_OFF_COMPLETE);
+	nd_album_membership_release(members);
+	nd_album_membership_collect();
+
+	// Real immutable child schema, with one fixed handle independent of its owner.
+	char path[1200];
+	snprintf(path, sizeof(path), "%s-members", library.path);
+	sqlite3 *db;
+	assert(sqlite3_open(path, &db) == SQLITE_OK);
+	assert(sqlite3_exec(db, "CREATE TABLE row(id TEXT PRIMARY KEY,disc INT,track INT,key TEXT,data BLOB); WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x<64) INSERT INTO row SELECT CASE x WHEN 0 THEN 'A' ELSE printf('remote/%d',x) END,x/16+1,x,'',NULL FROM n", NULL, NULL, NULL) == SQLITE_OK);
+	assert(sqlite3_close(db) == SQLITE_OK);
+	struct stat st;
+	assert(!lstat(path, &st));
+	members = nd_album_membership_create(&library, "album", NULL, 65, path, st.st_dev, st.st_ino);
+	assert(members);
+	q.header.members = nd_album_membership_retain(members);
+	nd_album_membership_release(members); // original child owner leaves
+	header_check(&q, ND_OFF_PARTIAL, ND_OFF_COMPLETE);
+	nd_row_t window[ND_WINDOW]; int count, total;
+	assert(nd_album_membership_read(q.header.members, 64, window, &count, &total) && count == 1 && total == 65);
+	assert(!unlink(path));
+	header_check(&q, ND_OFF_UNKNOWN, ND_OFF_COMPLETE);
+	nd_album_membership_release(q.header.members);
+	nd_album_membership_collect();
+	assert(!leases && !cache_users);
+	puts("PASS combined row/header, exact remote versus synced membership, retained 64/65 sources, allocation/read failures and profile retirement");
 }
 static nd_dl_job_t permanent(const char *card, const char *wav, const char *id, int number) {
 	nd_dl_store_t store;
@@ -104,8 +191,13 @@ int main(int argc, char **argv) {
 	nd_off_request_t album = {.library = library, .kind = ND_OFF_ALBUM, .count = 1};
 	strcpy(album.items[0].id, "album");
 	offline_check(&album, ND_OFF_PARTIAL); // B is on a different disc
+	nd_off_request_t combined = track;
+	strcpy(combined.header.id, "album");
+	header_check(&combined, ND_OFF_PARTIAL, ND_OFF_COMPLETE);
 	nd_dl_job_t b = permanent(argv[1], argv[2], "B", 2);
 	offline_check(&album, ND_OFF_COMPLETE);
+	header_check(&combined, ND_OFF_COMPLETE, ND_OFF_COMPLETE);
+	remote_header_checks();
 	puts("PASS real WAV downloads, missing store, complete and partial multidisc album");
 
 	nd_playlist_store_t saved;
@@ -187,7 +279,30 @@ int main(int argc, char **argv) {
 	assert(sqlite3_exec(source.db, "DELETE FROM entity WHERE kind=1; WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<17000) INSERT INTO entity(gen,kind,id,title,artist,album,cover,duration,disc,track,sortkey) SELECT 1,1,printf('large/%d',x),'Track','Artist','album','',1,x/100+1,x,printf('%05d',x) FROM n", NULL, NULL, NULL) == SQLITE_OK);
 	nd_store_close(&source);
 	double started_at = now();
-	offline_check(&album, ND_OFF_NONE);
+	combined = (nd_off_request_t){.library = library, .kind = ND_OFF_TRACK, .count = ND_WINDOW};
+	strcpy(combined.header.id, "album");
+	for (int i = 0; i < ND_WINDOW; i++)
+		snprintf(combined.items[i].id, ND_ID_MAX, "large/%d", i + 1);
+	memset(delivered, 0, sizeof(delivered));
+	wanted_token = nd_offline_submit(&combined, offline_done, NULL);
+	assert(wanted_token);
+	int replacements = 0;
+	while (nd_offline_busy(wanted_token) && now() - started_at < 60) {
+		usleep(30000);
+		pump(); nd_offline_poll();
+		if (delivered[ND_OFF_HEADER]) break;
+		// Recycle row demand while complete-album progress survives matching replacement.
+		nd_off_item_t first = combined.items[0];
+		memmove(combined.items, combined.items + 1, (ND_WINDOW - 1) * sizeof(first));
+		combined.items[ND_WINDOW - 1] = first;
+		wanted_token = nd_offline_submit(&combined, offline_done, NULL);
+		assert(wanted_token);
+		replacements++;
+	}
+	offline_wait();
+	assert(replacements > 10 && delivered[ND_OFF_HEADER] && observed[ND_OFF_HEADER] == ND_OFF_NONE);
+	for (int i = 0; i < ND_WINDOW; i++) assert(delivered[i] && observed[i] == ND_OFF_NONE);
+	printf("PASS %d live row-window replacements without starving the 17,000-track header\n", replacements);
 	printf("PASS 17,000-track/171-disc album; fixed job %zu bytes, stack %d bytes; %.2f host seconds\n", sizeof(off_job_t), OFF_STACK, now() - started_at);
 
 	// A foreground request arriving inside a mapping check must defer the

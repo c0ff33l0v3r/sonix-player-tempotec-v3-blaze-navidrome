@@ -37,6 +37,7 @@ typedef struct {
 	bool art_bound[ND_WINDOW];
 	nd_album_view_t album_view;
 	nd_off_badges_t offline;
+	nd_album_membership_t *members;
 	char anchor[ND_ID_MAX];
 	int anchor_delta;
 	bool art_done[ND_WINDOW], loading, populated, action_busy;
@@ -63,6 +64,7 @@ typedef struct {
 	int anchor_delta;
 	nd_discovery_mode_t mode;
 	nd_search_result_t result;
+	nd_album_membership_t *members;
 } discovery_job_t;
 static pthread_mutex_t discovery_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t discovery_ready = PTHREAD_COND_INITIALIZER;
@@ -112,7 +114,6 @@ static void discovery_art_remap(discovery_page_t *p, const nd_search_result_t *n
 				}
 	}
 	nd_row_complete_map(map);
-	navidromeofflinebadge_release(&p->offline);
 	ND_ROW_REORDER(p->rows, map);
 	ND_ROW_REORDER(p->names, map);
 	ND_ROW_REORDER(p->details, map);
@@ -140,17 +141,19 @@ static void discovery_art_remap(discovery_page_t *p, const nd_search_result_t *n
 }
 static void discovery_rows_hide(discovery_page_t *p) {
 	navidromeofflinebadge_release(&p->offline);
+	nd_album_membership_release(p->members);
+	p->members = NULL;
 	discovery_art_release(p);
 	for (int i = 0; i < ND_WINDOW; i++)
 		lv_obj_set_hidden(p->rows[i], true);
 }
 
 static void discovery_paint_rows(discovery_page_t *p) {
-	navidromeofflinebadge_release(&p->offline);
 	for (int i = 0; i < ND_WINDOW; i++)
 		lv_obj_set_hidden(p->rows[i], i >= p->data.count);
 	int64_t extent_rows = (int64_t)p->data.total + (p->data.more ? 1 : 0);
 	if (extent_rows < 0 || extent_rows > LV_COORD_MAX / discovery_pitch) {
+		navidromeofflinebadge_release(&p->offline);
 		lv_label_set_text(p->reason, tr("nd_search_child_limit"));
 		discovery_layout(p);
 		return;
@@ -170,6 +173,7 @@ static void discovery_paint_rows(discovery_page_t *p) {
 	discovery_layout(p);
 	int extent = p->data.alternate ? p->data.album.extent : total * discovery_pitch;
 	if (extent > LV_COORD_MAX - p->album_view.height) {
+		navidromeofflinebadge_release(&p->offline);
 		lv_label_set_text(p->reason, tr("nd_search_child_limit"));
 		return;
 	}
@@ -208,7 +212,11 @@ static void discovery_paint_rows(discovery_page_t *p) {
 		for (int i = 0; i < q.count; i++)
 			if (!p->album_view.active || !p->data.album.heading[i])
 				memcpy(q.items[i].id, p->data.rows[i].id, ND_ID_MAX);
-		navidromeofflinebadge_bind(&p->offline, p->screen, &q, p->details);
+		if (p->album_view.active && p->members) {
+			memcpy(q.header.id, p->album_view.info.row.id, ND_ID_MAX);
+			q.header.members = p->members;
+		}
+		navidromeofflinebadge_bind_album(&p->offline, p->screen, &q, p->details, p->album_view.active ? &p->album_view : NULL);
 	}
 }
 
@@ -255,11 +263,17 @@ static bool discovery_job_current(void *arg) {
 	pthread_mutex_unlock(&discovery_lock);
 	return ok;
 }
+static void discovery_job_free(discovery_job_t *job) {
+	if (job) {
+		nd_album_membership_release(job->members);
+		free(job);
+	}
+}
 static void discovery_done(void *arg) {
 	discovery_job_t *job = arg;
 	discovery_page_t *p = &discovery_pages[job->page];
 	if (job->visit != discovery_visit || job->request != discovery_request || job->serial != p->serial || discovery_active_page() != job->page || !navidrome_search_current(&discovery_identity, false)) {
-		free(job);
+		discovery_job_free(job);
 		return;
 	}
 	p->loading = false;
@@ -277,13 +291,14 @@ static void discovery_done(void *arg) {
 	if ((int64_t)job->result.total + job->result.more > LV_COORD_MAX / discovery_pitch || job->result.total < 0 || job->result.album.extent > LV_COORD_MAX)
 		job->result.error = "nd_search_child_limit";
 	if (job->layout_revision != navidromealbum_revision() && job->page) {
-		free(job);
+		discovery_job_free(job);
 		return;
 	}
 	if (job->result.error) {
 		if (p->album_view.active)
 			gui_notify_popup(job->result.error);
 		discovery_retry = *job;
+		discovery_retry.members = NULL;
 		discovery_retry_valid = true;
 		if (job->child) {
 			gui_notify_popup(job->result.error);
@@ -295,11 +310,14 @@ static void discovery_done(void *arg) {
 		lv_snprintf(text, sizeof(text), "%s · %s", tr(job->result.error), tr("nd_discovery_retry"));
 		lv_label_set_text(p->reason, text);
 		discovery_layout(p);
-		free(job);
+		discovery_job_free(job);
 		return;
 	}
 	discovery_retry_valid = false;
 	discovery_art_remap(p, &job->result);
+	nd_album_membership_release(p->members);
+	p->members = job->members;
+	job->members = NULL;
 	p->data = job->result;
 	p->populated = true;
 	if (job->refresh || job->child)
@@ -308,7 +326,7 @@ static void discovery_done(void *arg) {
 	if (job->restore)
 		lv_obj_scroll_to_y(p->list, LV_MAX(0, (job->alternate ? job->first : job->first * discovery_pitch) + p->album_view.height - job->anchor_delta), LV_ANIM_OFF);
 	p->anchor[0] = 0;
-	free(job);
+	discovery_job_free(job);
 }
 static void *discovery_work(void *arg) {
 	(void)arg;
@@ -316,6 +334,7 @@ static void *discovery_work(void *arg) {
 	nd_discovery_t *session = NULL;
 	unsigned visit = 0, token = 0;
 	for (;;) {
+		nd_album_membership_collect();
 		pthread_mutex_lock(&discovery_lock);
 		while (!discovery_has_pending && visit == discovery_live_visit)
 			pthread_cond_wait(&discovery_ready, &discovery_lock);
@@ -368,6 +387,8 @@ static void *discovery_work(void *arg) {
 			}
 			nd_discovery_album_read(next, job->child ? 0 : job->first, job->pitch, job->disc_pitch, job->alternate, &job->result);
 		}
+		if (next && job->page && !job->result.error && discovery_job_current(&token))
+			job->members = nd_discovery_album_membership(next);
 		if (candidate) {
 			if (!job->result.error && discovery_job_current(&token)) {
 				nd_discovery_free(session);
@@ -377,7 +398,7 @@ static void *discovery_work(void *arg) {
 		}
 		if (!gui_post(discovery_done, job)) {
 			pthread_mutex_lock(&discovery_lock);
-			free(discovery_undelivered);
+			discovery_job_free(discovery_undelivered);
 			discovery_undelivered = job;
 			pthread_mutex_unlock(&discovery_lock);
 		}
@@ -517,6 +538,7 @@ static void discovery_loaded(lv_event_t *e) {
 static void discovery_unloaded(lv_event_t *e) {
 	discovery_page_t *p = lv_event_get_user_data(e);
 	navidromeplay_discovery_leave(p->screen);
+	navidromeofflinebadge_release(&p->offline);
 	if (p->loading) {
 		pthread_mutex_lock(&discovery_lock);
 		discovery_retry = discovery_pending;

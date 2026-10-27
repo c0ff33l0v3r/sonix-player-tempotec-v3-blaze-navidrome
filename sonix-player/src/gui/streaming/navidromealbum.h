@@ -2,6 +2,7 @@
 #define NAVIDROMEALBUM_H
 
 #include "navidromeart.h"
+#include "src/system/streaming/navidromeoffline.h"
 #include "src/gui/shell/gui.h"
 
 // Shared reference-height for disc headings, including space below the label.
@@ -23,6 +24,7 @@ typedef struct {
 	unsigned revision, art_network_epoch;
 	bool active, art_bound, art_done, tinted;
 	lv_color_t bg, ink, dim, card;
+	nd_off_state_t download_state;
 } nd_album_view_t;
 
 bool navidromealbum_enabled(void);
@@ -33,6 +35,7 @@ void navidromealbum_init(nd_album_view_t *view, gui_config_t *cfg, lv_obj_t *scr
 void navidromealbum_bind(nd_album_view_t *view, bool active, const nd_playrow_t *info, const nd_library_t *library, bool controls, bool available);
 void navidromealbum_release(nd_album_view_t *view);
 void navidromealbum_tick(nd_album_view_t *view);
+void navidromealbum_download_state(nd_album_view_t *view, nd_off_state_t state);
 void navidromealbum_icon(nd_album_view_t *view, lv_obj_t *image);
 void navidromealbum_row(nd_album_view_t *view, lv_obj_t *row, lv_obj_t *name, lv_obj_t *detail, lv_obj_t *number, lv_obj_t *image, const nd_row_t *data, bool heading);
 #endif

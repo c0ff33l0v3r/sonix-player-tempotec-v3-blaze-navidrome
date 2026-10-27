@@ -36,6 +36,7 @@ typedef struct {
 	int count;
 	nd_playrow_t album;
 	const char *reason;
+	nd_album_membership_t *members;
 } child_t;
 struct nd_search {
 	char query[ND_SEARCH_QUERY];
@@ -67,13 +68,17 @@ static void child_close(child_t *c) {
 	}
 	if (c->db)
 		sqlite3_close(c->db);
-	if (*c->path && navidrome_cache_begin(c->library.epoch, c->library.card_epoch)) {
+	if (!c->members && *c->path && navidrome_cache_begin(c->library.epoch, c->library.card_epoch)) {
 		struct stat st;
 		if (!lstat(c->path, &st) && st.st_dev == c->device && st.st_ino == c->inode && S_ISREG(st.st_mode))
 			unlink(c->path);
 		navidrome_cache_end();
 	}
-	free(c->memory);
+	if (c->members) {
+		nd_album_membership_release(c->members);
+		nd_album_membership_collect();
+	} else
+		free(c->memory);
 	memset(c, 0, sizeof(*c));
 }
 void nd_search_destroy(nd_search_t *s) {
@@ -936,4 +941,15 @@ void nd_album_reader_read(nd_album_reader_t *s, int offset, int pitch, int disc_
 }
 bool nd_album_reader_position(nd_album_reader_t *s, const char *id, int pitch, int disc_pitch, bool alternate, int *position) {
 	return nd_search_child_position(s, 1, id, pitch, disc_pitch, alternate, position);
+}
+
+nd_album_membership_t *nd_album_reader_membership(nd_album_reader_t *s) {
+	if (!s || !s->album_only || !current(s))
+		return NULL;
+	child_t *c = &s->children[0];
+	if (c->owner || c->source != ND_SEARCH_SERVER || c->kind != ND_TRACKS || !*c->album.row.id || (!c->memory && !*c->path))
+		return NULL;
+	if (!c->members)
+		c->members = nd_album_membership_create(&c->library, c->album.row.id, c->memory, c->count, c->path, c->device, c->inode);
+	return nd_album_membership_retain(c->members);
 }

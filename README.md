@@ -338,6 +338,13 @@ page entry, and periodically while visible, so externally removed/changed files
 lose their indicators after revalidation. Checks do not download music, connect
 to the server or change playback.
 
+The alternative album header's Download button uses the same green for a fully
+downloaded album and grey for a partly downloaded album. It keeps its normal
+album/theme color when no tracks are downloaded or status is unknown, and stays
+available under the usual Download rules. This also works for complete Discovery
+albums before Sync, using their already-loaded track lists. The button's colors
+refresh with local availability and remain readable across themes and album tints.
+
 Downloads are ordinary user-owned music, outside the cache budget. They survive
 Forget Server and can be opened through Folders/Music without credentials; that
 playback uses local controls, history and battery accounting. Durable download
