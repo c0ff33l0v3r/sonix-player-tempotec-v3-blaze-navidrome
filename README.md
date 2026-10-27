@@ -625,6 +625,24 @@ Direct binary launches without `SONIX_CONFIG` retain ordinary settings only for
 that session. `SONIX_PANEL` controls the runtime layout; it cannot resize icons
 baked into a binary built with a different `PANEL_WIDTH`.
 
+Host Gapless retains the device identity of the successful audio open, including
+fallback to the default output. This lets plugins such as PipeWire describe their
+handle differently without forcing a drain and reopen at every track boundary.
+Actual format, device and route changes still require the normal safe handoff.
+The focused `sh sonix-player/tools/host_gaplesscheck.sh` check exercises production
+audio with fake output handles in both host and non-host branches; it does not
+build the player or open an audio device. It needs the existing LVGL headers;
+`SONIX_LVGL_ROOT` can point to another dependency checkout.
+
+After rebuilding the simulator, check at least two natural boundaries between
+same-format Navidrome tracks whose audio is already cached, then compare ordinary
+Music and manual Next/Stop. To shorten the test, allow the next track to prepare
+before seeking to about 15 seconds before the current track ends. The full-player
+log should show `gapless: reusing the open PCM` for eligible joins. Rejections
+report separate `format`, `device`, `route` or `output_state` flags; an unavailable
+next file or a genuine output change can still require preparation or reopening.
+Preserve the fresh log before relaunching, since the launcher rotates it.
+
 New credential writes use version 2, while existing version-1 encrypted records
 remain readable. Older player binaries cannot read version-2 credentials; a
 rollback requires a user-owned compatible backup or re-entering the server

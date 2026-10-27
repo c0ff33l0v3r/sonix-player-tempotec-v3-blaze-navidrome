@@ -921,8 +921,22 @@ static char held_device[sizeof(output_pcm)];
 static snd_pcm_t *bt_converted_pcm;
 static char bt_converted_device[sizeof(output_pcm)];
 
+#ifdef HOST_BUILD
+// Host plugins can report a description instead of the name passed to open
+// (PipeWire does this for "default"). Keep the successful open's identity for
+// the playback thread's current handle. External opens on other threads must
+// not overwrite it; those handles never enter this thread's gapless handoff.
+static snd_pcm_t *host_playback_pcm;
+static char host_playback_device[sizeof(output_pcm)];
+#endif
+
 // The device name a handle was opened for: the route, for the converted plug.
 static const char *pcm_device_name(snd_pcm_t *pcm) {
+#ifdef HOST_BUILD
+	if (pcm && pthread_equal(pthread_self(), playback_thread) && pcm == host_playback_pcm) {
+		return host_playback_device;
+	}
+#endif
 	if (pcm && pcm == bt_converted_pcm) {
 		return bt_converted_device;
 	}
@@ -1183,6 +1197,12 @@ static bool bt_hold_usable(snd_pcm_t *pcm) {
 	return queued >= (snd_pcm_sframes_t)(rate * BT_HOLD_MIN_QUEUE_MS / 1000);
 }
 
+// WAV and decoded audio use the same natural-completion eligibility policy.
+static bool gapless_can_hold(snd_pcm_t *pcm, bool natural_end, bool paused, bool passthrough) {
+	return pcm && gapless_enabled && natural_end && !paused && !passthrough &&
+		   (!pcm_is_bluetooth(pcm) || bt_hold_usable(pcm));
+}
+
 // "Keep the PCM across a manual skip": the new track asked for is already
 // waiting, so the old queue is dropped (what a skip always did) and the
 // handle, put back in PREPARED, is held for it instead of being closed. Same
@@ -1221,10 +1241,13 @@ static snd_pcm_t *gapless_take(int channels, int rate, int bits, snd_pcm_uframes
 	// The output route counts too: headphones can have been plugged in between
 	// the two tracks, and reprogramming the codec under a live stream is
 	// exactly what the stock binary never does.
-	if (channels != held_channels || rate != held_rate || bits != held_bits || strcmp(device, held_device) != 0 ||
-		alsa_output_key() != held_route) {
-		fprintf(stderr, "audio[%ld]: gapless: different format (%d/%d/%d against %d/%d/%d), reopening\n", log_ms(), channels,
-				rate, bits, held_channels, held_rate, held_bits);
+	bool format_mismatch = channels != held_channels || rate != held_rate || bits != held_bits;
+	bool device_mismatch = strcmp(device, held_device) != 0;
+	bool route_mismatch = alsa_output_key() != held_route;
+	if (format_mismatch || device_mismatch || route_mismatch) {
+		fprintf(stderr, "audio[%ld]: gapless: reuse rejected format=%d device=%d route=%d (%d/%d/%d against %d/%d/%d)\n",
+				log_ms(), format_mismatch, device_mismatch, route_mismatch, channels, rate, bits,
+				held_channels, held_rate, held_bits);
 		gapless_release();
 		return NULL;
 	}
@@ -1237,7 +1260,7 @@ static snd_pcm_t *gapless_take(int channels, int rate, int bits, snd_pcm_uframes
 		return NULL;
 	}
 	if (pcm_is_bluetooth(pcm) && !bt_hold_usable(pcm)) {
-		fprintf(stderr, "audio[%ld]: gapless: the Bluetooth queue ran low or the stream stopped, reopening\n",
+		fprintf(stderr, "audio[%ld]: gapless: reuse rejected output_state=1 (Bluetooth queue or stream unavailable)\n",
 				log_ms());
 		pthread_mutex_lock(&held_lock);
 		held_pcm = pcm;
@@ -1550,10 +1573,18 @@ static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_pe
 	// Headphones that walked out of range take their PCM with them, and a
 	// track that refuses to start is a worse outcome than one coming out of
 	// the wrong hole. Fall back to the jack, and say so in the log.
+#ifdef HOST_BUILD
+	const char *host_opened_device = device;
+#endif
 	if (err < 0 && strcmp(device, AUDIO_DEFAULT_PCM) != 0) {
 		fprintf(stderr, "audio: '%s' would not open (%s); falling back to " AUDIO_DEFAULT_PCM "\n", device,
 				snd_strerror(err));
 		err = snd_pcm_open(&pcm_handle, AUDIO_DEFAULT_PCM, SND_PCM_STREAM_PLAYBACK, 0);
+#ifdef HOST_BUILD
+		if (err >= 0) {
+			host_opened_device = AUDIO_DEFAULT_PCM;
+		}
+#endif
 
 		// And stop asking for it, so the dead name does not stay installed and
 		// cost every following track the same wait while the interface, the
@@ -1827,6 +1858,12 @@ static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_pe
 
 	*period_size_out = period_size;
 	pcm_device_open = true;
+#ifdef HOST_BUILD
+	if (pthread_equal(pthread_self(), playback_thread)) {
+		host_playback_pcm = pcm_handle;
+		snprintf(host_playback_device, sizeof(host_playback_device), "%s", host_opened_device);
+	}
+#endif
 	return pcm_handle;
 }
 
@@ -3426,8 +3463,7 @@ static void play_wav_file(const char *filepath) {
 	pthread_mutex_unlock(&audio_mutex);
 
 	// Gapless, on the same conditions as the decoded path.
-	bool keep_open = pcm_handle && gapless_enabled && played_to_the_end && !is_paused &&
-					 (!pcm_is_bluetooth(pcm_handle) || bt_hold_usable(pcm_handle));
+	bool keep_open = gapless_can_hold(pcm_handle, played_to_the_end, is_paused, false);
 	bool kept_empty = !keep_open && gapless_enabled && !played_to_the_end &&
 					  skip_hold_prepare(pcm_handle, false, is_paused);
 	keep_open = keep_open || kept_empty;
@@ -4356,8 +4392,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// reason behind each.
 	//
 	// Over Bluetooth only while the handle is live: see bt_hold_usable().
-	bool keep_open = pcm_handle && gapless_enabled && played_to_the_end && !is_paused && !passthrough &&
-					 (!pcm_is_bluetooth(pcm_handle) || bt_hold_usable(pcm_handle));
+	bool keep_open = gapless_can_hold(pcm_handle, played_to_the_end, is_paused, passthrough);
 	bool kept_empty = !keep_open && gapless_enabled && !played_to_the_end && skip_hold_prepare(pcm_handle, passthrough, is_paused);
 	keep_open = keep_open || kept_empty;
 	if (keep_open) {
