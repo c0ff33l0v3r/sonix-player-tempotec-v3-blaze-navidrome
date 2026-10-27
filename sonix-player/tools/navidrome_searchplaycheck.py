@@ -6,6 +6,9 @@ import sys
 import threading
 from navidrome_searchcheck import Fixture
 
+# Coordinator-only Discovery case; ordinary Search still exercises local fallback.
+Fixture.discovery_synced = True
+
 with ThreadingHTTPServer(('127.0.0.1', 0), Fixture) as server:
     threading.Thread(target=server.serve_forever, daemon=True).start()
     result = subprocess.run([sys.argv[1], f'http://127.0.0.1:{server.server_port}/base'],

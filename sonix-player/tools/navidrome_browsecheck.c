@@ -32,7 +32,9 @@ static const uint8_t fixture_pixel[4] = {255, 255, 255, 255};
 #else
 const lv_image_dsc_t icon_sort_az = FIXTURE_ICON, icon_sort_za = FIXTURE_ICON, icon_sort_year_asc = FIXTURE_ICON, icon_sort_year_desc = FIXTURE_ICON;
 #endif
-const lv_image_dsc_t icon_download = FIXTURE_ICON, icon_album_big = FIXTURE_ICON, icon_shuffle = FIXTURE_ICON, icon_list_queue = FIXTURE_ICON, icon_star_plus = FIXTURE_ICON, icon_close = FIXTURE_ICON, icon_list_plus = FIXTURE_ICON, icon_ellipsis_vertical = FIXTURE_ICON, icon_check = FIXTURE_ICON;
+__attribute__((weak)) const lv_image_dsc_t icon_play_small = FIXTURE_ICON;
+__attribute__((weak)) const lv_image_dsc_t icon_ellipsis_vertical = FIXTURE_ICON;
+const lv_image_dsc_t icon_download = FIXTURE_ICON, icon_album_big = FIXTURE_ICON, icon_shuffle = FIXTURE_ICON, icon_list_queue = FIXTURE_ICON, icon_star_plus = FIXTURE_ICON, icon_close = FIXTURE_ICON, icon_list_plus = FIXTURE_ICON, icon_check = FIXTURE_ICON;
 #ifndef NAVIDROME_PLAYLIST_UI
 void navidromeplaylists_pick_source(int64_t session, int64_t generation, lv_obj_t *origin, bool favorites) {
 	(void)favorites;
@@ -157,17 +159,17 @@ static bool fixture_album_art_ready;
 static int fixture_album_art_size;
 static unsigned fixture_album_art_requests;
 void navidromeart_release(int slot) {
-    if (slot == ND_ART_ALBUM_SLOT) fixture_album_art_size = 0;
+    if (slot == ND_ART_ALBUM_SLOT || slot == ND_ART_DISCOVERY_ALBUM_SLOT) fixture_album_art_size = 0;
 }
 void navidromeart_request(int slot, const nd_library_t *library, const char *id, int size) {
-	if (slot == ND_ART_ALBUM_SLOT) { fixture_album_art_size = size; fixture_album_art_requests++; }
+	if (slot == ND_ART_ALBUM_SLOT || slot == ND_ART_DISCOVERY_ALBUM_SLOT) { fixture_album_art_size = size; fixture_album_art_requests++; }
 	(void)slot;
 	(void)library;
 	(void)id;
 	(void)size;
 }
 bool navidromeart_take(int slot, cover_image_t *image, bool *finished) {
-    if (slot == ND_ART_ALBUM_SLOT && fixture_album_art_size) {
+    if ((slot == ND_ART_ALBUM_SLOT || slot == ND_ART_DISCOVERY_ALBUM_SLOT) && fixture_album_art_size) {
         *finished = fixture_album_art_ready;
         if (!fixture_album_art_ready) return false;
         int size = fixture_album_art_size;

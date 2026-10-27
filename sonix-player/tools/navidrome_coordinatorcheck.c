@@ -699,6 +699,45 @@ int NAVIDROME_COORDINATOR_MAIN(int argc, char **argv) {
 		}
 		assert(starts == 10 && playlist_count() == 12);
 		puts("coordinator search queues: exact match set, unsynced metadata/audio start, selected-first Shuffle, unique full search/album rounds, Shuffle Repeat and normal-order restoration: passed");
+		int discovery_begin = starts;
+		chain_enabled = true;
+		playlist_set_mode(PLAYBACK_MODE_NORMAL);
+		int opens_before = sheet_opens;
+		assert(navidromeplay_discovery(&lib,&identity,"new-album","new-song-0",other));
+		navidromeplay_discovery_leave(other);
+		wait_started(discovery_begin + 1);
+		assert(playlist_count() == 12 && !navidromeplay_chain_boundary(true,false));
+		assert(sheet_opens == opens_before); // Leaving its visit suppresses late navigation.
+		navidromeplay_discovery_leave(other); // Installed catalogue remains independent.
+		assert(navidromeplay_track(playback.current_file,&track,NULL) && !strcmp(track.row.id,"new-song-0"));
+		assert(navidromeplay_discovery(&lib,&identity,"album-00000","new-song-0",other));
+		wait_started(discovery_begin + 2);
+		assert(playlist_count()==12 && !navidromeplay_chain_boundary(true,false));
+		assert(navidromeplay_discovery_album(&lib, &identity, "new-album", 1, other));
+		wait_started(discovery_begin + 3);
+		assert(playlist_count() == 12 && playlist_get_mode() == PLAYBACK_MODE_NORMAL);
+		assert(navidromeplay_track(playback.current_file, &track, NULL) && !strcmp(track.row.id, "new-song-11"));
+		assert(!navidromeplay_chain_boundary(true, false));
+		assert(navidromeplay_discovery_album(&lib, &identity, "new-album", 0, other));
+		wait_started(discovery_begin + 4);
+		assert(playlist_count() == 12 && playlist_get_mode() == PLAYBACK_MODE_SHUFFLE);
+		char playing_before[sizeof(playback.current_file)];
+		snprintf(playing_before, sizeof(playing_before), "%s", playback.current_file);
+		assert(navidromeplay_discovery_album(&lib, &identity, "new-album", 2, other));
+		for (int i = 0; i < 10000 && navidromeplay_enqueuing(); i++) {
+			drain(); navidromeplay_tick(); usleep(1000);
+		}
+		assert(!navidromeplay_enqueuing() && playlist_count() == 13);
+		assert(!strcmp(playing_before, playback.current_file) && starts == discovery_begin + 4);
+		assert(navidromeplay_discovery_enqueue(&lib, &identity, "new-album", other));
+		for (int i = 0; i < 10000 && navidromeplay_enqueuing(); i++) {
+			drain(); navidromeplay_tick(); usleep(1000);
+		}
+		assert(!navidromeplay_enqueuing() && playlist_count() == 25);
+		assert(!strcmp(playing_before, playback.current_file) && starts == discovery_begin + 4);
+		chain_enabled = false;
+		puts("coordinator Discovery complete unsynced album, Play/Shuffle/random-one/whole enqueue, no chaining and retired-origin navigation suppression: passed");
+
 	}
 	album_coordinator_check(&lib, other);
 	polish_coordinator_check(&lib, other);

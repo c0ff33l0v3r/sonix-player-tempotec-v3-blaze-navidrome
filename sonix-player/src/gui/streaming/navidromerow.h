@@ -2,6 +2,9 @@
 #define NAVIDROMEROW_H
 
 #include "lvgl/lvgl.h"
+#include "navidromeart.h"
+#include "src/gui/fonts/fonts.h"
+#include "src/gui/shell/icons.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/uiscale.h"
@@ -55,6 +58,61 @@ static inline lv_obj_t *nd_row_duration_create(lv_obj_t *detail) {
 	lv_obj_set_clickable(duration, false);
 	lv_obj_set_hidden(duration, true);
 	return duration;
+}
+// Library, Search and Discovery share one ordinary/numbered row construction.
+// Callers attach their own actions and bounded artwork slots.
+typedef struct {
+	lv_obj_t *row, *image, *name, *detail, *duration, *number;
+} nd_row_widgets_t;
+static inline nd_row_widgets_t nd_row_create(lv_obj_t *list, const gui_config_t *cfg) {
+	nd_row_widgets_t w = {0};
+	w.row = lv_btn_create(list);
+	lv_obj_set_size(w.row, lv_pct(100), ui_px(100));
+	lv_obj_add_style(w.row, &theme_style_card, 0);
+	lv_obj_add_style(w.row, &theme_style_card_pressed, LV_STATE_PRESSED);
+	lv_obj_set_style_shadow_width(w.row, 0, 0);
+	lv_obj_set_style_pad_all(w.row, ui_px(14), 0);
+	lv_obj_set_scrollable(w.row, false);
+	w.image = lv_image_create(w.row);
+	lv_obj_set_size(w.image, ui_px(ND_ART_THUMB_SIZE), ui_px(ND_ART_THUMB_SIZE));
+	lv_image_set_inner_align(w.image, LV_IMAGE_ALIGN_CONTAIN);
+	lv_obj_align(w.image, LV_ALIGN_LEFT_MID, 0, 0);
+	w.name = lv_label_create(w.row);
+	w.detail = lv_label_create(w.row);
+	w.duration = nd_row_duration_create(w.detail);
+	lv_obj_t *text[] = {w.name, w.detail};
+	for (int j = 0; j < 2; j++) {
+		const lv_font_t *font = j ? &font_ui_18 : &font_ui_20;
+		lv_obj_add_style(text[j], j ? &theme_style_text_dim : &theme_style_text, 0);
+		lv_obj_set_style_text_font(text[j], font, 0);
+		lv_obj_set_pos(text[j], ui_px(86), ui_px(j ? 39 : 8));
+		lv_obj_set_width(text[j], cfg->screen_width - 2 * cfg->padding - ui_px(168));
+		lv_obj_set_height(text[j], lv_font_get_line_height(font));
+		lv_label_set_long_mode(text[j], LV_LABEL_LONG_DOT);
+	}
+	w.number = lv_label_create(w.row);
+	lv_obj_add_style(w.number, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(w.number, &font_ui_20, 0);
+	lv_obj_set_width(w.number, ui_px(44));
+	lv_obj_set_style_text_align(w.number, LV_TEXT_ALIGN_CENTER, 0);
+	lv_obj_align(w.number, LV_ALIGN_LEFT_MID, 0, 0);
+	lv_obj_set_hidden(w.number, true);
+	lv_obj_set_hidden(w.row, true);
+	lv_obj_set_hidden(w.image, true);
+	return w;
+}
+static inline lv_obj_t *nd_row_menu_create(lv_obj_t *row) {
+	lv_obj_t *button = lv_btn_create(row);
+	lv_obj_set_size(button, ui_px(40), ui_px(52));
+	lv_obj_align(button, LV_ALIGN_RIGHT_MID, 0, 0);
+	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
+	lv_obj_set_style_border_width(button, 0, 0);
+	lv_obj_set_style_shadow_width(button, 0, 0);
+	lv_obj_t *glyph = lv_image_create(button);
+	lv_image_set_src(glyph, &icon_ellipsis_vertical);
+	lv_obj_add_style(glyph, &theme_style_icon, 0);
+	lv_obj_center(glyph);
+	return button;
 }
 // Call after the row's full text width and baseline have been laid out, before
 // offline badges reserve their own separate slice of the remaining artist line.

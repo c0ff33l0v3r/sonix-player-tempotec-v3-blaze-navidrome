@@ -448,7 +448,7 @@ static void *art_worker(void *unused) {
 		bool found = admitted && load(&job, &image, &audio_interrupted);
 		if (admitted)
 			nd_cache_io_end();
-		if (found && (i == ND_ART_ALBUM_SLOT || i == ND_ART_SEARCH_ALBUM_SLOT)) {
+		if (found && job.album) {
 			int luma;
 			image.has_tone = cover_page_tone(&image, COVER_PAGE_LIGHT_FROM, &image.tone, &luma, &image.tone_light);
 			image.tone_luma = image.has_tone ? luma : 0;
@@ -504,7 +504,7 @@ static void request(int i, const nd_library_t *library, const char *id, int size
 	slot->maintenance_epoch = nd_cache_epoch();
 	slot->player = i == ND_WINDOW;
 	slot->playback = slot->player || i >= ND_ART_QUEUE_SLOT;
-	slot->album = i == ND_ART_ALBUM_SLOT || i == ND_ART_SEARCH_ALBUM_SLOT;
+	slot->album = i == ND_ART_ALBUM_SLOT || i == ND_ART_SEARCH_ALBUM_SLOT || i == ND_ART_DISCOVERY_ALBUM_SLOT;
 	nd_context_t context;
 	if (navidrome_context(&context, false))
 		slot->profile_epoch = context.profile_epoch;

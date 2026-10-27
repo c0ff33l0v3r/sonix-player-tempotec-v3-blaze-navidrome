@@ -27,6 +27,11 @@ bool navidromeplay_playlist_view(const nd_library_t *library, const nd_playlist_
 bool navidromeplay_playlist_enqueue(const nd_library_t *library, const nd_playlist_capture_t *request, void *origin);
 void navidromeplay_playlist_leave(void *origin); // suppress late navigation and queue feedback
 bool navidromeplay_search(const nd_library_t *library, const nd_context_t *identity, const nd_query_t *query, const char *id, void *origin);
+bool navidromeplay_discovery(const nd_library_t *library, const nd_context_t *identity, const char *album, const char *id, void *origin);
+// Same Shuffle/Play/random-one Queue actions as ordinary album headers.
+bool navidromeplay_discovery_album(const nd_library_t *library, const nd_context_t *identity, const char *album, int action, void *origin);
+bool navidromeplay_discovery_enqueue(const nd_library_t *library, const nd_context_t *identity, const char *album, void *origin);
+void navidromeplay_discovery_leave(void *origin);
 bool navidromeplay_prepare(const char *reference); // true for non-Navidrome references
 void navidromeplay_other(const char *path);
 void navidromeplay_stop(void);

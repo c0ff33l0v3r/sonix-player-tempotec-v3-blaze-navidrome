@@ -35,7 +35,8 @@ typedef struct source {
 	nd_playcatalog_t *catalog;
 	nd_playlist_capture_t saved;
 	unsigned playlist_origin_serial, addition_origin_serial;
-	bool capture;
+	bool capture, discovery;
+	unsigned discovery_visit;
 	bool saved_shortcut, saved_shuffle;
 	unsigned saved_random;
 	int album_action; // 1 shuffle, 2 ordered play, 3 random single-track enqueue.
@@ -99,6 +100,8 @@ static unsigned album_queue_identity;
 static char album_first_ref[80];
 static source_t *meta_sources[SOURCE_CONTEXTS + 1];
 static unsigned next_token;
+static unsigned discovery_visit;
+static void *discovery_origin;
 static unsigned playlist_origin_serial;
 static void *playlist_origin;
 static unsigned addition_origin_serial;
@@ -274,6 +277,8 @@ static void protections(void) {
 	nd_audio_protect(paths);
 }
 static bool addition_feedback(source_t *s) {
+	if (s->discovery && (s->discovery_visit != discovery_visit || discovery_origin != s->origin))
+		return false;
 	return !s->saved.playlist || !s->origin ||
 		(s->addition_origin_serial == addition_origin_serial &&
 		lv_obj_is_valid(s->origin) && lv_screen_active() == s->origin);
@@ -446,7 +451,7 @@ static void result_done(void *user) {
 	device_state_play_prepared(r->path, &meta, paused, r->row.row.duration);
 	nd_reports_start(&s->context, &s->library, r->row.row.id, r->path, r->row.row.duration);
 	player_refresh_now_playing();
-	if (job->initial && (!s->saved.playlist || s->playlist_origin_serial == playlist_origin_serial) &&
+	if (job->initial && (!s->discovery || (s->discovery_visit == discovery_visit && discovery_origin == s->origin)) && (!s->saved.playlist || s->playlist_origin_serial == playlist_origin_serial) &&
 		config_get_bool("player", "open_player_on_tap", true) && lv_obj_is_valid(s->origin) && lv_screen_active() == s->origin)
 		player_sheet_open(true);
 done:
@@ -518,7 +523,7 @@ static bool read_row(source_t *s, int entry, nd_playrow_t *row) {
 	if (!valid || !navidrome_playback_begin(&s->context)) return false;
 
 	nd_store_t store = {0};
-	bool ok = s->capture ? nd_playcatalog_read(s->catalog, entry, row) : nd_store_open_source(&store, s->library.path, s->library.scope, false, false, s->library.favorites) && nd_store_play_row(&store, s->library.generation, handle, row);
+	bool ok = s->capture ? nd_playcatalog_read(s->catalog, entry + (s->album_action == 3 ? s->start : 0), row) : nd_store_open_source(&store, s->library.path, s->library.scope, false, false, s->library.favorites) && nd_store_play_row(&store, s->library.generation, handle, row);
 	nd_store_close(&store);
 	if (ok)
 		cached_favorite(s, row);
@@ -690,12 +695,12 @@ static void *work(void *unused) {
 			if (s->capture) {
 				s->catalog = s->saved.playlist ?
 					nd_playcatalog_playlist(&s->library, &s->context, &s->saved, current, &job, &error) :
-					nd_playcatalog_capture(&s->library, &s->context, &s->query, s->selected, current, &job, &error);
+					nd_playcatalog_capture(&s->library, &s->context, &s->query, s->album_action ? NULL : s->selected, current, &job, &error);
 				if (s->catalog) {
 					s->count = nd_playcatalog_count(s->catalog);
 					s->start = nd_playcatalog_start(s->catalog);
-					if (s->saved_shortcut && s->saved_shuffle && s->count > 0)
-						s->start = (int)(s->saved_random % (unsigned)s->count);
+					if (((s->saved_shortcut && s->saved_shuffle) || s->album_action == 1) && s->count > 0)
+						s->start = (int)((s->album_action ? s->album_random : s->saved_random) % (unsigned)s->count);
 				}
 			} else if (!navidrome_playback_begin(&s->context))
 				error = "nd_audio_cancelled";
@@ -845,9 +850,16 @@ static void *metadata_work(void *unused) {
 			const char *error = NULL;
 			bool ok;
 			if (s->capture) {
-				s->catalog = nd_playcatalog_playlist(&s->library, &s->context, &s->saved, current, &job, &error);
+				s->catalog = s->saved.playlist ? nd_playcatalog_playlist(&s->library, &s->context, &s->saved, current, &job, &error) :
+					nd_playcatalog_capture(&s->library, &s->context, &s->query, NULL, current, &job, &error);
 				ok = s->catalog != NULL;
-				if (ok) { s->count = nd_playcatalog_count(s->catalog); s->start = 0; }
+				if (ok) {
+					s->count = nd_playcatalog_count(s->catalog); s->start = 0;
+					if (s->album_action == 3 && s->count > 0) {
+						s->start = (int)(s->album_random % (unsigned)s->count);
+						s->count = 1;
+					}
+				}
 			} else ok = build_addition(s);
 			r->job = job;
 			retain(s);
@@ -1221,8 +1233,9 @@ bool navidromeplay_playlist_enqueue(const nd_library_t *lib, const nd_playlist_c
 	if (ok && timer) lv_timer_resume(timer);
 	return ok;
 }
-bool navidromeplay_search(const nd_library_t *lib, const nd_context_t *identity, const nd_query_t *query, const char *id, void *origin) {
-	if (!started || !id || !*id || strlen(id) >= ND_ID_MAX || query->kind != ND_TRACKS || !*lib->path || !*lib->scope)
+static bool album_submit(source_t *s);
+static bool remote_select(const nd_library_t *lib, const nd_context_t *identity, const nd_query_t *query, const char *id, void *origin, bool discovery, int action) {
+	if (!started || (action < 0 && (!id || !*id || strlen(id) >= ND_ID_MAX)) || query->kind != ND_TRACKS || !*lib->path || !*lib->scope)
 		return false;
 	source_t *s = calloc(1, sizeof(*s));
 	if (!s)
@@ -1232,15 +1245,50 @@ bool navidromeplay_search(const nd_library_t *lib, const nd_context_t *identity,
 	s->library = *lib;
 	s->query = *query;
 	s->origin = origin;
-	snprintf(s->selected, sizeof(s->selected), "%s", id);
+	s->discovery = discovery;
+	if (discovery) { discovery_origin = origin; s->discovery_visit = ++discovery_visit; }
+	if (id)
+		snprintf(s->selected, sizeof(s->selected), "%s", id);
+	if (action >= 0) {
+		s->album_action = action + 1;
+		s->album_mode = action == 0 ? (config_get_bool("player", "endless_shuffle", false) ? PLAYBACK_MODE_SHUFFLE_REPEAT : PLAYBACK_MODE_SHUFFLE) : PLAYBACK_MODE_NORMAL;
+		s->album_random = lv_rand(0, 0x7fffffff);
+	}
 	bool ok = navidrome_context(&s->context, false) && s->context.profile_epoch == identity->profile_epoch && s->context.card_epoch == lib->card_epoch;
 	pthread_mutex_lock(&lock);
 	s->token = ++next_token;
 	pthread_mutex_unlock(&lock);
 	if (ok)
-		ok = submit(s, 0, true, true, NULL, NULL);
+		ok = action >= 0 ? album_submit(s) : submit(s, 0, true, true, NULL, NULL);
 	release(s);
 	return ok;
+}
+bool navidromeplay_search(const nd_library_t *lib, const nd_context_t *identity, const nd_query_t *query, const char *id, void *origin) {
+	return remote_select(lib, identity, query, id, origin, false, -1);
+}
+bool navidromeplay_discovery(const nd_library_t *lib, const nd_context_t *identity, const char *album, const char *id, void *origin) {
+	if (!album || !*album || strlen(album) >= ND_ID_MAX) return false;
+	nd_query_t query = {.kind = ND_TRACKS, .filter_kind = ND_ALBUMS};
+	snprintf(query.filter, sizeof(query.filter), "%s", album);
+	// Remote captures never set album_origin or pin a neighbor ordering source.
+	return remote_select(lib, identity, &query, id, origin, true, -1);
+}
+bool navidromeplay_discovery_album(const nd_library_t *lib, const nd_context_t *identity, const char *album, int action, void *origin) {
+	if (!album || !*album || strlen(album) >= ND_ID_MAX || action < 0 || action > 2)
+		return false;
+	nd_query_t query = {.kind = ND_TRACKS, .filter_kind = ND_ALBUMS};
+	snprintf(query.filter, sizeof(query.filter), "%s", album);
+	return remote_select(lib, identity, &query, NULL, origin, true, action);
+}
+bool navidromeplay_discovery_enqueue(const nd_library_t *lib, const nd_context_t *identity, const char *album, void *origin) {
+	if (!album || !*album || strlen(album) >= ND_ID_MAX)
+		return false;
+	nd_query_t query = {.kind = ND_TRACKS, .filter_kind = ND_ALBUMS};
+	snprintf(query.filter, sizeof(query.filter), "%s", album);
+	return remote_select(lib, identity, &query, NULL, origin, true, 3);
+}
+void navidromeplay_discovery_leave(void *origin) {
+	if (discovery_origin == origin) { discovery_origin = NULL; discovery_visit++; }
 }
 static bool prepare_selection(const char *ref, const char *failure) {
 	if (!navidromeplay_reference(ref))
@@ -1569,16 +1617,26 @@ bool navidromeplay_album(const nd_library_t *lib, const nd_query_t *query, int a
 	s->album_random = lv_rand(0, 0x7fffffff);
 	s->enqueue_kind = ND_TRACKS;
 	bool ok = navidrome_context(&s->context, false) && s->context.epoch == lib->epoch && s->context.card_epoch == lib->card_epoch;
+	if (ok)
+		ok = album_submit(s);
+	release(s);
+	if (ok && timer)
+		lv_timer_resume(timer);
+	return ok;
+}
+
+static bool album_submit(source_t *s) {
 	pthread_mutex_lock(&lock);
-	if (ok && !quitting) {
+	bool ok = !quitting;
+	if (ok) {
 		source_t *old = adding ? addition_job.source : (pending || running) ? next_job.source : NULL;
-		if (old && !old->album_committed && old->album_action == s->album_action && old->context.profile_epoch == s->context.profile_epoch && !strcmp(old->query.filter, s->query.filter)) {
+		if (old && !old->album_committed && old->album_action == s->album_action && old->capture == s->capture && old->discovery == s->discovery && old->context.profile_epoch == s->context.profile_epoch && !strcmp(old->query.filter, s->query.filter)) {
+			if (s->discovery) old->discovery_visit = s->discovery_visit;
 			pthread_mutex_unlock(&lock);
-			release(s);
 			return true;
 		}
 		s->token = ++next_token;
-		if (action == 2) {
+		if (s->album_action >= 3) {
 			ok = !adding;
 			if (ok) {
 				s->album_intent = ++album_intent;
@@ -1593,9 +1651,8 @@ bool navidromeplay_album(const nd_library_t *lib, const nd_query_t *query, int a
 	} else
 		ok = false;
 	pthread_mutex_unlock(&lock);
-	if (ok && action != 2)
+	if (ok && s->album_action < 3)
 		ok = submit(s, 0, true, true, NULL, NULL);
-	release(s);
 	if (ok && timer)
 		lv_timer_resume(timer);
 	return ok;

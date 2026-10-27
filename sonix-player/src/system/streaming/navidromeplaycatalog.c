@@ -394,6 +394,10 @@ nd_playcatalog_t *nd_playcatalog_playlist(const nd_library_t *lib, const nd_cont
 }
 nd_playcatalog_t *nd_playcatalog_capture(const nd_library_t *lib, const nd_context_t *identity, const nd_query_t *q, const char *selected, bool (*current)(void *), void *user, const char **error) {
 	*error = NULL;
+	if (!selected && !*q->filter) {
+		*error = "nd_response_error";
+		return NULL;
+	}
 	nd_playcatalog_t *c = calloc(1, sizeof(*c));
 	if (!c) {
 		*error = "nd_json_memory";
@@ -469,8 +473,12 @@ nd_playcatalog_t *nd_playcatalog_capture(const nd_library_t *lib, const nd_conte
 	}
 	if (!*error && c->album && c->rows)
 		qsort(c->rows, c->count, sizeof(*c->rows), album_order);
+	// Header actions capture complete album membership without a tapped track.
+	bool whole_album = c->album && !selected;
+	if (!*error && whole_album && c->count > 0)
+		c->start = 0;
 	// Locate the selected exact ID using the unique disk index, not N opens.
-	if (!*error && *c->path) {
+	if (!*error && !whole_album && *c->path) {
 		bool lease = navidrome_playback_begin(&c->identity);
 		sqlite3 *db = NULL;
 		sqlite3_stmt *st = NULL;
@@ -489,7 +497,7 @@ nd_playcatalog_t *nd_playcatalog_capture(const nd_library_t *lib, const nd_conte
 		if (!ok)
 			*error = "nd_audio_cancelled";
 	}
-	for (int i = 0; !*error && c->rows && i < c->count; i++) {
+	for (int i = 0; !*error && !whole_album && c->rows && i < c->count; i++) {
 		nd_playrow_t row;
 		if (!current(user) || !nd_playcatalog_read(c, i, &row)) {
 			*error = "nd_audio_cancelled";

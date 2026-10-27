@@ -124,7 +124,7 @@ class Fixture(BaseHTTPRequestHandler):
                 self.reply({'artist':dict(id=identifier,album=[dict(id=f'new-{i}',name=f'New album {i:03}') for i in range(100)])})
         elif method == 'getAlbum.view':
             identifier = q['id'][0]
-            if identifier != 'new-album':
+            if identifier != 'new-album' and not (getattr(Fixture, 'discovery_synced', False) and identifier == 'album-00000'):
                 self.reply({'status':'failed','error':{'code':70,'message':'QUERYSECRET'}})
             else:
                 self.reply({'album':dict(id=identifier,song=[dict(id=f'new-song-{i}',title=f'Track {i}',discNumber=2-i//6,track=6-i%6) for i in range(12)])})

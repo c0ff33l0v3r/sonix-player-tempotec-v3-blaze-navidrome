@@ -139,6 +139,25 @@ track rows keep known durations right-aligned beside truncated artist names.
 The Cache size card supports swipe-back like the rest of settings; Manage
 downloads uses the standard navigation arrow.
 
+**Discovery** is the seventh Navidrome tile; scroll below Favorites to reach it.
+It opens four tiles: **Recently Added**, **Recently Played**, **Most Played** and
+**Random Albums**. These browse the connected server without Library Sync.
+Recently Added follows server additions, and played lists follow server history,
+including other clients. Ranked lists scroll continuously; Random Albums keeps
+one batch of up to 50 until **Refresh** or a fresh visit. Back from an album
+preserves its parent list and position. Refresh failures keep the prior results;
+tap the error to retry. Connection recovery alone does not refresh them.
+
+Albums open by exact server ID, including new unsynced albums. Tap a track to
+capture and play the complete album through Now Playing. The usual three-dot
+album menu offers Favorites, Add to queue, Add to playlist and Download; the
+alternative album header also provides Play, Shuffle, random-track Queue and
+Download. These actions work by exact album ID without Sync. Discovery does not
+chain into neighboring albums. Metadata lists and small albums can be browsed
+without a writable card; large album details and playback keep their existing
+storage limits. Discovery lists are session-only and have no offline Library
+fallback. Existing Library sorting and playback queues remain independent.
+
 Artists includes album artists and track artists with at least one album linked
 in the synced library. Contributor credits without a browsable album stay in the
 metadata cache but are omitted from the artist list, its count and letter jumps.
@@ -324,10 +343,10 @@ Navidrome settings → **Alternative album view** is on by default and is
 independent of Music's setting. Albums open with a large cover, cover-derived
 page colors, available artist/genre/year, numbered tracks and multi-disc
 headings. The header scrolls away as you browse. Turn it off for the existing
-track list with thumbnails. Ordinary album headers offer **Play**, **Shuffle**
-and **Queue**; Queue adds one random album track using the usual Play next/Add
+track list with thumbnails. Disc headings leave space before the next track.
+Ordinary album headers use icons for **Play**, **Shuffle** and **Queue**; Queue adds one random album track using the usual Play next/Add
 at end preference. Header playback shortcuts stay hidden during playlist picking,
-track selection and Search; those views keep their own existing track actions.
+track selection and Search; those views keep their own track actions.
 Older snapshots still open without Sync, omitting optional details they lack.
 
 **Album artwork cache** stores one shared encoded JPEG/PNG source per profile,

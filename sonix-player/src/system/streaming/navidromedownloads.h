@@ -9,6 +9,7 @@ typedef struct {
 	nd_library_t library;
 	nd_kind_t kind;
 	nd_dl_filter_t filter;
+	bool remote_album; // Explicit exact-ID Discovery album; no Library snapshot pin.
 	bool direct; // Current Navidrome track: owned metadata, no source snapshot pin.
 	nd_playrow_t track;
 	char id[ND_ID_MAX], destination[ND_DL_DEST], folder[ND_DL_PATH], name[96];

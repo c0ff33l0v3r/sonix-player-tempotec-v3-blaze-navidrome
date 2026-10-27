@@ -1,4 +1,5 @@
 #include "navidromesearch.h"
+#include "navidromealbumreader.h"
 #include "navidromedebug.h"
 #include "src/system/library/library.h"
 #include "src/system/net/http.h"
@@ -41,12 +42,12 @@ struct nd_search {
 	search_window_t windows[3];
 	child_t children[2];
 	const char *error, *reason;
-	bool reset;
+	bool reset, album_only;
 	bool (*current)(void *);
 	void *user;
 };
 
-static bool current(nd_search_t *s) { return (!s->current || s->current(s->user)) && navidrome_search_current(&s->identity, false); }
+static bool current(nd_search_t *s) { return (!s->current || s->current(s->user)) && navidrome_search_current(&s->identity, false) && (!s->album_only || navidrome_playback_current(&s->identity, false)); }
 static bool request_current(void *arg) { return current(arg); }
 void nd_search_cancel_check(nd_search_t *s, bool (*cb)(void *), void *user) {
 	s->current = cb;
@@ -513,7 +514,7 @@ static bool child_storage(nd_search_t *s, child_t *c, int n) {
 				*p = '/';
 			}
 		mkdir(dir, 0700);
-		snprintf(c->path, sizeof(c->path), "%s/search-XXXXXX", dir);
+		snprintf(c->path, sizeof(c->path), "%s/%s-XXXXXX", dir, s->album_only ? "discover" : "search");
 		int fd = mkstemp(c->path);
 		ok = fd >= 0;
 		if (fd >= 0) {
@@ -610,12 +611,12 @@ void nd_search_child(nd_search_t *s, int level, nd_kind_t parent, const char *id
 					error = "nd_response_error";
 				int a = array(&doc.doc, obj, parent == ND_ARTISTS ? "album" : "song");
 				int n = json_len(&doc.doc, a);
-				if (a == -2)
+				if (a == -2 || (s->album_only && (!nd_api_field_unique(&doc.doc,doc.response,"album",true) || !nd_api_field_unique(&doc.doc,obj,"song",false))))
 					error = "nd_response_error";
 				navidrome_library_snapshot(&c->library);
 				bool disk = n > ND_SEARCH_CHILD_ROWS;
 				bool lease = !error && disk && navidrome_cache_begin(c->library.epoch, c->library.card_epoch);
-				if (!error && disk && !lease)
+				if (!error && disk && (!lease || (s->album_only && (!c->library.writable || !*c->library.path))))
 					error = "nd_cache_storage";
 				if (!error && !child_storage(s, c, n))
 					error = "nd_search_child_limit";
@@ -623,7 +624,7 @@ void nd_search_child(nd_search_t *s, int level, nd_kind_t parent, const char *id
 					nd_row_t row;
 					if (!current(s))
 						error = "nd_sync_cancelled";
-					else if (!row_read(&doc.doc, json_at(&doc.doc, a, i), c->kind, &row))
+					else if (!row_read(&doc.doc, json_at(&doc.doc, a, i), c->kind, &row) || (s->album_only && !nd_api_field_unique(&doc.doc,json_at(&doc.doc,a,i),"id",true)))
 						error = "nd_response_error";
 					else if (!child_insert(c, &row, i))
 						error = "nd_search_child_limit";
@@ -651,7 +652,7 @@ void nd_search_child(nd_search_t *s, int level, nd_kind_t parent, const char *id
 		child_close(c);
 		c->kind = kind;
 		c->reason = error;
-		if (!local_child(s, c, parent, id)) {
+		if (s->album_only || !local_child(s, c, parent, id)) {
 			out->error = error ? error : "nd_item_removed";
 			return;
 		}
@@ -896,4 +897,34 @@ bool nd_search_child_position(nd_search_t *s, int level, const char *id, int pit
 	if (lease)
 		navidrome_cache_end();
 	return ok;
+}
+
+// Album-only clients share the validated child reader, not Search query/fallback
+// policy or its cleanup namespace. No synthetic query is constructed.
+nd_album_reader_t *nd_album_reader_create(void) {
+	nd_search_t *s = calloc(1, sizeof(*s));
+	if (!s) return NULL;
+	if (!navidrome_context(&s->identity, false)) { free(s); return NULL; }
+	nd_wipe(s->identity.password, sizeof(s->identity.password));
+	s->source = ND_SEARCH_SERVER;
+	s->album_only = true;
+	return s;
+}
+void nd_album_reader_cancel(nd_album_reader_t *s, bool (*current)(void *), void *user) { nd_search_cancel_check(s, current, user); }
+void nd_album_reader_free(nd_album_reader_t *s) { nd_search_destroy(s); }
+void nd_album_reader_open(nd_album_reader_t *s, const char *id, nd_search_result_t *out) { nd_search_child(s, 1, ND_ALBUMS, id, out); }
+void nd_album_reader_read(nd_album_reader_t *s, int offset, int pitch, int disc_pitch, bool alternate, nd_search_result_t *out) {
+	// In-memory metadata is card-independent; staged children keep their exact lease.
+	if (s && !*s->children[0].path) {
+		nd_context_t now;
+		if (navidrome_context(&now, false) && now.profile_epoch == s->identity.profile_epoch) {
+			s->identity.card_epoch = now.card_epoch;
+			navidrome_library_snapshot(&s->children[0].library);
+		}
+		nd_wipe(&now, sizeof(now));
+	}
+	nd_search_child_album_read(s, 1, offset, pitch, disc_pitch, alternate, out);
+}
+bool nd_album_reader_position(nd_album_reader_t *s, const char *id, int pitch, int disc_pitch, bool alternate, int *position) {
+	return nd_search_child_position(s, 1, id, pitch, disc_pitch, alternate, position);
 }

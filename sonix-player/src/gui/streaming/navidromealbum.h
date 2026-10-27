@@ -4,6 +4,9 @@
 #include "navidromeart.h"
 #include "src/gui/shell/gui.h"
 
+// Shared reference-height for disc headings, including space below the label.
+#define ND_ALBUM_DISC_HEIGHT 64
+
 typedef enum { ND_ALBUM_SHUFFLE, ND_ALBUM_PLAY, ND_ALBUM_QUEUE, ND_ALBUM_DOWNLOAD } nd_album_action_t;
 typedef void (*nd_album_action_cb)(void *user, nd_album_action_t action);
 typedef struct {

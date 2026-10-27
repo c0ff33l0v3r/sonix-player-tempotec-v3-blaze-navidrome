@@ -1,4 +1,5 @@
 #include "navidromeplaylists.h"
+#include "navidromeplaycatalog.h"
 #include "src/gui/shell/gui.h"
 #include "src/system/net/http.h"
 #include <pthread.h>
@@ -104,7 +105,19 @@ static bool sort_backfill(nd_playlist_store_t *s, const nd_playlist_t *p, const 
 	return ok && rc == SQLITE_DONE;
 }
 
-static bool add_selected(nd_playlist_store_t *s, const nd_pl_request_t *q, const nd_context_t *c, const nd_library_t *lib, nd_pl_result_t *out) {
+static bool add_selected(nd_playlist_store_t *s, const nd_pl_request_t *q, const nd_context_t *c, const nd_library_t *lib, nd_pl_result_t *out, nd_playcatalog_t *remote) {
+	if (remote) {
+		bool ok = nd_pl_begin(s, q->id, q->revision);
+		for (int i = 0; ok && i < nd_playcatalog_count(remote); i++) {
+			nd_playrow_t row;
+			int before = out->added;
+			ok = navidrome_context_current(c, false) && nd_playcatalog_read(remote, i, &row) &&
+				nd_pl_append(s, q->id, &row.row, true, &out->added, &out->skipped);
+			if (ok && out->added > before)
+				ok = nd_pl_sort_info(s, sqlite3_last_insert_rowid(s->db), &row);
+		}
+		return ok && nd_pl_finish(s, q->id, out->added > 0) && commit(s, c);
+	}
 	if (q->direct) {
 		if (q->source.profile != c->profile_epoch || q->source.card != c->card_epoch || !memchr(q->source.scope, 0, sizeof(q->source.scope)) || strcmp(q->source.scope, lib->scope) || !q->source.row.id[0] || !memchr(q->source.row.id, 0, sizeof(q->source.row.id)) || !memchr(q->source.row.title, 0, sizeof(q->source.row.title)) || !memchr(q->source.row.artist, 0, sizeof(q->source.row.artist)) || !memchr(q->source.row.cover, 0, sizeof(q->source.row.cover)) || !memchr(q->source.album_id, 0, sizeof(q->source.album_id)) || !memchr(q->source.album, 0, sizeof(q->source.album)) || !memchr(q->source.album_artist, 0, sizeof(q->source.album_artist))) {
 			s->error = "nd_pl_stale";
@@ -525,6 +538,8 @@ static bool publish(nd_playlist_store_t *s, const nd_context_t *c, const nd_pl_r
 	return true;
 }
 
+static bool remote_album_current(void *context) { return navidrome_context_current(context, false); }
+
 void nd_pl_execute(const nd_pl_request_t *q, const nd_context_t *c, const nd_library_t *lib, nd_pl_result_t *out) {
 	memset(out, 0, sizeof(*out));
 	out->request = *q;
@@ -545,8 +560,23 @@ void nd_pl_execute(const nd_pl_request_t *q, const nd_context_t *c, const nd_lib
 		out->error = "nd_cache_readonly";
 		return;
 	}
+	nd_playcatalog_t *remote = NULL;
+	if (q->remote_album) {
+		if (q->action != NDPL_ADD || q->direct || q->source.profile != c->profile_epoch || q->source.card != c->card_epoch ||
+			!memchr(q->source.scope, 0, sizeof(q->source.scope)) || strcmp(q->source.scope, lib->scope) ||
+			!q->source.row.id[0] || !memchr(q->source.row.id, 0, sizeof(q->source.row.id))) {
+			out->error = "nd_pl_stale";
+			return;
+		}
+		nd_query_t album = {.kind = ND_TRACKS, .filter_kind = ND_ALBUMS};
+		snprintf(album.filter, sizeof(album.filter), "%s", q->source.row.id);
+		remote = nd_playcatalog_capture(lib, c, &album, NULL, remote_album_current, (void *)c, &out->error);
+		if (!remote)
+			return;
+	}
 	bool leased = navidrome_cache_begin(c->epoch, c->card_epoch);
 	if (!leased) {
+		nd_playcatalog_free(remote);
 		out->error = "nd_pl_stale";
 		return;
 	}
@@ -629,7 +659,7 @@ void nd_pl_execute(const nd_pl_request_t *q, const nd_context_t *c, const nd_lib
 		ok = nd_pl_sql(&s, "BEGIN IMMEDIATE") && statement_id(&s, "DELETE FROM selection WHERE session=?", q->session) && commit(&s, c);
 		break;
 	case NDPL_ADD:
-		ok = add_selected(&s, q, c, lib, out);
+		ok = add_selected(&s, q, c, lib, out, remote);
 		if (ok)
 			ok = nd_pl_get(&s, p.id, &out->playlist);
 		break;
@@ -764,6 +794,7 @@ void nd_pl_execute(const nd_pl_request_t *q, const nd_context_t *c, const nd_lib
 			ok = false;
 	}
 done:
+	nd_playcatalog_free(remote);
 	if (!ok)
 		out->error = s.error ? s.error : "nd_pl_storage_error";
 	if (s.db)

@@ -393,7 +393,7 @@ static void submit_window(browse_page_t *p) {
 	request.serial = p->serial;
 	request.alternate = navidromealbum_enabled() && p->query.kind == ND_TRACKS && p->query.filter_kind == ND_ALBUMS && *p->query.filter;
 	request.layout_revision = navidromealbum_revision();
-	request.pitch = pitch; request.disc_pitch = ui_px(44);
+	request.pitch = pitch; request.disc_pitch = ui_px(ND_ALBUM_DISC_HEIGHT);
 	request.offset = LV_MAX(0, nd_row_scroll(p->list, p->album.height + p->album_window.extent) - p->album.height);
 	request.restore = *p->anchor != 0;
 	request.anchor_delta = p->anchor_delta;
@@ -432,7 +432,7 @@ static void scrolling(lv_event_t *e) {
     navidromealbum_tick(&p->album);
     if (p->album.active) {
         int y = LV_MAX(0, nd_row_scroll(p->list, p->album.height + p->album_window.extent) - p->album.height);
-        int last = p->count ? p->album_window.y[p->count - 1] + (p->album_window.heading[p->count - 1] ? ui_px(44) : pitch) : 0;
+        int last = p->count ? p->album_window.y[p->count - 1] + (p->album_window.heading[p->count - 1] ? ui_px(ND_ALBUM_DISC_HEIGHT) : pitch) : 0;
         if (!p->loading && (y < p->album_window.offset || (y + lv_obj_get_height(p->list) > last && last < p->album_window.extent)))
             submit_window(p);
         return;
@@ -1156,62 +1156,26 @@ void navidromebrowse_init(gui_config_t *cfg) {
 		lv_obj_set_clickable(p->extent, false);
 		lv_obj_set_scrollable(p->extent, false);
 		for (int i = 0; i < ND_WINDOW; i++) {
-			p->rows[i] = lv_btn_create(p->list);
-			lv_obj_set_size(p->rows[i], lv_pct(100), ui_px(100));
-			lv_obj_add_style(p->rows[i], &theme_style_card, 0);
-			lv_obj_add_style(p->rows[i], &theme_style_card_pressed, LV_STATE_PRESSED);
-			lv_obj_set_style_shadow_width(p->rows[i], 0, 0);
-			lv_obj_set_style_pad_all(p->rows[i], ui_px(14), 0);
-			lv_obj_set_scrollable(p->rows[i], false);
-			p->playmarks[i] = playmark_create(p->rows[i]);
-			p->images[i] = lv_image_create(p->rows[i]);
-			lv_image_set_inner_align(p->images[i], LV_IMAGE_ALIGN_CONTAIN);
-			lv_obj_align(p->images[i], LV_ALIGN_LEFT_MID, 0, 0);
-			p->names[i] = lv_label_create(p->rows[i]);
-			p->details[i] = lv_label_create(p->rows[i]);
-			p->durations[i] = nd_row_duration_create(p->details[i]);
+			nd_row_widgets_t row = nd_row_create(p->list, cfg);
+			p->rows[i] = row.row;
+			p->images[i] = row.image;
+			p->names[i] = row.name;
+			p->details[i] = row.detail;
+			p->durations[i] = row.duration;
+			p->numbers[i] = row.number;
 			p->art_slots[i] = i;
-			lv_obj_t *labels[] = {p->names[i], p->details[i]};
-			for (int j = 0; j < 2; j++) {
-				lv_obj_add_style(labels[j], j ? &theme_style_text_dim : &theme_style_text, 0);
-				lv_obj_set_style_text_font(labels[j], j ? &font_ui_18 : &font_ui_20, 0);
-				lv_label_set_long_mode(labels[j], LV_LABEL_LONG_DOT);
-				lv_obj_set_width(labels[j], cfg->screen_width - 2 * cfg->padding - ui_px(168));
-				// DOT mode needs a height limit to ellipsize instead of wrapping.
-				lv_obj_set_height(labels[j], lv_font_get_line_height(j ? &font_ui_18 : &font_ui_20));
-				lv_obj_set_pos(labels[j], ui_px(86), ui_px(j ? 39 : 8));
-			}
-			lv_obj_set_hidden(p->rows[i], true);
-			lv_obj_set_hidden(p->images[i], true);
+			p->playmarks[i] = playmark_create(p->rows[i]);
 			lv_obj_add_event_cb(p->rows[i], row_clicked, LV_EVENT_CLICKED, NULL);
 			switcher_attach_back_gesture(p->rows[i]);
 			player_sheet_attach_drag(p->rows[i], true);
 		}
 
-        for (int i = 0; i < ND_WINDOW; i++) {
-            p->numbers[i] = lv_label_create(p->rows[i]);
-            lv_obj_add_style(p->numbers[i], &theme_style_text_dim, 0);
-            lv_obj_set_style_text_font(p->numbers[i], &font_ui_20, 0);
-            lv_obj_set_width(p->numbers[i], ui_px(44));
-            lv_obj_set_style_text_align(p->numbers[i], LV_TEXT_ALIGN_CENTER, 0);
-            lv_obj_align(p->numbers[i], LV_ALIGN_LEFT_MID, 0, 0);
-            lv_obj_set_hidden(p->numbers[i], true);
-        }
         navidromealbum_init(&p->album, cfg, p->screen, p->list, p->title, p->status, NULL,
                            ND_ART_ALBUM_SLOT, browse_album_action, p);
 		p->index = azindex_create(p->screen, cfg, p->list, pitch, letter_jump);
 		azindex_set_area(p->index, settingsrow_content_top(cfg) + ui_px(32), cfg->screen_height - settingsrow_content_top(cfg) - ui_px(32) - cfg->padding);
 		for (int i = 0; i < ND_WINDOW; i++) {
-			p->menus[i] = lv_btn_create(p->rows[i]);
-			lv_obj_set_size(p->menus[i], ui_px(40), ui_px(52));
-			lv_obj_align(p->menus[i], LV_ALIGN_RIGHT_MID, 0, 0);
-			lv_obj_set_style_bg_opa(p->menus[i], LV_OPA_TRANSP, 0);
-			lv_obj_set_style_border_width(p->menus[i], 0, 0);
-			lv_obj_set_style_shadow_width(p->menus[i], 0, 0);
-			lv_obj_t *glyph = lv_image_create(p->menus[i]);
-			lv_image_set_src(glyph, &icon_ellipsis_vertical);
-			lv_obj_add_style(glyph, &theme_style_icon, 0);
-			lv_obj_center(glyph);
+			p->menus[i] = nd_row_menu_create(p->rows[i]);
 			p->checks[i] = lv_image_create(p->rows[i]);
 			lv_image_set_src(p->checks[i], &icon_check);
 			lv_obj_add_style(p->checks[i], &theme_style_icon, 0);

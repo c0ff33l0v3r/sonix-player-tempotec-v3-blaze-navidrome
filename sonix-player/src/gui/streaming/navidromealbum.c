@@ -15,7 +15,9 @@
 #include <string.h>
 
 static unsigned album_revision = 1;
-static nd_album_view_t *album_views[6];
+// Three Library, three Search and two Discovery page instances.
+enum { ALBUM_VIEW_COUNT = 8 };
+static nd_album_view_t *album_views[ALBUM_VIEW_COUNT];
 static bool album_theme_registered;
 static void (*album_preference_refresh)(bool enabled);
 static void album_theme_refresh(void);
@@ -37,7 +39,7 @@ void navidromealbum_set_enabled(bool enabled) {
 		album_preference_refresh(enabled);
 }
 static void album_preference_changed(bool enabled) {
-	for (int i = 0; i < 6; i++) {
+	for (int i = 0; i < ALBUM_VIEW_COUNT; i++) {
 		nd_album_view_t *view = album_views[i];
 		if (view && view->active) {
 			navidromealbum_release(view);
@@ -67,11 +69,7 @@ static void album_paint(nd_album_view_t *v) {
 	lv_obj_set_style_bg_color(v->mask, v->tinted ? v->bg : theme()->screen_bg, 0);
 	for (int i = 0; i < 4; i++) {
 		lv_obj_t *inside = lv_obj_get_child(v->controls[i], 0);
-		if (i == ND_ALBUM_PLAY) {
-			lv_obj_set_style_bg_color(v->controls[i], v->tinted ? v->ink : theme()->accent, 0);
-			lv_obj_set_style_text_color(inside, v->tinted ? v->bg : lv_color_white(), 0);
-		} else
-			album_color(inside, LV_STYLE_IMAGE_RECOLOR, v->tinted, v->ink);
+		album_color(inside, LV_STYLE_IMAGE_RECOLOR, v->tinted, v->ink);
 	}
 	back_btn_tint_on_screen(v->screen, v->tinted, v->ink);
 	lv_color_t bar = lv_color_darken(v->bg, LV_OPA_20);
@@ -129,7 +127,7 @@ static lv_obj_t *album_line(lv_obj_t *parent, const lv_font_t *font) {
 }
 void navidromealbum_init(nd_album_view_t *v, gui_config_t *cfg, lv_obj_t *screen, lv_obj_t *list, lv_obj_t *title, lv_obj_t *status, lv_obj_t *reason, int slot, nd_album_action_cb action, void *user) {
 	album_preference_refresh = album_preference_changed;
-	for (int i = 0; i < 6; i++) {
+	for (int i = 0; i < ALBUM_VIEW_COUNT; i++) {
 		if (album_views[i] == v)
 			break;
 		if (!album_views[i]) {
@@ -186,33 +184,20 @@ void navidromealbum_init(nd_album_view_t *v, gui_config_t *cfg, lv_obj_t *screen
 	lv_obj_set_event_bubble(v->buttons, true);
 	for (int i = 0; i < 4; i++) {
 		lv_obj_t *button = v->controls[i] = lv_btn_create(v->buttons);
-		lv_obj_set_size(button, i == ND_ALBUM_PLAY ? LV_SIZE_CONTENT : ui_px(56), ui_px(56));
+		lv_obj_set_size(button, ui_px(56), ui_px(56));
 		lv_obj_set_style_border_width(button, 0, 0);
 		lv_obj_set_style_shadow_width(button, 0, 0);
 		lv_obj_set_style_pad_all(button, 0, 0);
-		lv_obj_set_style_bg_opa(button, i == ND_ALBUM_PLAY ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+		lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 		lv_obj_set_style_radius(button, LV_RADIUS_CIRCLE, 0);
-		lv_obj_set_style_opa(button, i == ND_ALBUM_PLAY ? LV_OPA_70 : LV_OPA_50, LV_STATE_PRESSED);
+		lv_obj_set_style_opa(button, LV_OPA_50, LV_STATE_PRESSED);
 		lv_obj_set_style_opa(button, LV_OPA_40, LV_STATE_DISABLED);
 		lv_obj_set_event_bubble(button, true);
 		lv_obj_add_event_cb(button, album_pressed, LV_EVENT_CLICKED, v);
-		if (i == ND_ALBUM_PLAY) {
-			lv_obj_set_style_pad_hor(button, ui_px(40), 0);
-			int max_width = (int)cfg->screen_width - 2 * (int)cfg->padding - 3 * ui_px(56) - 3 * ui_px(20);
-			lv_obj_set_style_max_width(button, max_width, 0);
-			lv_obj_t *text = lv_label_create(button);
-			lv_label_set_text(text, tr("medialist_play"));
-			lv_obj_set_style_text_font(text, &font_ui_24_bold, 0);
-			lv_obj_set_style_max_width(text, LV_MAX(ui_px(16), max_width - 2 * ui_px(40)), 0);
-			lv_obj_set_height(text, lv_font_get_line_height(&font_ui_24_bold));
-			lv_label_set_long_mode(text, LV_LABEL_LONG_DOT);
-			lv_obj_center(text);
-		} else {
-			lv_obj_t *image = lv_image_create(button);
-			lv_image_set_src(image, i == ND_ALBUM_SHUFFLE ? &icon_shuffle : i == ND_ALBUM_DOWNLOAD ? &icon_download : &icon_list_queue);
-			lv_obj_add_style(image, &theme_style_icon, 0);
-			lv_obj_center(image);
-		}
+		lv_obj_t *image = lv_image_create(button);
+		lv_image_set_src(image, i == ND_ALBUM_PLAY ? &icon_play_small : i == ND_ALBUM_SHUFFLE ? &icon_shuffle : i == ND_ALBUM_DOWNLOAD ? &icon_download : &icon_list_queue);
+		lv_obj_add_style(image, &theme_style_icon, 0);
+		lv_obj_center(image);
 		switcher_attach_back_gesture(button);
 		player_sheet_attach_drag(button, true);
 	}
@@ -333,7 +318,7 @@ void navidromealbum_row(nd_album_view_t *v, lv_obj_t *row, lv_obj_t *name, lv_ob
 		lv_label_set_text(number, text);
 	}
 	lv_obj_set_clickable(row, !heading);
-	lv_obj_set_height(row, heading ? ui_px(44) : ui_px(100));
+	lv_obj_set_height(row, heading ? ui_px(ND_ALBUM_DISC_HEIGHT) : ui_px(100));
 	lv_obj_set_style_bg_opa(row, heading ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
 	// Match Music's centered 44-pixel number column plus 14-pixel text gap.
 	lv_obj_set_x(name, ui_px(v->active ? 58 : 86));
@@ -358,7 +343,7 @@ void navidromealbum_row(nd_album_view_t *v, lv_obj_t *row, lv_obj_t *name, lv_ob
 }
 
 static void album_theme_refresh(void) {
-	for (int i = 0; i < 6; i++)
+	for (int i = 0; i < ALBUM_VIEW_COUNT; i++)
 		if (album_views[i] && album_views[i]->active)
 			album_paint(album_views[i]);
 }

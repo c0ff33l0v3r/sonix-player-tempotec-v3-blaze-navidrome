@@ -3,6 +3,7 @@
 #include "navidromeaudio.h"
 #include "navidromedownloadfile.h"
 #include "navidromeplayliststore.h"
+#include "navidromeplaycatalog.h"
 #include "src/gui/shell/gui.h"
 #include "src/system/core/md5.h"
 #include "src/system/core/sha256.h"
@@ -66,7 +67,7 @@ typedef struct {
 } run_t;
 static void reconcile(run_t *r);
 static bool capture_pin(const nd_dl_request_t *q) {
-	return q->action == NDDL_CAPTURE && !q->direct && (!q->playlist || q->library.ready);
+	return q->action == NDDL_CAPTURE && !q->direct && !q->remote_album && (!q->playlist || q->library.ready);
 }
 
 static bool current(void *data) {
@@ -361,7 +362,7 @@ static bool append_playlist(nd_dl_store_t *dest, nd_store_t *source, bool opened
 		offset += count;
 	}
 }
-static bool capture(run_t *r, const nd_dl_request_t *q, int *added, int *skipped) {
+static bool capture_rows(run_t *r, const nd_dl_request_t *q, nd_playcatalog_t *remote, int *added, int *skipped) {
 	if (!nd_dl_destination(q->destination))
 		return false;
 	nd_dl_store_t dest;
@@ -375,7 +376,7 @@ static bool capture(run_t *r, const nd_dl_request_t *q, int *added, int *skipped
 	close(dir);
 	nd_store_t source = {0};
 	bool opened = nd_store_open_source(&source, q->library.path, q->library.scope, false, false, q->library.favorites);
-	bool ok = (opened || q->direct || q->playlist) && nd_dl_sql(&dest, "BEGIN IMMEDIATE");
+	bool ok = (opened || q->direct || q->playlist || remote) && nd_dl_sql(&dest, "BEGIN IMMEDIATE");
 	sqlite3_stmt *st = NULL;
 	if (ok)
 		ok = nd_dl_prepare(&dest, &st, "INSERT INTO batch(destination,created) VALUES(?,strftime('%s','now'))");
@@ -386,7 +387,16 @@ static bool capture(run_t *r, const nd_dl_request_t *q, int *added, int *skipped
 	sqlite3_finalize(st);
 	st = NULL;
 	int64_t batch = sqlite3_last_insert_rowid(dest.db);
-	if (ok && q->playlist)
+	if (ok && remote) {
+		int total = nd_playcatalog_count(remote);
+		ok = total > 0;
+		for (int i = 0; ok && i < total; i++) {
+			nd_playrow_t row;
+			ok = context_current(r) && nd_playcatalog_read(remote, i, &row) &&
+				validate_completions(&dest, row.row.id, r) &&
+				nd_dl_insert(&dest, batch, q->destination, &row, -1, added, skipped);
+		}
+	} else if (ok && q->playlist)
 		ok = append_playlist(&dest, &source, opened, q, batch, added, skipped, r);
 	else if (ok && q->direct) {
 		nd_playrow_t known;
@@ -432,6 +442,24 @@ static bool capture(run_t *r, const nd_dl_request_t *q, int *added, int *skipped
 		ok = navidrome_playback_action(&r->context, false, commit_sql, dest.db);
 	nd_store_close(&source);
 	close_store(&dest);
+	return ok;
+}
+
+static bool capture(run_t *r, const nd_dl_request_t *q, int *added, int *skipped) {
+	nd_playcatalog_t *remote = NULL;
+	if (q->remote_album) {
+		// Fetch/validate complete membership before acquiring a store/SQL lease.
+		if (!q->library.writable || !nd_dl_destination(q->destination))
+			return false;
+		nd_query_t album = {.kind = ND_TRACKS, .filter_kind = ND_ALBUMS};
+		snprintf(album.filter, sizeof(album.filter), "%s", q->id);
+		const char *error = NULL;
+		remote = nd_playcatalog_capture(&q->library, &r->context, &album, NULL, context_current, r, &error);
+		if (!remote)
+			return false;
+	}
+	bool ok = capture_rows(r, q, remote, added, skipped);
+	nd_playcatalog_free(remote);
 	return ok;
 }
 
@@ -1363,7 +1391,7 @@ void navidromedownloads_init(void) {
 	navidrome_set_download_hooks(navidromedownloads_cancel, navidromedownloads_shutdown);
 }
 bool navidromedownloads_request(const nd_dl_request_t *q, nd_dl_captured_cb callback, void *user) {
-	if (!q || q->playlist < 0 || (q->playlist && (q->playlist_revision <= 0 || q->direct || q->session || q->action != NDDL_CAPTURE)) || !start())
+	if (!q || (q->remote_album && (q->action != NDDL_CAPTURE || q->kind != ND_ALBUMS || !q->id[0] || q->direct || q->session || q->playlist || !q->profile_epoch)) || q->playlist < 0 || (q->playlist && (q->playlist_revision <= 0 || q->direct || q->session || q->action != NDDL_CAPTURE)) || !start())
 		return false;
 	nd_context_t context;
 	bool eligible = navidrome_context(&context, false) && navidrome_playback_scope(&context, &q->library) && (!q->profile_epoch || q->profile_epoch == context.profile_epoch);

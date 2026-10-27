@@ -17,6 +17,23 @@ static void album_cover_rendered(lv_obj_t *image) {
 	assert(green >= side * side * 95 / 100);
 	lv_draw_buf_destroy(snapshot);
 }
+static void album_play_rendered(nd_album_view_t *view) {
+	lv_obj_t *button = view->controls[ND_ALBUM_PLAY];
+	lv_obj_t *icon = lv_obj_get_child(button, 0);
+	assert(lv_image_get_src(icon) == &icon_play_small);
+	lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
+	lv_obj_update_layout(button);
+	lv_draw_buf_t *snapshot = lv_snapshot_take(button, LV_COLOR_FORMAT_ARGB8888);
+	assert(snapshot);
+	int ink = 0;
+	for (unsigned y = 0; y < snapshot->header.h; y++)
+		for (unsigned x = 0; x < snapshot->header.w; x++) {
+			const unsigned char *px = snapshot->data + y * snapshot->header.stride + x * 4;
+			ink += px[0] == view->ink.blue && px[1] == view->ink.green && px[2] == view->ink.red && px[3] == 255;
+		}
+	assert(ink > 20 && lv_obj_get_style_bg_opa(button, 0) == LV_OPA_TRANSP);
+	lv_draw_buf_destroy(snapshot);
+}
 static void album_wait(void) {
 	for (int i = 0; i < 10000; i++) {
 		drain();
@@ -75,7 +92,15 @@ int main(void) {
 	assert(p->album.active && p->total == 17000 && p->count == ND_WINDOW);
 	assert(p->album_window.heading[0] && !*p->data[0].id);
 	assert(!lv_obj_is_clickable(p->rows[0]));
-	assert(lv_obj_get_height(p->rows[0]) == ui_px(44));
+	assert(lv_obj_get_height(p->rows[0]) == ui_px(ND_ALBUM_DISC_HEIGHT));
+	lv_obj_t *play_icon = lv_obj_get_child(p->album.controls[ND_ALBUM_PLAY], 0);
+	assert(lv_obj_check_type(play_icon, &lv_image_class));
+	assert(lv_image_get_src(play_icon) == &icon_play_small);
+	assert(lv_obj_get_width(p->album.controls[ND_ALBUM_PLAY]) == ui_px(56));
+	lv_area_t disc_label, next_track;
+	lv_obj_get_coords(p->names[0], &disc_label);
+	lv_obj_get_coords(p->rows[1], &next_track);
+	assert(next_track.y1 - disc_label.y2 >= ui_px(20));
 	assert(!strcmp(lv_label_get_text(p->numbers[1]), "1"));
 	assert(lv_obj_is_hidden(p->images[1]));
 	assert(lv_image_get_inner_align(p->album.cover) == LV_IMAGE_ALIGN_CONTAIN_DOWNSCALE);
@@ -86,6 +111,7 @@ int main(void) {
 	assert(p->album.image.pixels && p->album.tinted);
 	assert(lv_image_get_inner_align(p->album.cover) == LV_IMAGE_ALIGN_CONTAIN);
 	album_cover_rendered(p->album.cover);
+	album_play_rendered(&p->album);
 	unsigned requested = fixture_album_art_requests;
 	submit_window(p);
 	album_wait();
@@ -114,7 +140,7 @@ int main(void) {
 	navidromealbum_row(&p->album, p->rows[1], p->names[1], p->details[1], p->numbers[1], p->images[1], &p->data[1], false);
 	assert(!strcmp(lv_label_get_text(p->numbers[1]), "—"));
 
-	album_scroll(p->album.height + 16000 * pitch + 160 * ui_px(44));
+	album_scroll(p->album.height + 16000 * pitch + 160 * ui_px(ND_ALBUM_DISC_HEIGHT));
 	assert(p->count <= ND_WINDOW && p->album_window.ordinal[p->count - 1] > 15990);
 	assert(*lv_label_get_text(p->title));
 	// Pin the visible exact track while changing presentation behind settings.

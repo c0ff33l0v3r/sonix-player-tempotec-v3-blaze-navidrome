@@ -192,6 +192,11 @@ void navidrome_set_download_hooks(void (*cancel)(void), void (*shutdown)(void)) 
 	(void)cancel;
 	(void)shutdown;
 }
+void navidrome_search_failed(const nd_context_t *c, const char *reason) {
+	(void)c;
+	(void)reason;
+	online = false;
+}
 void navidrome_network_failed(const nd_context_t *c) {
 	(void)c;
 	online = false;
@@ -231,6 +236,11 @@ static void submit(nd_dl_action_t action) {
 	nd_dl_request_t q = {.action = action, .library = library, .kind = ND_ALBUMS, .token = 1};
 	strcpy(q.id, "album");
 	strcpy(q.destination, destination);
+	if (!strncmp(mode, "remote_album", 12)) {
+		q.remote_album = true;
+		q.profile_epoch = context.profile_epoch;
+	}
+
 	if (!strncmp(mode, "playlist", 8)) {
 		q.playlist = saved_playlist;
 		q.playlist_revision = 2;
@@ -422,11 +432,11 @@ int main(int argc, char **argv) {
 		assert(nd_pl_sql(&s, !strcmp(mode, "selection") ? "INSERT INTO selection VALUES(1,0,0,'album',0),(1,1,1,'track/1?',0)" : "INSERT INTO selection VALUES(1,0,1,'track/1?',0),(1,1,1,'track/2?',0)"));
 		nd_pl_close(&s);
 	}
-	if (!strcmp(mode, "current_remote")) {
+	if (!strcmp(mode, "current_remote") || !strncmp(mode, "remote_album", 12)) {
 		assert(!unlink(library.path));
 		library.ready = false;
 	}
-	if (!strcmp(mode, "readonly"))
+	if (!strcmp(mode, "readonly") || !strcmp(mode, "remote_album_readonly"))
 		library.writable = false;
 	if (!strcmp(mode, "offline") || !strcmp(mode, "active_cache") || !strcmp(mode, "fallback") || !strcmp(mode, "playlist_offline")) {
 		nd_playrow_t row = {0};
@@ -463,7 +473,7 @@ int main(int argc, char **argv) {
 		assert(now() < end);
 		usleep(1000);
 	}
-	if (!strcmp(mode, "readonly")) {
+	if (!strcmp(mode, "readonly") || !strcmp(mode, "remote_album_readonly")) {
 		assert(!capture_ok);
 		navidromedownloads_shutdown();
 		pump();
@@ -482,6 +492,12 @@ int main(int argc, char **argv) {
 		sqlite3_finalize(st); nd_dl_close(&s);
 		assert(!leases && !cache_users && descriptors() == baseline_descriptors);
 		puts("PASS stale/deleted/during-capture playlist revision rolls back the whole batch");
+		return 0;
+	}
+	if (!strcmp(mode, "remote_album_wrong")) {
+		assert(!capture_ok);
+		puts("PASS wrong remote album identity rejects the complete batch");
+		navidromedownloads_shutdown();
 		return 0;
 	}
 	assert(capture_ok);

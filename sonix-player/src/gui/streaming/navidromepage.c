@@ -1,4 +1,5 @@
 #include "navidromepage.h"
+#include "navidromediscovery.h"
 #include "navidromefavorites.h"
 #include "navidromesearch.h"
 #include "navidromebrowse.h"
@@ -78,6 +79,7 @@ static void refresh(void) {
 	navidromeplaylists_refresh();
 	navidromefavorites_update();
 	navidromesearch_refresh();
+	navidromediscovery_refresh();
 }
 
 // Display notifications cover direct entry, every child and every exit.
@@ -96,6 +98,7 @@ static void entry_tick(lv_timer_t *timer) {
 }
 static void entry_shown(lv_event_t *event) {
 	(void)event;
+	if (lv_screen_active() == navidrome_screen) gridpage_hint_scroll(category_grid);
 	entry_tick(NULL);
 	lv_obj_t *screen = lv_screen_active();
 	if (entry_timer && screen && lv_obj_get_user_flag(screen, 3))
@@ -150,9 +153,10 @@ void navidromepage_init(gui_config_t *cfg) {
 	navidromepage_register(navidrome_screen);
 
 	const grid_entry_t entries[] = {
-		{"albums", &icon_menu_album, NULL, albums_action}, {"navidrome_tracks", &icon_menu_all, NULL, tracks_action}, {"artists", &icon_menu_artist, NULL, artists_action}, {"music_genres", &icon_menu_genre, NULL, genres_action}, {"playlists", &icon_menu_playlist, NULL, playlists_action}, {"nd_favorites", &icon_menu_favourites, NULL, navidromefavorites_open},
+		{"albums", &icon_menu_album, NULL, albums_action}, {"navidrome_tracks", &icon_menu_all, NULL, tracks_action}, {"artists", &icon_menu_artist, NULL, artists_action}, {"music_genres", &icon_menu_genre, NULL, genres_action}, {"playlists", &icon_menu_playlist, NULL, playlists_action}, {"nd_favorites", &icon_menu_favourites, NULL, navidromefavorites_open}, {"nd_discovery", &icon_menu_explorer, NULL, navidromediscovery_open},
 	};
 	category_grid = gridpage_build(navidrome_screen, cfg, entries, (int)(sizeof(entries) / sizeof(entries[0])), 2, 3, true);
+	gridpage_set_scrolling(category_grid);
 	settingsrow_title_corner_slots(settingsrow_title(navidrome_screen, cfg, "navidrome"), cfg, 2);
 	corner_button(cfg, 0, &icon_music_settings, "settings");
 	corner_button(cfg, 1, &icon_search, "navidrome_search");
@@ -161,6 +165,7 @@ void navidromepage_init(gui_config_t *cfg) {
 	navidromeplaylists_init(cfg);
 	navidromefavorites_init(cfg);
 	navidromesearch_init(cfg);
+	navidromediscovery_init(cfg);
 	navidrome_set_listener(refresh);
 	entry_status = lv_label_create(navidrome_screen);
 	lv_obj_add_style(entry_status, &theme_style_text_dim, 0);

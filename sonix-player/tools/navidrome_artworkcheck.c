@@ -417,6 +417,29 @@ int main(int argc, char **argv) {
 	cover_free(&image);
 	cover_free(&back);
 	navidromeart_release(ND_ART_PLAYER_SLOT);
+	// All three production album-header slots must use the same decoded tone.
+	art_slot_t album = fixture_bind("discovery-tone", 128, true);
+	const int album_slots[] = {ND_ART_ALBUM_SLOT, ND_ART_SEARCH_ALBUM_SLOT, ND_ART_DISCOVERY_ALBUM_SLOT};
+	uint32_t tone = 0;
+	for (unsigned n = 0; n < sizeof(album_slots) / sizeof(album_slots[0]); n++) {
+		int slot = album_slots[n];
+		navidromeart_request(slot, &album.library, album.id, album.size);
+		pthread_mutex_lock(&art_lock);
+		assert(slots[slot].album);
+		pthread_mutex_unlock(&art_lock);
+		finished = false;
+		begin = now();
+		while (!finished && now() - begin < 5) {
+			usleep(10000);
+			navidromeart_take(slot, &image, &finished);
+		}
+		assert(finished && image.pixels && image.has_tone);
+		if (n)
+			assert(image.tone == tone);
+		tone = image.tone;
+		cover_free(&image);
+		navidromeart_release(slot);
+	}
 	puts("artwork: shared source, aspect baseline, native PNG/JPEG/progressive crops, finite requests/cooldown/recovery, legacy/offline/read-only, corruption/bounds/redirect/truncation, failed publication, stale decode and eviction: passed");
 	return 0;
 }

@@ -670,6 +670,19 @@ static void playlist_actions_ui(nd_library_t *lib) {
 	pl_pages[1].selecting = true; pl_buttons(&pl_pages[1]); assert(lv_obj_is_hidden(pl_pages[1].play_actions));
 	pl_pages[1].selecting = false; pl_buttons(&pl_pages[1]); assert(!lv_obj_is_hidden(pl_pages[1].play_actions));
 	assert(atomic_load(&calls) == requests);
+	// Discovery owns the exact remote album through the same destination picker.
+	nd_context_t album_identity;
+	assert(navidrome_context(&album_identity, false));
+	nd_row_t remote_album = {.id = "unsynced-album", .title = "Discovery album"};
+	assert(navidromeplaylists_pick_album(&remote_album, lib, &album_identity, pl_pages[1].screen));
+	pl_wait(2);
+	assert(pl_direct_active && pl_direct_album && lv_screen_active() == pl_pages[2].screen);
+	nd_pl_request_t owned_album = pl_add_request(destination, target.revision);
+	assert(owned_album.remote_album && !owned_album.direct && !strcmp(owned_album.source.row.id, "unsynced-album"));
+	switch_screen_return_to(pl_pages[1].screen);
+	pl_wait(1);
+	assert(!pl_direct_active && !pl_direct_album && atomic_load(&calls) == requests);
+	nd_wipe(&album_identity, sizeof(album_identity));
 	puts("playlist actions UI: real no-Sync picker/direct dedupe/New flow, retained target after skip, stale guards, Play/Shuffle geometry and whole/entry queue menus: passed");
 }
 static void playlist_upload_ui(nd_library_t *lib) {

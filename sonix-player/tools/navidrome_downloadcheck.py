@@ -3,6 +3,7 @@
 import http.server
 import hashlib
 import io
+import json
 import os
 from pathlib import Path
 import shlex
@@ -56,8 +57,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if parsed.path.endswith("getAlbum.view"):
             body = b'{"subsonic-response":{"status":"ok","album":{"id":"album","displayAlbumArtist":"Various Artists","song":[{"id":"track/1?","discNumber":1},{"id":"track/2?","discNumber":2}]}}}'
+        if parsed.path.endswith("getAlbum.view") and mode.startswith("remote_album"):
+            body = json.dumps({"subsonic-response": {"status": "ok", "album": {
+                "id": "wrong" if mode == "remote_album_wrong" else "album", "name": "Album", "artist": "Album artist",
+                "song": [{"id": f"track/{n}?", "title": f"Track {n}", "albumId": "album", "album": "Album",
+                          "artist": f"Performer {n}", "discNumber": n, "track": 1} for n in (1, 2)]}}}).encode()
         if parsed.path.endswith("getSong.view"):
-            import json
             exact = query["id"][0]
             number = 1 if exact == "track/1?" else 2
             body = json.dumps({"subsonic-response": {"status": "ok", "song": {
@@ -106,7 +111,7 @@ with tempfile.TemporaryDirectory(prefix="sonix-download-check-") as temporary:
         subprocess.run(compiler + ["-std=gnu11", "-w", "-I", str(player), "-c", str(player / "src/system/db/sqlite3_impl.c"), "-o", str(sqlite)] + extra, check=True)
     sources = [
         "tools/navidrome_downloadcheck.c", "tools/navidrome_test_support.c",
-        "src/system/streaming/navidromedownloads.c", "src/system/streaming/navidromedownloadstore.c",
+        "src/system/streaming/navidromedownloads.c", "src/system/streaming/navidromeplaycatalog.c", "src/system/streaming/navidromedownloadstore.c",
         "src/system/streaming/navidromedownloadfile.c", "src/system/streaming/navidromeaudio.c",
         "src/system/streaming/navidromeapi.c", "src/system/streaming/navidromecrypto.c",
         "src/system/streaming/navidromestore.c", "src/system/streaming/navidromeplayliststore.c",
@@ -124,7 +129,7 @@ with tempfile.TemporaryDirectory(prefix="sonix-download-check-") as temporary:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        fixtures = ("clear_history", "clear_active", "deleted_again", "deleted_history", "deleted_retry", "folders", "success", "same_title", "offline", "active_cache", "unknown", "collision", "error", "json", "html", "truncated", "oversize", "unsupported", "pause", "cancel", "preempt", "preempt_headers", "resume", "single_multi", "current", "current_remote", "recover", "after_rename", "readonly", "reject_post", "large", "chunk", "chunk_bad", "gzip", "unknown_limit", "auth", "write_fail", "flush_fail", "full", "favorites", "selection", "case_collision", "capture_refresh", "large_batch", "fallback", "modified", "partial_retry", "root", "playlist", "playlist_remote", "playlist_stale", "playlist_changed", "playlist_deleted", "playlist_large", "playlist_badmeta", "playlist_offline")
+        fixtures = ("remote_album", "remote_album_wrong", "remote_album_readonly", "clear_history", "clear_active", "deleted_again", "deleted_history", "deleted_retry", "folders", "success", "same_title", "offline", "active_cache", "unknown", "collision", "error", "json", "html", "truncated", "oversize", "unsupported", "pause", "cancel", "preempt", "preempt_headers", "resume", "single_multi", "current", "current_remote", "recover", "after_rename", "readonly", "reject_post", "large", "chunk", "chunk_bad", "gzip", "unknown_limit", "auth", "write_fail", "flush_fail", "full", "favorites", "selection", "case_collision", "capture_refresh", "large_batch", "fallback", "modified", "partial_retry", "root", "playlist", "playlist_remote", "playlist_stale", "playlist_changed", "playlist_deleted", "playlist_large", "playlist_badmeta", "playlist_offline")
         selected = os.environ.get("NAVIDROME_DOWNLOAD_CASES")
         if selected:
             chosen = tuple(selected.split(","))
@@ -139,7 +144,7 @@ with tempfile.TemporaryDirectory(prefix="sonix-download-check-") as temporary:
             result = subprocess.run([str(limited if fixture == "unknown_limit" else binary), f"http://127.0.0.1:{server.server_port}/prefix", str(card), fixture], capture_output=True, text=True, timeout=15)
             assert result.returncode == 0, f"{fixture}: {result.stdout}\n{result.stderr}"
             assert "synthetic-download-password" not in result.stdout + result.stderr
-            if fixture in ("folders", "unsupported", "readonly", "large_batch", "playlist_large", "playlist_stale", "playlist_changed", "playlist_deleted"):
+            if fixture in ("folders", "unsupported", "readonly", "remote_album_readonly", "large_batch", "playlist_large", "playlist_stale", "playlist_changed", "playlist_deleted"):
                 assert not requests
             if fixture == "playlist":
                 assert request_ids == ["track/1?", "track/2?"]

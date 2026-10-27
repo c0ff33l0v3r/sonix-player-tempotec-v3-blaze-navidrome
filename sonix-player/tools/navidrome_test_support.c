@@ -125,3 +125,11 @@ __attribute__((weak)) bool navidromeplay_occurrence_matches(const nd_library_t *
 	(void)occurrence;
 	return navidromeplay_matches && navidromeplay_matches(library, ND_TRACKS, track);
 }
+
+
+// Suites focused on older menus can omit the independent Discovery pages.
+__attribute__((weak)) void navidromediscovery_init(void *config) { (void)config; }
+__attribute__((weak)) void navidromediscovery_open(void) {}
+__attribute__((weak)) void navidromediscovery_refresh(void) {}
+
+__attribute__((weak)) void gridpage_hint_scroll(void *grid) { (void)grid; }

@@ -68,7 +68,7 @@ static bool pl_copying, pl_renaming, pl_fixed, pl_recovering, pl_skip_load;
 static nd_playlist_t pl_menu_playlist;
 static int64_t pl_session, pl_generation, pl_recovery_id;
 static bool pl_source_favorites;
-static bool pl_direct_active, pl_current_bound;
+static bool pl_direct_active, pl_current_bound, pl_direct_album;
 static nd_pl_track_t pl_direct, pl_current_track;
 static char pl_current_ref[512];
 static lv_obj_t *pl_current_origin;
@@ -97,8 +97,8 @@ static bool pl_direct_current(const nd_pl_track_t *track, const nd_library_t *li
 static nd_pl_request_t pl_add_request(int64_t id, int64_t revision) {
 	nd_pl_request_t q = {.action = NDPL_ADD, .id = id, .revision = revision,
 		.session = pl_session, .generation = pl_generation, .favorites = pl_source_favorites,
-		.direct = pl_direct_active};
-	if (q.direct) { q.source = pl_direct; q.favorites = false; }
+		.direct = pl_direct_active && !pl_direct_album, .remote_album = pl_direct_active && pl_direct_album};
+	if (q.direct || q.remote_album) { q.source = pl_direct; q.favorites = false; }
 	return q;
 }
 static bool pl_gesture(void) { return player_sheet_drag_active() || switcher_back_drag_active() || coverflow_drag_active(); }
@@ -373,6 +373,7 @@ static void pl_done(nd_pl_result_t *r, void *value) {
 		gui_notify_popup(message);
 		pl_fixed = false;
 		pl_direct_active = false;
+		pl_direct_album = false;
 		memset(&pl_direct, 0, sizeof(pl_direct));
 		// Navigate only while the initiating picker remains current.
 		if (pl_origin && page == 2)
@@ -484,6 +485,7 @@ static void pl_action(int page, nd_pl_request_t *q) {
 	if (page == 2 && pl_direct_active) {
 		if (!pl_direct_current(&pl_direct, &current)) {
 			pl_direct_active = false;
+			pl_direct_album = false;
 			memset(&pl_direct, 0, sizeof(pl_direct));
 			gui_notify_popup("nd_pl_stale");
 			return;
@@ -1050,6 +1052,7 @@ static void pl_unloaded(lv_event_t *event) {
 	pl_menu_token++;
 	if (p == &pl_pages[2]) {
 		pl_direct_active = false;
+		pl_direct_album = false;
 		memset(&pl_direct, 0, sizeof(pl_direct));
 	}
 	navidromeofflinebadge_release(&p->offline);
@@ -1170,6 +1173,7 @@ void navidromeplaylists_open(void) {
 void navidromeplaylists_pick(int64_t session, int64_t generation, lv_obj_t *origin) { navidromeplaylists_pick_source(session, generation, origin, false); }
 void navidromeplaylists_pick_source(int64_t session, int64_t generation, lv_obj_t *origin, bool favorites) {
 	pl_direct_active = false;
+	pl_direct_album = false;
 	memset(&pl_direct, 0, sizeof(pl_direct));
 	pl_source_favorites = favorites;
 	pl_session = session;
@@ -1189,6 +1193,21 @@ void navidromeplaylists_pick_source(int64_t session, int64_t generation, lv_obj_
 	pl_fixed = false;
 	lv_obj_scroll_to_y(pl_pages[2].list, 0, LV_ANIM_OFF);
 	switch_screen(pl_pages[2].screen);
+}
+bool navidromeplaylists_pick_album(const nd_row_t *album, const nd_library_t *lib, const nd_context_t *identity, lv_obj_t *origin) {
+	if (!album || !album->id[0] || !lib || !identity || !navidrome_playback_current(identity, false) || identity->card_epoch != lib->card_epoch)
+		return false;
+	if (!lib->writable) { gui_notify_popup("nd_cache_readonly"); return true; }
+	pl_direct = (nd_pl_track_t){.row = *album, .profile = identity->profile_epoch, .card = identity->card_epoch};
+	snprintf(pl_direct.scope, sizeof(pl_direct.scope), "%s", lib->scope);
+	pl_direct_active = pl_direct_album = true;
+	pl_fixed = false; pl_source_favorites = false; pl_session = pl_generation = 0;
+	pl_origin = origin;
+	pl_pages[2].serial++;
+	pl_pages[2].loading = false;
+	lv_obj_scroll_to_y(pl_pages[2].list, 0, LV_ANIM_OFF);
+	switch_screen(pl_pages[2].screen);
+	return true;
 }
 bool navidromeplaylists_bind_current(const char *path) {
 	pl_current_bound = false;
@@ -1227,6 +1246,7 @@ bool navidromeplaylists_add_current(void) {
 	pl_direct = pl_current_track;
 	pl_current_bound = false;
 	pl_direct_active = true;
+	pl_direct_album = false;
 	pl_fixed = false; pl_source_favorites = false; pl_session = pl_generation = 0;
 	pl_origin = player_screen;
 	pl_pages[2].serial++;

@@ -84,6 +84,10 @@ static int leases;
 static unsigned epoch = 1, network_epoch = 1;
 static bool invalidate_commit, invalidate_after_post;
 static int mutation_calls;
+void thread_be_background(const char *name) { (void)name; }
+bool navidrome_playback_current(const nd_context_t *c, bool network) { return navidrome_context_current(c, network); }
+bool navidrome_playback_begin(const nd_context_t *c) { return navidrome_cache_begin(c->epoch, c->card_epoch); }
+void navidrome_search_failed(const nd_context_t *c, const char *reason) { (void)c; (void)reason; }
 bool navidrome_context_current(const nd_context_t *c, bool network) { return c->epoch == epoch && c->card_epoch == 1 && (!network || c->network_epoch == network_epoch); }
 bool navidrome_cache_begin(unsigned e, unsigned card) {
 	if (e != epoch || card != 1)
