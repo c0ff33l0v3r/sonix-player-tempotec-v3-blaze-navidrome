@@ -1,23 +1,25 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
+check_objects=${SONIX_LVGL_OBJECTS:-build_host/lvgl}
+check_source=${SONIX_LVGL_SOURCE:-lvgl}
 # Reuse the bundled SQLite object when available; otherwise compile only its wrapper.
-check_sqlite=src/system/db/sqlite3_impl.c
-if [ -f build_host/system/db/sqlite3_impl.o ]; then
+check_sqlite=${SONIX_SQLITE_OBJECT:-src/system/db/sqlite3_impl.c}
+if [ -z "${SONIX_SQLITE_OBJECT:-}" ] && [ -f build_host/system/db/sqlite3_impl.o ]; then
     check_sqlite=build_host/system/db/sqlite3_impl.o
 fi
 # Reuse LVGL objects from the user's host build; never run a full player build.
-if [ ! -f build_host/lvgl/src/lv_init.o ]; then
+if [ ! -f "$check_objects/src/lv_init.o" ]; then
     echo 'Requires LVGL objects from an existing host build.' >&2
     exit 1
 fi
 check_dir=$(mktemp -d /tmp/sonix-navidrome-uicheck.XXXXXX)
 trap 'rm -rf "$check_dir"' EXIT HUP INT TERM
-find build_host/lvgl -name '*.o' -print > "$check_dir/lvgl-objects"
+find "$check_objects" -name '*.o' -print > "$check_dir/lvgl-objects"
 ${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -O1 -g \
     -ffunction-sections -fdata-sections ${NAVIDROME_CHECK_FLAGS:-} \
-    -DHOST_BUILD -DNAVIDROME_TEST -DLV_CONF_INCLUDE_SIMPLE -I. -Ilvgl \
-    -DLV_FONT_UNSCII_8=1 tools/navidrome_navigationuicheck.c lvgl/src/font/lv_font_unscii_8.c \
+    -DHOST_BUILD -DNAVIDROME_TEST -DLV_CONF_INCLUDE_SIMPLE -I. -I"$check_source/.." -I"$check_source" \
+    -DLV_FONT_UNSCII_8=1 tools/navidrome_navigationuicheck.c "$check_source/src/font/lv_font_unscii_8.c" \
     src/system/streaming/navidromecache.c src/system/streaming/navidromedebug.c src/system/streaming/navidrome.c src/system/streaming/navidromeapi.c src/system/streaming/navidromebatch.c src/system/streaming/navidromestore.c src/system/streaming/navidromelibrary.c tools/navidrome_test_support.c src/system/streaming/navidromecrypto.c \
     src/system/streaming/navidromevault.c src/system/net/gzip.c src/system/image/png_scaled.c src/gb/miniz/miniz.c src/system/net/http.c src/system/net/tls.c src/system/core/json.c src/system/core/md5.c \
     @"$check_dir/lvgl-objects" "$check_sqlite" -lm -pthread -ldl -lm $(pkg-config --libs freetype2 sdl2) \

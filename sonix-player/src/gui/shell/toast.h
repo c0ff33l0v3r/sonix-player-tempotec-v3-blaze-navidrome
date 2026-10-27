@@ -45,4 +45,12 @@ void toast_busy_end(void);
 void toast_busy_dismissable(const char *text);
 bool toast_busy_showing(void);
 
+// Optional GUI-thread ownership for asynchronous callers. Replacements invalidate
+// the handle; tap dismissal keeps the revision so completion can report an outcome.
+unsigned toast_busy_owned(const char *text);
+bool toast_busy_update_owned(unsigned owner, const char *text);
+void toast_busy_end_owned(unsigned owner);
+unsigned toast_revision(void);
+bool toast_visible(void);
+
 #endif /* TOAST_H */

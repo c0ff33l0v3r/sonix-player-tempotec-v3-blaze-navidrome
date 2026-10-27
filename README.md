@@ -739,6 +739,15 @@ Navidrome connection or Library Sync. In the host simulator, LRCLIB uses the
 host's network directly; the device Wi-Fi switch is not required. The Navidrome
 source indicator sits in the lower-left corner, clear of the lyrics search control.
 
+If no usable saved or server lyrics are available, the visible lyrics view offers
+**Download the lyrics?** once for that track's visit. **Search** explicitly starts
+LRCLIB; Cancel leaves the server explanation and search menu available. The
+**Looking for the lyrics…** progress card can be dismissed while the search
+continues. Device Wi-Fi waiting also shows progress. Closing lyrics or changing
+the track retires pending search feedback and prevents late results from opening.
+In the results picker, Back or swipe-back from a preview restores the same list
+and scroll position; Back from the list returns to Now Playing.
+
 An applied LRCLIB version overrides server lyrics for that exact track. Skipping
 while the picker is open keeps its original target. **Use server lyrics** switches
 back to a saved server version or fetches a usable replacement before removing

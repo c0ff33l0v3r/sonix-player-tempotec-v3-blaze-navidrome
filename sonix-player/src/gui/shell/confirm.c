@@ -28,6 +28,7 @@ static void *pending_user;
 static void (*pending_cancel)(void *user);
 static void (*deferred_action)(void *user);
 static void *deferred_user;
+static unsigned revision;
 
 static void refresh_theme(void);
 
@@ -188,6 +189,8 @@ void confirm_show(const char *title, const char *message, const char *ok_text, v
 		return;
 	}
 
+	if (!++revision)
+		revision++;
 	pending_cancel = NULL;
 	lv_label_set_text(cancel_label, tr("cancel"));
 	lv_obj_remove_state(ok_btn, LV_STATE_DISABLED);
@@ -236,3 +239,21 @@ void confirm_show_choice(const char *title, const char *message, const char *yes
 	if (!enabled)
 		lv_obj_add_state(ok_btn, LV_STATE_DISABLED);
 }
+
+unsigned confirm_show_owned(const char *title, const char *message, const char *ok_text, void (*on_ok)(void *), void (*on_cancel)(void *), void *user) {
+	if (!veil)
+		return 0;
+	confirm_show(title, message, ok_text, on_ok, user);
+	pending_cancel = on_cancel;
+	return revision;
+}
+
+void confirm_close_owned(unsigned owner) {
+	if (owner && owner == revision && confirm_visible()) {
+		pending_action = pending_cancel = NULL;
+		pending_user = NULL;
+		confirm_close();
+	}
+}
+
+bool confirm_is_current(unsigned owner) { return owner && owner == revision; }

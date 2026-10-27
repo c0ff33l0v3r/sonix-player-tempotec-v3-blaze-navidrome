@@ -552,7 +552,7 @@ static void load_screen(lv_obj_t *target_screen) {
 // registration shows up only as a chevron that leaves the section instead of
 // walking back through the page's own stack. That is what the log line below
 // is for.
-#define BACK_GUARDS_MAX 16
+#define BACK_GUARDS_MAX 32
 
 static struct {
 	lv_obj_t *screen;

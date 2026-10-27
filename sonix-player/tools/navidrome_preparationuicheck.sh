@@ -1,7 +1,9 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
-if [ ! -f build_host/lvgl/src/lv_init.o ]; then
+check_objects=${SONIX_LVGL_OBJECTS:-build_host/lvgl}
+check_source=${SONIX_LVGL_SOURCE:-lvgl}
+if [ ! -f "$check_objects/src/lv_init.o" ]; then
     echo 'Requires LVGL objects from an existing host build; no check ran.' >&2
     exit 1
 fi
@@ -24,18 +26,18 @@ if [ "${NAVIDROME_POLISH_QUEUE_UI:-0}" = 1 ]; then
     polish_sources='tools/navidrome_queue_uifixture.c tools/navidrome_cover_test_support.c src/gui/nowplaying/coverloader.c src/gui/streaming/navidromeart.c src/system/image/stb_image_impl.c'
     polish_flags='-DNAVIDROME_POLISH_QUEUE_UI -Wno-missing-field-initializers'
 fi
-find build_host/lvgl -name '*.o' -print > "$check_dir/objects"
+find "$check_objects" -name '*.o' -print > "$check_dir/objects"
 ${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -Wno-unused-function -O1 -g \
     -ffunction-sections -fdata-sections $polish_flags ${NAVIDROME_CHECK_FLAGS:-} \
-    -DHOST_BUILD -DNAVIDROME_TEST -DLV_CONF_INCLUDE_SIMPLE -DLV_FONT_UNSCII_8=1 -I. -Ilvgl -Isrc/system/streaming \
-    $polish_sources tools/navidrome_preparationuicheck.c tools/navidrome_test_support.c lvgl/src/font/lv_font_unscii_8.c \
+    -DHOST_BUILD -DNAVIDROME_TEST -DLV_CONF_INCLUDE_SIMPLE -DLV_FONT_UNSCII_8=1 -I. -I"$check_source/.." -I"$check_source" -Isrc/system/streaming \
+    $polish_sources tools/navidrome_preparationuicheck.c tools/navidrome_test_support.c "$check_source/src/font/lv_font_unscii_8.c" \
     ${SONIX_PREPARATION_SOURCE:-src/system/streaming/navidromeplay.c} src/system/playback/playlist.c src/system/decode/growfile.c \
     src/system/streaming/navidromecache.c src/system/streaming/streamturn.c src/system/streaming/navidromedebug.c \
     src/system/streaming/navidromeplaycatalog.c src/system/streaming/navidrome.c src/system/streaming/navidromeapi.c \
     src/system/streaming/navidromeplaylists.c src/system/streaming/navidromeplayliststore.c src/system/core/sha256.c \
     src/system/streaming/navidromestars.c src/system/streaming/navidromestore.c src/system/streaming/navidromelibrary.c \
     src/system/streaming/navidromecrypto.c src/system/streaming/navidromevault.c \
-    src/system/core/json.c src/system/core/md5.c build_host/system/db/sqlite3_impl.o \
+    src/system/core/json.c src/system/core/md5.c "${SONIX_SQLITE_OBJECT:-build_host/system/db/sqlite3_impl.o}" \
     src/system/streaming/navidromebatch.c src/system/net/http.c src/system/net/tls.c \
     src/system/net/gzip.c src/system/image/png_scaled.c src/gb/miniz/miniz.c \
     @"$check_dir/objects" -pthread -ldl -lm -lresolv $(pkg-config --libs freetype2 sdl2) \

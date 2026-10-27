@@ -27,4 +27,9 @@ void confirm_show_choice(const char *title, const char *message, const char *yes
 bool confirm_visible(void);
 void confirm_close(void);
 
+// A handle identifies this displayed prompt, without changing legacy callers.
+unsigned confirm_show_owned(const char *title, const char *message, const char *ok_label, void (*on_ok)(void *), void (*on_cancel)(void *), void *user);
+void confirm_close_owned(unsigned owner);
+bool confirm_is_current(unsigned owner);
+
 #endif /* CONFIRM_H */

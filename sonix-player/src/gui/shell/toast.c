@@ -49,6 +49,7 @@ static lv_obj_t *busy_spinner;
 // The busy card is about work that carries on without anybody watching it, so
 // a tap off the card may put it away (toast_busy_dismissable).
 static bool busy_dismissable;
+static unsigned revision;
 
 static void toast_dismiss(void) {
 	if (busy_spinner) {
@@ -167,6 +168,8 @@ static void show(const lv_image_dsc_t *glyph, lv_color_t colour, const char *tex
 		busy_spinner = NULL;
 	}
 	busy_dismissable = false;
+	if (!++revision)
+		revision++;
 
 	const char *shown = text ? tr(text) : "";
 	if (glyph) {
@@ -199,6 +202,8 @@ void toast_busy(const char *text) {
 		return;
 	}
 	busy_dismissable = false;
+	if (!++revision)
+		revision++;
 	lv_timer_pause(hide_timer);
 	lv_obj_set_hidden(icon, true);
 	if (!busy_spinner) {
@@ -228,3 +233,27 @@ void toast_busy_dismissable(const char *text) {
 }
 
 bool toast_busy_showing(void) { return busy_spinner != NULL; }
+
+unsigned toast_busy_owned(const char *text) {
+	if (!card)
+		return 0;
+	toast_busy_dismissable(text);
+	return revision;
+}
+
+bool toast_busy_update_owned(unsigned owner, const char *text) {
+	if (!owner || owner != revision || !busy_spinner)
+		return false;
+	const char *shown = text ? tr(text) : "";
+	fit_card(shown, true);
+	lv_label_set_text(label, shown);
+	return true;
+}
+
+void toast_busy_end_owned(unsigned owner) {
+	if (owner && owner == revision)
+		toast_busy_end();
+}
+
+unsigned toast_revision(void) { return revision; }
+bool toast_visible(void) { return veil && !lv_obj_is_hidden(veil); }
