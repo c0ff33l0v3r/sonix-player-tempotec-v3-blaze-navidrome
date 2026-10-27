@@ -417,8 +417,10 @@ A failed/cancelled Refresh preserves saved player changes and the previous base.
 Favorite controls follow Music: long-press tracks or albums and use the star-plus
 selection button, or use the single **Add to favorites / Remove from favorites**
 action in a row's three-dot menu. Album and artist actions favorite that exact
-item. Now Playing acts directly on the current track and updates its star silently;
-list/selection success uses Music's green check. Writes need available credentials
+item. Now Playing and the player in the top pull-down panel act directly on the
+current Navidrome track and update their stars silently. The pull-down star uses
+its usual Music position; dragging the panel does not favorite a track.
+List/selection success uses Music's green check. Writes need available credentials
 and an existing connection, and only confirmed items acquire saved favorite state.
 Selected-item failures stop further submissions without retrying successful writes.
 An uncertain server response is resolved on the next deliberate favorite action.

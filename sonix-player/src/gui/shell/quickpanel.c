@@ -51,6 +51,7 @@
 #include "src/system/net/wifi.h"
 #include "src/gui/shell/uiscale.h"
 #include "src/system/streaming/navidromeaudio.h"
+#include "src/gui/streaming/navidromestar.h"
 
 #define PANEL_ANIM_MS 180
 #define PANEL_POLL_MS 700
@@ -240,6 +241,36 @@ static lv_obj_t *np_repeat_btn;
 static lv_obj_t *np_star_icon;
 static lv_timer_t *poll_timer;
 
+// The panel outlives its underlying screen and every open/close visit.
+static uint64_t favorite_visit;
+static lv_obj_t *favorite_origin;
+static void favorite_screen_event(lv_event_t *e);
+
+static void favorite_retire(void) {
+	favorite_visit++;
+	if (favorite_origin) {
+		lv_obj_remove_event_cb(favorite_origin, favorite_screen_event);
+		favorite_origin = NULL;
+	}
+}
+
+static bool favorite_current(uint64_t visit) { return visit == favorite_visit && panel_open && !quickpanel_blocked() && favorite_origin == lv_screen_active(); }
+
+static void favorite_screen_event(lv_event_t *e) {
+	(void)e;
+	quickpanel_close();
+}
+
+static void panel_deleted(lv_event_t *e) {
+	(void)e;
+	favorite_retire();
+	panel_open = drag_active = false;
+	if (poll_timer)
+		lv_timer_delete(poll_timer);
+	poll_timer = NULL;
+	panel = veil = np_star_btn = np_star_icon = NULL;
+}
+
 bool quickpanel_is_open(void) { return panel_open; }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +308,61 @@ static void refresh_repeat_icon(void) {
 	lv_image_set_src(np_repeat_icon, glyph);
 	lv_obj_set_style_image_recolor(np_repeat_icon, color, 0);
 	lv_obj_set_style_image_recolor_opa(np_repeat_icon, LV_OPA_COVER, 0);
+}
+
+static void refresh_favorite(const device_state_t *state) {
+	if (!np_star_btn || !np_star_icon)
+		return;
+	bool book = !state->live && audiobook_is_playing();
+	long long podcast_feed_id = 0;
+	player_current_podcast_feed(&podcast_feed_id, NULL);
+	bool podcast = !state->live && !book && podcastcache_is_episode(state->current_file);
+	lv_obj_set_hidden(np_star_btn, book);
+	lv_obj_set_state(np_star_btn, LV_STATE_DISABLED, false);
+	lv_obj_set_style_opa(np_star_icon, LV_OPA_COVER, 0);
+	if (navidromestar_player_update(np_star_btn, np_star_icon, state->current_file, lv_color_make(150, 150, 150)))
+		return;
+	// On a radio the star is about the station and lives in the radio database:
+	// there is no file to look up in the music library.
+	radio_station_t station;
+	bool fav;
+	long qobuz_id = 0;
+	long tidal_id = 0;
+	if (radio_current_station(&station)) {
+		fav = radio_fav_contains(station.uuid);
+	} else if (podcast) {
+		// On a podcast the star reports whether the feed is followed, exactly as
+		// the player's star does.
+		fav = podcastsubs_is_followed(podcast_feed_id);
+	} else if (state->current_file[0] && (tidal_id = tidalcache_track_id(state->current_file)) > 0) {
+		// Same reasoning as the Qobuz case below: the star must report what is on
+		// the account, not what is in the local database.
+		//
+		// The local mirror is also refreshed, because it may not be populated
+		// yet: the control centre can be opened on a Tidal track without the
+		// player ever having been visited, and an empty star on a track that is
+		// a favourite turns the next tap into an "add" for something already
+		// added.
+		fav = tidalsync_is_favorite(tidal_id);
+		tidalsync_favorites_refresh(NULL);
+	} else if (state->current_file[0] && (qobuz_id = qobuzcache_track_id(state->current_file)) > 0) {
+		// A Qobuz track: the star reports the account state, like the player's.
+		// Reading the local database here would draw a star that disagrees with
+		// the one a tap fills.
+		fav = qobuzsync_is_favorite(qobuz_id);
+	} else {
+		fav = state->current_file[0] && !nd_audio_source(state->current_file) && library_fav_contains(state->current_file);
+	}
+	lv_image_set_src(np_star_icon, fav ? &icon_star_filled : &icon_star);
+	lv_obj_set_style_image_recolor(np_star_icon, fav ? lv_color_make(246, 211, 45) : lv_color_make(150, 150, 150), 0);
+	lv_obj_set_style_image_recolor_opa(np_star_icon, LV_OPA_COVER, 0);
+}
+
+static void refresh_navidrome_favorite(void) {
+	device_state_t state;
+	device_state_get(&state);
+	refresh_favorite(&state);
+	player_refresh_favorite();
 }
 
 static void refresh_now_playing_card(void) {
@@ -379,13 +465,6 @@ static void refresh_now_playing_card(void) {
 			lv_obj_set_hidden(np_repeat_btn, false);
 		}
 	}
-	if (np_star_btn) {
-		if (book || nd_audio_source(state.current_file)) {
-			lv_obj_set_hidden(np_star_btn, true);
-		} else {
-			lv_obj_set_hidden(np_star_btn, false);
-		}
-	}
 
 	// Accent glyph on a disc that is white under the dark theme and the quiet
 	// dark circle under the light one, where white would vanish into the card.
@@ -395,40 +474,7 @@ static void refresh_now_playing_card(void) {
 		lv_obj_set_style_bg_color(np_play_btn, theme()->dark ? lv_color_white() : theme()->surface_pressed, 0);
 	}
 
-	// On a radio the star is about the station and lives in the radio database:
-	// there is no file to look up in the music library.
-	radio_station_t station;
-	bool fav;
-	long qobuz_id = 0;
-	long tidal_id = 0;
-	if (radio_current_station(&station)) {
-		fav = radio_fav_contains(station.uuid);
-	} else if (podcast) {
-		// On a podcast the star reports whether the feed is followed, exactly as
-		// the player's star does.
-		fav = podcastsubs_is_followed(podcast_feed_id);
-	} else if (state.current_file[0] && (tidal_id = tidalcache_track_id(state.current_file)) > 0) {
-		// Same reasoning as the Qobuz case below: the star must report what is on
-		// the account, not what is in the local database.
-		//
-		// The local mirror is also refreshed, because it may not be populated
-		// yet: the control centre can be opened on a Tidal track without the
-		// player ever having been visited, and an empty star on a track that is
-		// a favourite turns the next tap into an "add" for something already
-		// added.
-		fav = tidalsync_is_favorite(tidal_id);
-		tidalsync_favorites_refresh(NULL);
-	} else if (state.current_file[0] && (qobuz_id = qobuzcache_track_id(state.current_file)) > 0) {
-		// A Qobuz track: the star reports the account state, like the player's.
-		// Reading the local database here would draw a star that disagrees with
-		// the one a tap fills.
-		fav = qobuzsync_is_favorite(qobuz_id);
-	} else {
-		fav = state.current_file[0] && !nd_audio_source(state.current_file) && library_fav_contains(state.current_file);
-	}
-	lv_image_set_src(np_star_icon, fav ? &icon_star_filled : &icon_star);
-	lv_obj_set_style_image_recolor(np_star_icon, fav ? lv_color_make(246, 211, 45) : lv_color_make(150, 150, 150), 0);
-	lv_obj_set_style_image_recolor_opa(np_star_icon, LV_OPA_COVER, 0);
+	refresh_favorite(&state);
 
 	refresh_repeat_icon();
 }
@@ -604,6 +650,10 @@ static void expand_handle_clicked_cb(lv_event_t *e) {
 // Everything the sheet has to freshen before it becomes visible, whether it is
 // being animated in or dragged in a pixel at a time.
 static void panel_prepare(void) {
+	favorite_retire();
+	favorite_origin = lv_screen_active();
+	lv_obj_add_event_cb(favorite_origin, favorite_screen_event, LV_EVENT_SCREEN_UNLOAD_START, NULL);
+	lv_obj_add_event_cb(favorite_origin, favorite_screen_event, LV_EVENT_DELETE, NULL);
 	long max = power_get_max_brightness();
 	if (max <= 0) {
 		max = 100;
@@ -671,9 +721,11 @@ void quickpanel_open(void) {
 }
 
 void quickpanel_close(void) {
-	if (!panel || !panel_open) {
+	if (!panel || (!panel_open && !drag_active)) {
 		return;
 	}
+	favorite_retire();
+	drag_active = false;
 	panel_open = false;
 	lv_timer_pause(poll_timer);
 	panel_slide_to(-panel_h, true);
@@ -735,6 +787,8 @@ void quickpanel_drag_end(void) {
 	}
 
 	panel_open = open;
+	if (!open)
+		favorite_retire();
 	if (open) {
 		lv_timer_resume(poll_timer);
 	} else {
@@ -807,6 +861,8 @@ static void panel_drag_cb(lv_event_t *e) {
 	}
 
 	if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+		if (code == LV_EVENT_PRESS_LOST)
+			press_dragged = true;
 		tracking = false;
 		if (engaged == DRAG_CARD) {
 			expand_drag_end();
@@ -890,6 +946,12 @@ static void qp_tidal_fav_done(bool ok, const char *error, void *user) {
 
 static void star_cb(lv_event_t *e) {
 	(void)e;
+	if (press_dragged || drag_active || !favorite_current(favorite_visit))
+		return;
+	device_state_t state;
+	device_state_get(&state);
+	if (navidromestar_player_toggle_owned(state.current_file, refresh_navidrome_favorite, (navidromestar_owner_t){.current = favorite_current, .visit = favorite_visit}))
+		return;
 
 	radio_station_t station;
 	if (radio_current_station(&station)) {
@@ -918,9 +980,7 @@ static void star_cb(lv_event_t *e) {
 		return;
 	}
 
-	device_state_t state;
-	device_state_get(&state);
-	if (!state.current_file[0] || nd_audio_source(state.current_file)) {
+	if (!state.current_file[0]) {
 		return;
 	}
 
@@ -1931,6 +1991,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_set_scrollable(veil, false);
 	lv_obj_set_hidden(veil, true);
 	lv_obj_add_event_cb(veil, veil_clicked_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_add_event_cb(veil, panel_deleted, LV_EVENT_DELETE, NULL);
 
 	// The sheet fills the whole screen, iOS-control-centre style.
 	panel = lv_obj_create(veil);
@@ -2260,6 +2321,7 @@ void quickpanel_init(gui_config_t *cfg) {
 
 	lv_obj_t *star_btn = make_flat_button(transport, ui_px(56), star_cb);
 	np_star_btn = star_btn;
+	lv_obj_set_event_bubble(star_btn, true);
 	lv_obj_set_ignore_layout(star_btn, true);
 	lv_obj_align(star_btn, LV_ALIGN_RIGHT_MID, 0, 0);
 	np_star_icon = lv_image_create(star_btn);

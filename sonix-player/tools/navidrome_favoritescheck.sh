@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
-check_sqlite=src/system/db/sqlite3_impl.c
-if [ -f build_host/system/db/sqlite3_impl.o ]; then
+check_sqlite=${SONIX_SQLITE_OBJECT:-src/system/db/sqlite3_impl.c}
+if [ -z "${SONIX_SQLITE_OBJECT:-}" ] && [ -f build_host/system/db/sqlite3_impl.o ]; then
     check_sqlite=build_host/system/db/sqlite3_impl.o
 fi
 check_binary=$(mktemp /tmp/sonix-navidrome-favoritescheck.XXXXXX)

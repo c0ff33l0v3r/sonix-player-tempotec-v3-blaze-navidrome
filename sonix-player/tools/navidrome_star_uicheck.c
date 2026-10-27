@@ -40,6 +40,11 @@ bool navidromeplay_track(const char *path, nd_playrow_t *track, nd_library_t *li
 	memset(track, 0, sizeof(*track));
 	snprintf(track->row.id, sizeof(track->row.id), "%s", path + 3);
 	track->row.favorite = !strcmp(path, "nd:cached-favorite");
+#ifdef NAVIDROME_QUICKPANEL_UI
+	track->row.favorite_known = !strcmp(path, "nd:known-clear");
+	if (!strcmp(path, "nd:album-member"))
+		snprintf(track->album_id, sizeof(track->album_id), "targeted-album");
+#endif
 	if (library)
 		navidrome_library_snapshot(library);
 	return true;
@@ -73,6 +78,10 @@ const char *__wrap_nd_api_finite_json(const char *host, const char *user, const 
 }
 static atomic_bool star_block, star_entered, metadata_block, metadata_entered;
 static atomic_int star_writes;
+#ifdef NAVIDROME_QUICKPANEL_UI
+// Rejected writes do not reach the server; uncertain replies may have done so.
+static atomic_int fixture_star_reply;
+#endif
 static char written_ids[128][ND_ID_MAX];
 static nd_kind_t written_kinds[128];
 static bool written_state[128];
@@ -118,11 +127,22 @@ bool __wrap_http_request(const char *url, const http_req_t *req, char **out, siz
 			atomic_store(&star_entered, true);
 			while (atomic_load(&star_block))
 				usleep(1000);
+#ifdef NAVIDROME_QUICKPANEL_UI
+			if (atomic_load(&fixture_star_reply) == 1) {
+				*out = strdup("{\"subsonic-response\":{\"status\":\"failed\",\"error\":{\"code\":0,\"message\":\"rejected\"}}}");
+				*size = strlen(*out); *status = 200; return true;
+			}
+#endif
 			assert(written_count < 128);
 			snprintf(written_ids[written_count], ND_ID_MAX, "%s", id);
 			written_kinds[written_count] = kind;
 			written_state[written_count++] = strstr(url, "/unstar.view?") == NULL;
 			atomic_fetch_add(&star_writes, 1);
+#ifdef NAVIDROME_QUICKPANEL_UI
+			if (atomic_load(&fixture_star_reply) == 2) {
+				*out = NULL; *size = 0; *status = 0; return false;
+			}
+#endif
 			snprintf(body, sizeof(body), "{\"subsonic-response\":{\"status\":\"ok\"}}");
 		} else {
 			if (strstr(url, "/getAlbum.view?"))
@@ -478,6 +498,7 @@ static void check_ui(int width, int height) {
 	assert(!rmdir(path));
 	assert(!chdir("/") && !rmdir(dir));
 }
+#ifndef NAVIDROME_QUICKPANEL_UI
 int main(int argc, char **argv) {
 	alarm(90);
 	setvbuf(stdout, NULL, _IONBF, 0);
@@ -487,3 +508,5 @@ int main(int argc, char **argv) {
 	// The browser owns an intentionally persistent worker; run the second LVGL lifecycle in a fresh process.
 	return 0;
 }
+
+#endif

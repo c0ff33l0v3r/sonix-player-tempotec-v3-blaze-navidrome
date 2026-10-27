@@ -13,6 +13,7 @@
 typedef struct {
 	lv_obj_t *origin;
 	void (*refresh)(void);
+	navidromestar_owner_t owner;
 } player_action_t;
 
 bool navidromestar_player_update(lv_obj_t *button, lv_obj_t *icon, const char *reference, lv_color_t ink) {
@@ -38,7 +39,7 @@ static void player_done(nd_star_result_t *r, void *user) {
 	device_state_t current;
 	device_state_get(&current);
 	nd_playrow_t track;
-	if (navidrome_star_current(&r->context) && navidromeplay_track(current.current_file, &track, NULL) && !strcmp(track.row.id, r->request.id)) {
+	if (navidrome_star_current(&r->context) && navidromeplay_track(current.current_file, &track, NULL) && !strcmp(track.row.id, r->request.id) && (!action->owner.current || action->owner.current(action->owner.visit))) {
 		// Match Music: the star is the success feedback; report errors only.
 		if (r->error && lv_screen_active() == action->origin)
 			gui_notify_popup(r->error);
@@ -48,10 +49,10 @@ static void player_done(nd_star_result_t *r, void *user) {
 	free(action);
 	free(r);
 }
-bool navidromestar_player_toggle(const char *reference, void (*refresh)(void)) {
+bool navidromestar_player_toggle_owned(const char *reference, void (*refresh)(void), navidromestar_owner_t owner) {
 	if (!nd_audio_source(reference))
 		return false;
-	if (player_sheet_drag_active() || switcher_back_drag_active() || coverflow_drag_active())
+	if ((owner.current && !owner.current(owner.visit)) || player_sheet_drag_active() || switcher_back_drag_active() || coverflow_drag_active())
 		return true;
 	nd_context_t captured;
 	if (!navidrome_context(&captured, false)) {
@@ -72,7 +73,7 @@ bool navidromestar_player_toggle(const char *reference, void (*refresh)(void)) {
 		gui_notify_popup("nd_worker_error");
 		return true;
 	}
-	*action = (player_action_t){.origin = lv_screen_active(), .refresh = refresh};
+	*action = (player_action_t){.origin = lv_screen_active(), .refresh = refresh, .owner = owner};
 	nd_star_request_t q = {.action = navidrome_star_retry(ND_TRACKS, track.row.id) ? ND_STAR_RETRY : ND_STAR_TOGGLE, .metadata = track, .kind = ND_TRACKS, .bound_profile = true, .profile_epoch = profile};
 	snprintf(q.id, sizeof(q.id), "%s", track.row.id);
 	if (!navidrome_star_submit(&q, player_done, action)) {
@@ -85,3 +86,5 @@ bool navidromestar_player_toggle(const char *reference, void (*refresh)(void)) {
 		refresh();
 	return true;
 }
+
+bool navidromestar_player_toggle(const char *reference, void (*refresh)(void)) { return navidromestar_player_toggle_owned(reference, refresh, (navidromestar_owner_t){0}); }
