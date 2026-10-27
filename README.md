@@ -207,8 +207,8 @@ Tap a track to play it in the existing Now Playing screen. Album selections
 queue the complete album in disc/track order; Tracks selections queue the whole
 Tracks list, starting at the selected entry. Next/Previous, repeat, shuffle, and
 queue edits use the existing Music behavior. Browsing away or refreshing the
-library preserves the captured queue. Queues containing Navidrome entries are
-session-only and are not restored after restart.
+library preserves the captured queue. Queues containing Navidrome entries support paused restart restoration with
+Remember track, as described below.
 Long-press tracks or albums for Music-style selection, then use **Add to queue**;
 row menus also add one exact track or the whole album. Additions honor Music's
 **Play next / Add at end** preference and can mix with local Music. Adding to an
@@ -249,6 +249,17 @@ while downloading stays within confirmed available audio; unknown final lengths
 use conservative seek limits. Startup time and buffering depend on the format,
 tags, server, and network. No range-based remote seeking is provided.
 
+With **Remember track** enabled in Music settings, the most recently active Music
+or Navidrome session returns paused after restart. Navidrome restores queue order,
+repeated entries, shuffle order/mode, selected entry and position. A locked profile
+or missing/mismatched card leaves generic guidance until the matching context is
+available; it cannot replace newer Music playback. Restoration does not start
+playback or connect. Explicit Unlock retains its normal connection check; restoring
+the paused session adds no further check. Explicit Play uses the usual local/cache/network eligibility.
+New checkpoints need writable selected-card storage; an existing valid checkpoint
+can restore from a read-only card. Failed saves leave live playback running and
+show feedback; abrupt loss can retain the last completed checkpoint.
+
 Original audio is retained under `.local/navidrome/.cache/audio/` on the selected card,
 with a 1 GiB budget and a 16 MiB free-space reserve. Only the current track and up
 to two upcoming tracks are prepared ahead. Eligible old entries and abandoned
@@ -266,7 +277,7 @@ Navidrome Settings shows separate **Audio / 1 GiB** and **Artwork / 32 MiB** cac
 bars plus their combined size in MiB. **Clear cache** confirms, stops Navidrome playback,
 then drains cache work and removes audio/artwork (including owned temporary files)
 without reconnecting. The queue stays stopped and retains its track information.
-Library/Favorites metadata, playlists, credentials, logs and permanent downloads
+Library/Favorites metadata, playlists, remembered sessions, credentials, logs and permanent downloads
 are preserved. Partial deletion failures show the remaining usage.
 
 Choose **Download** from a Navidrome track/album menu or long-press selection,

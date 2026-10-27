@@ -1,4 +1,6 @@
 #include "device_state.h"
+#include "session.h"
+#include "src/gui/shell/gui.h"
 
 #include "src/system/core/frameprof.h"
 #include "src/system/core/utils.h"
@@ -24,6 +26,7 @@
 #include "src/system/streaming/radio.h"
 #include "src/system/streaming/tidalcache.h"
 
+#include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +41,26 @@
 static song_metadata_t current_metadata;
 static char current_metadata_file[512] = {0};
 static double prepared_duration;
+static void scrub_cancel(void);
+static bool represented_paused;
+static unsigned represented_queue;
+static double represented_position;
+static char represented_file[512];
+static double pending_resume_position = -1;
+static char pending_resume_file[512];
+double device_state_resume_position(const char *reference) { return represented_paused && represented_queue == playlist_identity() && reference && !strcmp(reference, represented_file) ? represented_position : 0; }
+void device_state_restore_representation(const char *reference, const song_metadata_t *meta, double position, double duration) {
+	audio_stop();
+	scrub_cancel();
+	if (reference != current_metadata_file)
+		snprintf(current_metadata_file, sizeof(current_metadata_file), "%s", reference);
+	snprintf(represented_file, sizeof(represented_file), "%s", reference);
+	current_metadata = meta ? *meta : (song_metadata_t){0};
+	prepared_duration = duration;
+	represented_position = isfinite(position) && position >= 0 ? position : 0;
+	represented_paused = true;
+	represented_queue = playlist_identity();
+}
 
 // ---------------------------------------------------------------------------
 // "Remember track": where playback was, kept across a power cycle
@@ -154,6 +177,8 @@ static bool remember_enabled(void) { return config_get_int("player", "remember_t
 static bool remember_worth_saving(const device_state_t *state) { return !playlist_has_source() && !nd_audio_source(state->current_file) && !state->live && state->current_file[0] && !qobuzcache_owns(state->current_file) && !tidalcache_owns(state->current_file); }
 
 void device_state_remember_restored(const char *path, double position) {
+	pending_resume_position = isfinite(position) && position >= 0 ? position : -1;
+	snprintf(pending_resume_file, sizeof(pending_resume_file), "%s", path ? path : "");
 	snprintf(remember.file, sizeof(remember.file), "%s", path ? path : "");
 	remember.status = AUDIO_STATUS_PAUSED;
 	remember.pos = position;
@@ -198,6 +223,7 @@ static void flush_book_position(const device_state_t *state) {
 static void queue_job_flush(void);
 
 void device_state_remember_flush(void) {
+	playback_session_flush();
 	// The queue first: a write still waiting on its thread (queue_job_flush).
 	queue_job_flush();
 	device_state_t state;
@@ -305,6 +331,20 @@ void device_state_get(device_state_t *out) {
 		}
 	}
 
+	if (represented_paused && represented_queue == playlist_identity() && !strcmp(current_metadata_file, represented_file)) {
+		out->status = AUDIO_STATUS_PAUSED;
+		out->progress_current_secs = represented_position;
+		out->progress_total_secs = prepared_duration;
+	}
+	if (pending_resume_position >= 0 && !strcmp(current_metadata_file, pending_resume_file)) {
+		double target = pending_resume_position;
+		if (out->progress_total_secs > 0)
+			target = fmin(target, out->progress_total_secs);
+		if (out->progress_current_secs >= target - 1)
+			pending_resume_position = -1;
+		else
+			out->progress_current_secs = target;
+	}
 	char *battery = read_battery_percent();
 	strncpy(out->battery_percent, battery ? battery : "!!", sizeof(out->battery_percent) - 1);
 	out->battery_percent[sizeof(out->battery_percent) - 1] = '\0';
@@ -739,7 +779,7 @@ static void queue_save_query_form(const library_index_spec_t *spec) {
 	queue_job_submit(job);
 }
 
-static void queue_persist(void) {
+static void queue_persist_legacy(void) {
 	if (playlist_has_source() || nd_audio_source(current_metadata_file))
 		return;
 	int count = playlist_count();
@@ -825,6 +865,10 @@ static void queue_persist(void) {
 	free(list);
 }
 
+static void queue_persist(void) {
+	queue_persist_legacy();
+	playback_session_note();
+}
 void device_state_queue_changed(void) { queue_persist(); }
 
 // One per streaming service plus headroom: four is already twice as many as
@@ -1008,8 +1052,13 @@ static void load_and_play_at(const char *filepath, double position) {
 		position = podcast_resume(current_metadata_file);
 	}
 	frameprof_begin(PROF_START);
+	if (represented_paused && represented_queue == playlist_identity() && !strcmp(filepath, represented_file) && position <= 0)
+		position = represented_position;
+	represented_paused = false;
+	pending_resume_position = position > 0 ? position : -1;
+	snprintf(pending_resume_file, sizeof(pending_resume_file), "%s", current_metadata_file);
 	if (prepared_metadata && prepared_paused) {
-		audio_play_paused(current_metadata_file, 0);
+		audio_play_paused(current_metadata_file, position > 0 ? position : 0);
 	} else if (position > 0) {
 		audio_play_at(current_metadata_file, position);
 	} else {
@@ -1030,11 +1079,12 @@ static void load_and_play_at(const char *filepath, double position) {
 
 static void load_and_play(const char *filepath) { load_and_play_at(filepath, -1.0); }
 
-void device_state_play_prepared(const char *path, const song_metadata_t *meta, bool paused, double duration) {
+void device_state_play_prepared(const char *path, const song_metadata_t *meta, bool paused, double duration) { device_state_play_prepared_at(path, meta, paused, duration, 0); }
+void device_state_play_prepared_at(const char *path, const song_metadata_t *meta, bool paused, double duration, double position) {
 	prepared_duration = duration;
 	prepared_metadata = meta;
 	prepared_paused = paused;
-	load_and_play(path);
+	load_and_play_at(path, position);
 	prepared_metadata = NULL;
 	prepared_paused = false;
 }
@@ -1046,12 +1096,14 @@ void device_state_represent_source(const char *reference, const song_metadata_t 
 		audio_stop();
 		scrub_cancel();
 	}
-	snprintf(current_metadata_file, sizeof(current_metadata_file), "%s", reference);
+	if (reference != current_metadata_file)
+		snprintf(current_metadata_file, sizeof(current_metadata_file), "%s", reference);
 	current_metadata = meta ? *meta : (song_metadata_t){0};
 	prepared_duration = duration;
 }
 
 void device_state_clear_prepared(void) {
+	represented_paused = false;
 	audio_stop();
 	nd_audio_set_source(NULL);
 	current_metadata_file[0] = 0;
@@ -1228,7 +1280,10 @@ void device_state_restore_list(const char *const *list, int count, int start_ind
 	// the position row was written after the list, and the track is what the
 	// user last saw.
 	if (filepath && filepath[0]) {
-		playlist_locate(filepath);
+		char selected[512];
+		// A coherent index already identifies the exact repeated occurrence.
+		if (!playlist_current_path(selected, sizeof(selected)) || strcmp(selected, filepath))
+			playlist_locate(filepath);
 	}
 
 	char path[512];
@@ -1365,6 +1420,8 @@ void device_state_play_list_ordered_at(const char *const *list, int count, int s
 
 // Jumps to a specific entry of the current queue: the queue page's tap.
 bool device_state_play_queue_index(int index) {
+	represented_paused = false;
+	pending_resume_position = -1;
 	if (!playlist_set_current(index)) {
 		return false;
 	}
@@ -1899,6 +1956,8 @@ static const char *const PROF_RESYNC = "skip_resync";
 static const char *const PROF_QUEUE_STEP = "skip_playlist_next";
 
 bool device_state_next(char *out_path, size_t out_size) {
+	represented_paused = false;
+	pending_resume_position = -1;
 	char path[512];
 	frameprof_begin(PROF_RESYNC);
 	playlist_resync_to_current();
@@ -1932,6 +1991,8 @@ bool device_state_next(char *out_path, size_t out_size) {
 }
 
 bool device_state_prev(char *out_path, size_t out_size) {
+	represented_paused = false;
+	pending_resume_position = -1;
 	char path[512];
 	playlist_resync_to_current();
 
@@ -1991,6 +2052,10 @@ audio_status_t device_state_toggle_play_pause(void) {
 	}
 
 	if (navidromeplay_reference(current_metadata_file)) {
+		if (playback_session_blocked()) {
+			gui_notify_popup("session_restore_unavailable");
+			return AUDIO_STATUS_PAUSED;
+		}
 		navidromeplay_prepare(current_metadata_file);
 		return AUDIO_STATUS_PLAYING;
 	}
@@ -2130,6 +2195,12 @@ void device_state_scrub_commit(void) {
 }
 
 void device_state_seek(double seconds) {
+	pending_resume_position = -1;
+	if (represented_paused && represented_queue == playlist_identity() && !strcmp(current_metadata_file, represented_file)) {
+		if (isfinite(seconds))
+			represented_position = fmax(0, prepared_duration > 0 ? fmin(seconds, prepared_duration) : seconds);
+		return;
+	}
 	// A seek from anywhere else -- the slider, the queue -- ends a scrub that
 	// was still open, or the interface would go on drawing a thumb that no
 	// longer means anything.

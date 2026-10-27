@@ -85,6 +85,7 @@ def main():
         assert requests['portrait'] == [512, 769], requests['portrait']
         assert requests['landscape'] == [512, 769]
         assert requests['panorama'] == [512, 2048]
+        assert requests['restore-local-only'] == []
         assert requests['small'] == [512]
         assert requests['square'] == [512, 512]  # explicit corruption requires reacquisition
         assert requests['retry'] == [512, 769, 769]

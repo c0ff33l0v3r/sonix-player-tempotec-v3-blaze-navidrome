@@ -133,3 +133,43 @@ __attribute__((weak)) void navidromediscovery_open(void) {}
 __attribute__((weak)) void navidromediscovery_refresh(void) {}
 
 __attribute__((weak)) void gridpage_hint_scroll(void *grid) { (void)grid; }
+
+// Suites that link the real session coordinator override these weak boundaries.
+__attribute__((weak)) void playback_session_note(void) {}
+__attribute__((weak)) void playback_session_forget(void) {}
+__attribute__((weak)) void playback_session_suspend(void) {}
+__attribute__((weak)) void playback_session_settings(void) {}
+__attribute__((weak)) void playback_session_flush(void) {}
+__attribute__((weak)) bool playback_session_blocked(void) { return false; }
+
+#include "src/system/playback/device_state.h"
+extern void device_state_play_prepared(const char *, const song_metadata_t *, bool, double) __attribute__((weak));
+extern void device_state_represent_source(const char *, const song_metadata_t *, double) __attribute__((weak));
+__attribute__((weak)) double device_state_resume_position(const char *ref) {
+	(void)ref;
+	return 0;
+}
+__attribute__((weak)) void device_state_play_prepared_at(const char *path, const song_metadata_t *meta, bool paused, double duration, double position) {
+	(void)position;
+	if (device_state_play_prepared)
+		device_state_play_prepared(path, meta, paused, duration);
+}
+__attribute__((weak)) void device_state_restore_representation(const char *ref, const song_metadata_t *meta, double position, double duration) {
+	(void)position;
+	if (device_state_represent_source)
+		device_state_represent_source(ref, meta, duration);
+}
+
+#include "src/gui/streaming/navidromeart.h"
+extern void player_refresh_now_playing(void) __attribute__((weak));
+__attribute__((weak)) void player_refresh_restored(void) {
+	if (player_refresh_now_playing)
+		player_refresh_now_playing();
+}
+__attribute__((weak)) void navidromeart_request_player_local(const nd_library_t *library, const char *id, int size, int w, int h) {
+	(void)library;
+	(void)id;
+	(void)size;
+	(void)w;
+	(void)h;
+}

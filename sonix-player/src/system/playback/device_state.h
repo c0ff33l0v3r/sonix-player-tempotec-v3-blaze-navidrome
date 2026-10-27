@@ -201,6 +201,9 @@ void device_state_stop(void);
 // GUI commit of worker-prepared audio; preserves the source-backed queue and
 // supplies metadata without opening tag files on the GUI thread.
 void device_state_play_prepared(const char *path, const song_metadata_t *metadata, bool paused, double duration);
+void device_state_play_prepared_at(const char *path, const song_metadata_t *metadata, bool paused, double duration, double position);
+void device_state_restore_representation(const char *reference, const song_metadata_t *metadata, double position, double duration);
+double device_state_resume_position(const char *reference);
 void device_state_clear_prepared(void);
 // Represent an installed source selection before its audio is available.
 void device_state_represent_source(const char *reference, const song_metadata_t *metadata, double duration);

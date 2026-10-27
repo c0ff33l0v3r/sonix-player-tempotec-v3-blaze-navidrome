@@ -1,3 +1,4 @@
+#include "src/system/playback/session.h"
 #include "navidrome.h"
 #include "navidromeoffline.h"
 #include "navidromecache.h"
@@ -1112,6 +1113,7 @@ void navidrome_lock(void) {
 }
 
 bool navidrome_forget(void) {
+	playback_session_forget();
 	job_t job = {.kind = JOB_FORGET};
 	pthread_mutex_lock(&lock);
 	clear_secrets();
@@ -1146,6 +1148,7 @@ void navidrome_poll_network(void) {
 }
 
 void navidrome_reset(void) {
+	playback_session_forget();
 	// Reset terminates the service before removing files, so a cancelled
 	// worker cannot recreate even a staging file after reset has finished.
 	navidrome_shutdown();
@@ -1594,6 +1597,15 @@ bool navidrome_report_current(const nd_report_context_t *c, bool network, bool l
 		c->card == g.card_epoch && !strcmp(c->scope, g.library.scope) &&
 		(!network || (g.connected && g.report_connected && c->connection == report_connection && !g.busy && !external_users && !sync_owners));
 	if (ok && lease) cache_users++;
+	pthread_mutex_unlock(&lock);
+	return ok;
+}
+
+bool navidrome_session_card_begin(unsigned card_epoch, const char *root) {
+	pthread_mutex_lock(&lock);
+	bool ok = !g.stop && root && *root && card_epoch == g.card_epoch && !strcmp(root, g.root);
+	if (ok)
+		cache_users++;
 	pthread_mutex_unlock(&lock);
 	return ok;
 }

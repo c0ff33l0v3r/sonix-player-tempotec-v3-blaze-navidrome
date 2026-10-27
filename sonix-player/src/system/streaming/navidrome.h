@@ -53,6 +53,8 @@ bool navidrome_context(nd_context_t *out, bool network);
 // Short card-I/O leases let removal drain open files without waiting for HTTP.
 bool navidrome_cache_begin(unsigned epoch, unsigned card_epoch);
 void navidrome_cache_end(void);
+// Short selected-card I/O lease independent of vault availability (Music state).
+bool navidrome_session_card_begin(unsigned card_epoch, const char *root);
 bool navidrome_context_publish(const nd_context_t *context, const char *temp, const char *path);
 bool navidrome_context_current(const nd_context_t *context, bool network);
 

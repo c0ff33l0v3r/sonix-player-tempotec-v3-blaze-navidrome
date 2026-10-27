@@ -8226,3 +8226,10 @@ int library_search(const char *query, int per_category, library_search_cb_t cb, 
 	pthread_mutex_unlock(&db_lock);
 	return total;
 }
+
+bool library_session_db_path(char *out, size_t size) {
+	pthread_mutex_lock(&db_lock);
+	int n = snprintf(out, size, "%s", db ? db_file : "");
+	pthread_mutex_unlock(&db_lock);
+	return n > 0 && (size_t)n < size;
+}

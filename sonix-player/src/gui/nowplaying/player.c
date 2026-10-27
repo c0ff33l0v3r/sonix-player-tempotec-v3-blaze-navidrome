@@ -1463,6 +1463,7 @@ static lyrics_t lyrics_cur;
 static nd_lyric_target_t nd_lyrics_current;
 static nd_lyric_set_t nd_lyrics_versions;
 static bool nd_lyrics_active, nd_lyrics_visible_request;
+static bool restored_refresh;
 static nd_lyric_target_t nd_lyrics_menu_target, nd_lyrics_search_target;
 static bool nd_lyrics_search_intent;
 static unsigned nd_lyrics_token;
@@ -1858,7 +1859,7 @@ static void lyrics_request(const device_state_t *state) {
 			return;
 		}
 		bool changed = !nd_lyrics_active || !nd_lyrics_same(&nd_lyrics_current, &target);
-		bool visible = sheet_open && (lyrics_wanted || nd_lyrics_opening_drag);
+		bool visible = !restored_refresh && sheet_open && (lyrics_wanted || nd_lyrics_opening_drag);
 		if (changed) {
 			bool opening_drag = nd_lyrics_opening_drag;
 			nd_lyrics_retire();
@@ -3885,7 +3886,10 @@ static void refresh_cover(const char *filepath) {
 		navidrome_cover_key.size = size;
 		navidrome_cover_key.backdrop_w = backdrop_w;
 		navidrome_cover_key.backdrop_h = bh;
-		navidromeart_request_player(&library, track.row.cover, size, backdrop_w, bh);
+		if (restored_refresh)
+			navidromeart_request_player_local(&library, track.row.cover, size, backdrop_w, bh);
+		else
+			navidromeart_request_player(&library, track.row.cover, size, backdrop_w, bh);
 		navidrome_cover_requested = cover_request_outstanding = true;
 		lv_timer_resume(progress_slider_timer);
 		cover_poll_start();
@@ -5487,6 +5491,7 @@ static void more_btn_event_cb(lv_event_t *e) {
 static void repeat_btn_event_cb(lv_event_t *e) {
 	(void)e;
 	playlist_cycle_mode();
+	device_state_queue_changed();
 	update_repeat_button();
 }
 
@@ -5720,6 +5725,11 @@ void player_refresh_now_playing(void) {
 	apply_playback_status(state.status);
 }
 
+void player_refresh_restored(void) {
+	restored_refresh = true;
+	player_refresh_now_playing();
+	restored_refresh = false;
+}
 
 // ---------------------------------------------------------------------------
 // the sheet: dragging the player in and out

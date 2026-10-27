@@ -9,7 +9,7 @@
 static nd_playrow_t fixture_track;
 static nd_library_t fixture_library;
 static bool resolved = true, preparing = true, delivered, missing;
-static unsigned requests;
+static unsigned requests, local_requests;
 static int color;
 static const char *detailed_file;
 static int detailed_size;
@@ -40,6 +40,14 @@ bool playlist_has_source(void) { return true; }
 void navidromeart_release(int slot) {
 	(void)slot;
 	delivered = false;
+}
+void navidromeart_request_player_local(const nd_library_t *lib, const char *id, int size, int w, int h) {
+	(void)lib;
+	(void)id;
+	(void)size;
+	(void)w;
+	(void)h;
+	local_requests++;
 }
 void navidromeart_request_player(const nd_library_t *lib, const char *id, int size, int w, int h) {
 	(void)lib;
@@ -258,6 +266,12 @@ int main(int argc, char **argv) {
 		delivered = true;
 		apply_cover_result();
 		assert(current_cover.pixels);
+		unsigned before_local = requests;
+		strcpy(fixture_track.row.cover, "paused-restore");
+		restored_refresh = true;
+		refresh_cover("ndq:restored");
+		restored_refresh = false;
+		assert(local_requests && requests == before_local);
 		fixture_library.card_epoch++;
 		refresh_cover("ndq:1:8");
 		assert(!current_cover.pixels);

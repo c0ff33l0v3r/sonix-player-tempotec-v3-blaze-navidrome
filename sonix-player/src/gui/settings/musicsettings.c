@@ -1,3 +1,4 @@
+#include "src/system/playback/session.h"
 #include "musicsettings.h"
 #include "musictiles.h"
 
@@ -1097,6 +1098,7 @@ static void remember_track_cb(lv_event_t *e) {
 	bool on = lv_obj_has_state(remember_track_switch, LV_STATE_CHECKED);
 	config_set_int("player", "remember_track", on ? 1 : 0);
 	config_save();
+	playback_session_settings();
 }
 
 static void remember_volume_cb(lv_event_t *e) {

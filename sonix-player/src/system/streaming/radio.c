@@ -1,5 +1,6 @@
 #define _GNU_SOURCE 1 // strcasestr
 #include "radio.h"
+#include "src/system/playback/session.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -3198,6 +3199,7 @@ bool radio_play(const radio_station_t *station) {
 		return false;
 	}
 
+	playback_session_other_started();
 	printf("radio: playing '%s' (%s)\n", station->name, station->url);
 	return true;
 }

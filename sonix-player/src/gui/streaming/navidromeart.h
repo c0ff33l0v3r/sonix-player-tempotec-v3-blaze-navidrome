@@ -22,4 +22,7 @@ bool navidromeart_take(int slot, cover_image_t *out, bool *finished);
 void navidromeart_request_player(const nd_library_t *library, const char *id, int size, int backdrop_w, int backdrop_h);
 bool navidromeart_take_player(cover_image_t *out, cover_image_t *backdrop, bool *finished);
 
+// Paused session reconstruction reads cached pixels without network demand.
+void navidromeart_request_player_local(const nd_library_t *library, const char *id, int size, int backdrop_w, int backdrop_h);
+
 #endif

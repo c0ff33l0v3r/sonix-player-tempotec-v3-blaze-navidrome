@@ -1,7 +1,10 @@
 // nftw
-#define _GNU_SOURCE
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
 
 #include "factoryreset.h"
+#include "src/system/playback/session.h"
 
 #include "src/system/audio/audio.h"
 #include "src/system/core/config.h"
@@ -192,6 +195,7 @@ void factoryreset_run(void) {
 	// This player's configuration goes now, without waiting for the reboot,
 	// and the battery history with it.
 	batterystats_forget();
+	playback_session_reset();
 	navidrome_reset();
 	static const char *const OURS[] = {CONFIG_FILE, EBOOK_CONFIG_FILE};
 	for (size_t i = 0; i < sizeof(OURS) / sizeof(OURS[0]); i++) {
@@ -243,17 +247,7 @@ static const char *const USER_DATA[] = {"/usr/data", "/data"};
 //                                pairings in
 //   the rest                     this player's own files
 static const char *const KEEP[] = {
-	"mnt",
-	"macaddr.txt",
-	"bt_macaddr.txt",
-	"device_config.ini",
-	"device_config.ini.tmp",
-	"ebook_config.ini",
-	"ebook_config.ini.tmp",
-	"tidal_session.ini",
-	ND_VAULT_FILE,
-	ND_VAULT_FILE ".cache",
-	"lastfm.session",
+	"mnt", "macaddr.txt", "bt_macaddr.txt", "device_config.ini", "device_config.ini.tmp", "ebook_config.ini", "ebook_config.ini.tmp", "tidal_session.ini", "playback-session.db", "playback-session.db.new", "playback-session.db.lock", ND_VAULT_FILE, ND_VAULT_FILE ".cache", "lastfm.session",
 };
 
 static bool kept(const char *name) {

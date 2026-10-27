@@ -212,7 +212,10 @@ static char persisted_album[256];
 // the page says which record it is straight afterwards -- so a boot in the
 // middle of the first track came back without it, which is exactly the case
 // "play albums back to back" is for.
+static bool restore_without_album_write;
 static void persist_album(void) {
+	if (restore_without_album_write)
+		return;
 	if (strcmp(persisted_album, queue_album) == 0) {
 		return;
 	}
@@ -1951,4 +1954,171 @@ bool playlist_next_folder(const char *root, const char *folder, char *out, size_
 
 	fprintf(stderr, "playlist: %d folders after '%s' and none of them holds a track\n", FOLDER_WALK_MAX, folder);
 	return false;
+}
+
+// A compact, immutable GUI snapshot. Slow row resolution belongs to its worker.
+struct playlist_checkpoint {
+	int count;
+	uint32_t *order;
+	struct checkpoint_entry {
+		uint32_t entry;
+		unsigned char provider;
+		char *local;
+	} *entries;
+	playlist_source_t providers[EXTRA_PROVIDERS + 1];
+	library_index_t *library;
+	char root[1024];
+};
+void playlist_checkpoint_free(playlist_checkpoint_t *c) {
+	if (!c)
+		return;
+	for (int i = 0; i < c->count; i++)
+		free(c->entries ? c->entries[i].local : NULL);
+	for (int i = 0; i < EXTRA_PROVIDERS + 1; i++)
+		if (c->providers[i].release)
+			c->providers[i].release(c->providers[i].user);
+	library_index_close(c->library);
+	free(c->order);
+	free(c->entries);
+	free(c);
+}
+playlist_checkpoint_t *playlist_checkpoint_capture(void) {
+	if (!entry_count || entry_count > INT_MAX || !order)
+		return NULL;
+	playlist_checkpoint_t *c = calloc(1, sizeof(*c));
+	if (!c)
+		return NULL;
+	c->count = (int)entry_count;
+	c->entries = calloc(entry_count, sizeof(*c->entries));
+	c->order = calloc(entry_count, sizeof(*c->order));
+	snprintf(c->root, sizeof(c->root), "%s", playlist_card_root());
+	if (!c->entries || !c->order)
+		goto fail;
+	if (source_ix) {
+		c->library = library_index_clone(source_ix);
+		if (!c->library)
+			goto fail;
+	}
+	for (int j = 0; j < EXTRA_PROVIDERS + 1; j++) {
+		playlist_source_t *p = j ? &providers[j - 1].source : &source;
+		if (!p->path)
+			continue;
+		if (!p->retain || !p->release || !p->read)
+			goto fail;
+		c->providers[j] = *p;
+		p->retain(p->user);
+	}
+	for (size_t i = 0; i < entry_count; i++) {
+		c->order[i] = (uint32_t)order[i];
+		struct checkpoint_entry *e = &c->entries[i];
+		if (i < ix_count) {
+			e->entry = source_map ? source_map[i] : (uint32_t)i;
+			if (source.path)
+				e->provider = 1;
+		} else {
+			extra_ref_t *r = extra_refs ? &extra_refs[i - ix_count] : NULL;
+			if (r && r->provider) {
+				e->provider = (unsigned char)(r->provider + 1);
+				e->entry = r->entry;
+			} else {
+				const char *path = paths ? paths[i - ix_count] : NULL;
+				if (!path)
+					goto fail;
+				e->local = strdup(path);
+				if (!e->local)
+					goto fail;
+			}
+		}
+	}
+	return c;
+fail:
+	playlist_checkpoint_free(c);
+	return NULL;
+}
+static bool checkpoint_path(const char *name, const char *path, const char *artist, void *user) {
+	(void)name;
+	(void)artist;
+	snprintf(user, 512, "%s", path);
+	return false;
+}
+bool playlist_checkpoint_read(void *capture, int canonical, session_row_t *row) {
+	playlist_checkpoint_t *c = capture;
+	if (!c || canonical < 0 || canonical >= c->count)
+		return false;
+	struct checkpoint_entry *e = &c->entries[canonical];
+	memset(row, 0, sizeof(*row));
+	if (e->provider) {
+		playlist_source_t *p = &c->providers[e->provider - 1];
+		return p->read && p->read(p->user, e->entry, row);
+	}
+	char path[512] = {0};
+	if (e->local)
+		snprintf(path, sizeof(path), "%s", e->local);
+	else if (c->library)
+		library_index_window(c->library, (int)e->entry, 1, checkpoint_path, path);
+	size_t n = strlen(c->root);
+	while (n && c->root[n - 1] == '/')
+		n--;
+	if (!n || strncmp(path, c->root, n) || path[n] != '/')
+		return false;
+	const char *relative = path + n + 1;
+	if (!session_relative_path(relative))
+		return false;
+	snprintf(row->local, sizeof(row->local), "%s", relative);
+	song_metadata_t meta;
+	metadata_read(path, &meta);
+	snprintf(row->track.row.title, sizeof(row->track.row.title), "%s", meta.title);
+	snprintf(row->track.row.artist, sizeof(row->track.row.artist), "%s", meta.artist);
+	snprintf(row->track.album, sizeof(row->track.album), "%s", meta.album);
+	row->track.row.disc = meta.disc_number;
+	row->track.row.track = meta.track_number;
+	return true;
+}
+const uint32_t *playlist_checkpoint_order(const playlist_checkpoint_t *c) { return c ? c->order : NULL; }
+bool playlist_restore_source(const playlist_source_t *p, char **local, const uint32_t *permutation, int count, int selected, playback_mode_t saved_mode) {
+	if (!p || !p->path || !local || !permutation || count <= 0 || selected < 0 || selected >= count || saved_mode < 0 || saved_mode > PLAYBACK_MODE_SHUFFLE_REPEAT)
+		return false;
+	size_t *fresh = calloc((size_t)count, sizeof(*fresh));
+	extra_ref_t *refs = calloc((size_t)count, sizeof(*refs));
+	unsigned char *seen = calloc((size_t)count, 1);
+	if (!fresh || !refs || !seen) {
+		free(fresh);
+		free(refs);
+		free(seen);
+		return false;
+	}
+	size_t users = 0;
+	for (int i = 0; i < count; i++) {
+		if (permutation[i] >= (uint32_t)count || seen[permutation[i]]) {
+			free(fresh);
+			free(refs);
+			free(seen);
+			return false;
+		}
+		seen[permutation[i]] = 1;
+		fresh[i] = permutation[i];
+		if (!local[i]) {
+			refs[i].provider = 1;
+			refs[i].entry = (uint32_t)i;
+			users++;
+		}
+	}
+	free(seen);
+	restore_without_album_write = true;
+	playlist_clear();
+	restore_without_album_write = false;
+	paths = local;
+	extra_refs = refs;
+	order = fresh;
+	entry_count = capacity = (size_t)count;
+	pos = (size_t)selected;
+	custom_queue = true;
+	mode = saved_mode;
+	if (users) {
+		providers[0].source = *p;
+		providers[0].users = users;
+	} else if (p->close)
+		p->close(p->user);
+	revision++;
+	return true;
 }

@@ -23,6 +23,8 @@
 // call again; returns false if the file cannot be opened, in which case every
 // call below is a no-op.
 bool library_open(const char *db_path);
+// Worker snapshot of the currently opened database path (no I/O).
+bool library_session_db_path(char *out, size_t size);
 void library_close(void);
 
 // Closes and reopens the index when its file is no longer the one that was

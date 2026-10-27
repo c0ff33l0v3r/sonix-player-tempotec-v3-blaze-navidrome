@@ -20,6 +20,8 @@ void player_play_file(const char *filepath);
 // that set up playback through device_state directly (queue jumps, list
 // playback).
 void player_refresh_now_playing(void);
+// Reconstruct paused metadata with local-only artwork/lyrics demand.
+void player_refresh_restored(void);
 
 // Repaints only the favourite control on the GUI thread, preserving progress.
 void player_refresh_favorite(void);

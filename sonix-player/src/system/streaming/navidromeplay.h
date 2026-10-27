@@ -1,5 +1,6 @@
 #ifndef NAVIDROMEPLAY_H
 #define NAVIDROMEPLAY_H
+#include "src/system/playback/sessionstore.h"
 #include "navidromeaudio.h"
 #include "navidromeowned.h"
 #include "navidromeplaycatalog.h"
@@ -47,4 +48,7 @@ bool navidromeplay_reference(const char *path);
 bool navidromeplay_auto(const char *reference);
 void navidromeplay_failed_selection(const char *reference);
 bool navidromeplay_preparing(void);
+bool navidromeplay_session_pinned(const char *path);
+// GUI-only atomic restore; local strings transfer only on success. No audio/HTTP.
+bool navidromeplay_restore(const char *path, const session_header_t *header, const uint32_t *order, char **local, const session_row_t *selected, const session_identity_t *identity);
 #endif

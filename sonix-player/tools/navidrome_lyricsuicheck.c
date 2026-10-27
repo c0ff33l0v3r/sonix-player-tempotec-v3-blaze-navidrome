@@ -43,6 +43,13 @@ void navidromeart_release(int slot) {
 	(void)slot;
 	delivered = false;
 }
+void navidromeart_request_player_local(const nd_library_t *lib, const char *id, int size, int w, int h) {
+	(void)lib;
+	(void)id;
+	(void)size;
+	(void)w;
+	(void)h;
+}
 void navidromeart_request_player(const nd_library_t *lib, const char *id, int size, int w, int h) {
 	(void)lib;
 	(void)size;

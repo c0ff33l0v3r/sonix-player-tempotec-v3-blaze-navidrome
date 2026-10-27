@@ -18,7 +18,7 @@ ${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -Wno-unused-function -O1 -g \
     -ffunction-sections -fdata-sections $polish_flags ${NAVIDROME_CHECK_FLAGS:-} \
     -DHOST_BUILD -DNAVIDROME_TEST -DLV_CONF_INCLUDE_SIMPLE -DLV_FONT_UNSCII_8=1 -I. -Ilvgl \
     $polish_sources tools/navidrome_coordinatorcheck.c tools/navidrome_test_support.c lvgl/src/font/lv_font_unscii_8.c \
-    src/system/streaming/navidromeplay.c src/system/playback/playlist.c src/system/decode/growfile.c \
+    src/system/streaming/navidromeplay.c src/system/playback/sessionstore.c src/system/playback/playlist.c src/system/decode/growfile.c \
     src/system/streaming/navidromecache.c src/system/streaming/streamturn.c src/system/streaming/navidromedebug.c \
     src/system/streaming/navidromeplaycatalog.c src/system/streaming/navidrome.c src/system/streaming/navidromeapi.c \
     src/system/streaming/navidromeplaylists.c src/system/streaming/navidromeplayliststore.c src/system/core/sha256.c \

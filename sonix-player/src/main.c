@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include "src/gui/nowplaying/cover.h"
+#include "src/system/playback/session.h"
 #include "src/system/audio/waveform.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/icons.h"
@@ -217,10 +218,6 @@ static bool restore_saved_track(void) {
 	return true;
 }
 
-static void restore_track_timer_cb(lv_timer_t *timer) {
-	lv_timer_delete(timer);
-	restore_saved_track();
-}
 
 #ifndef HOST_BUILD
 // Powering the Bluetooth radio down waits for three daemons to take their
@@ -2918,16 +2915,7 @@ int main(int argc, char **argv) {
 	// the first frame is the now-playing page, so the track is put back here,
 	// before it, and the page opened over the home screen without the slide.
 	// The artwork still arrives from its worker a moment later.
-	if (config_get_int("player", "remember_track", 0)) {
-		if (config_get_bool("music", "nowplaying_at_boot", false)) {
-			if (restore_saved_track()) {
-				player_sheet_open(false);
-			}
-		} else {
-			lv_timer_create(restore_track_timer_cb, 600, NULL);
-		}
-	}
-
+	playback_session_init(restore_saved_track);
 
 #ifdef HOST_BUILD
 	lv_timer_create(host_shot_poll_cb, 200, NULL); // see host_shot_poll_cb

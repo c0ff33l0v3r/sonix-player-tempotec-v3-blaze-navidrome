@@ -4,6 +4,7 @@
 #include "src/system/library/library.h"
 #include "src/system/library/metadata.h"
 
+#include "sessionstore.h"
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -30,6 +31,10 @@ typedef struct {
 	bool (*path)(void *user, size_t entry, char *out, size_t size);
 	bool (*metadata)(void *user, size_t entry, song_metadata_t *out);
 	void (*close)(void *user);
+	// Checkpoint ownership is independent of queue ownership. read() is worker-only.
+	void (*retain)(void *user);
+	void (*release)(void *user);
+	bool (*read)(void *user, size_t entry, session_row_t *row);
 } playlist_source_t;
 // Takes ownership only on success; allocation failure preserves the old queue.
 bool playlist_load_source(const playlist_source_t *source, int start);
@@ -268,4 +273,11 @@ playback_mode_t playlist_get_mode(void);
 // NORMAL) and returns the new mode.
 playback_mode_t playlist_cycle_mode(void);
 
+typedef struct playlist_checkpoint playlist_checkpoint_t;
+playlist_checkpoint_t *playlist_checkpoint_capture(void);
+bool playlist_checkpoint_read(void *capture, int canonical, session_row_t *row);
+void playlist_checkpoint_free(playlist_checkpoint_t *capture);
+const uint32_t *playlist_checkpoint_order(const playlist_checkpoint_t *capture);
+// Ownership of local strings and provider transfers only on success.
+bool playlist_restore_source(const playlist_source_t *provider, char **local, const uint32_t *permutation, int count, int selected, playback_mode_t saved_mode);
 #endif // PLAYLIST_H

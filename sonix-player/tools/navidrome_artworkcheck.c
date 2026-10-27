@@ -397,6 +397,12 @@ int main(int argc, char **argv) {
 	assert(trim(dir, "/not-the-destination", 0));
 	cold();
 	assert(fd_count() == descriptors);
+	// Reconstruction remains local-only even with an authenticated connection.
+	art_slot_t cached_only = fixture_bind("restore-local-only", 48, true);
+	cached_only.local_only = true;
+	bool interrupted = false;
+	assert(!load(&cached_only, &image, &interrupted));
+	assert(!interrupted && !image.pixels);
 	// Real serialized worker: a player miss interrupted during HTTP resumes
 	// once after audio yields, without needing navigation or another binding.
 	art_slot_t player = fixture_bind("slow-player-audio", 48, true);

@@ -22,7 +22,7 @@
 typedef struct {
 	unsigned serial;
 	bool pending, done, found, player, playback, album;
-	bool audio_retried;
+	bool audio_retried, local_only;
 	unsigned profile_epoch, maintenance_epoch;
 	nd_library_t library;
 	char id[ND_ID_MAX];
@@ -344,7 +344,7 @@ static bool load(const art_slot_t *job, cover_image_t *out, bool *audio_interrup
 	for (int i = 0; i < ND_WINDOW; i++)
 		if (!strcmp(failures[i].key, key) && failures[i].network_epoch == context.network_epoch && failures[i].until > time(NULL))
 			cooldown = true;
-	bool online = job_current(job, &context, true);
+	bool online = !job->local_only && job_current(job, &context, true);
 	if ((!found || source.state == ART_PENDING) && !cooldown && job->library.writable && online) {
 		// Legacy fallbacks still start at 512. A persisted pending response resumes
 		// at its one computed follow-up, avoiding a second initial download.
@@ -494,7 +494,7 @@ void navidromeart_release(int i) {
 	pthread_mutex_unlock(&art_lock);
 }
 
-static void request(int i, const nd_library_t *library, const char *id, int size, int backdrop_w, int backdrop_h) {
+static void request(int i, const nd_library_t *library, const char *id, int size, int backdrop_w, int backdrop_h, bool local_only) {
 	if (i < 0 || i >= ART_SLOTS || !library || !id || size < 1 || size > 512)
 		return;
 	navidromeart_release(i);
@@ -512,6 +512,7 @@ static void request(int i, const nd_library_t *library, const char *id, int size
 	snprintf(slot->id, sizeof(slot->id), "%s", id);
 	slot->size = size;
 	slot->audio_retried = false;
+	slot->local_only = local_only;
 	slot->backdrop_w = backdrop_w;
 	slot->backdrop_h = backdrop_h;
 	slot->pending = id && *id;
@@ -556,8 +557,8 @@ bool navidromeart_take(int i, cover_image_t *out, bool *finished) {
 	return found;
 }
 
-void navidromeart_request(int i, const nd_library_t *library, const char *id, int size) { request(i, library, id, size, 0, 0); }
-void navidromeart_request_player(const nd_library_t *library, const char *id, int size, int w, int h) { request(ND_ART_PLAYER_SLOT, library, id, size, w, h); }
+void navidromeart_request(int i, const nd_library_t *library, const char *id, int size) { request(i, library, id, size, 0, 0, false); }
+void navidromeart_request_player(const nd_library_t *library, const char *id, int size, int w, int h) { request(ND_ART_PLAYER_SLOT, library, id, size, w, h, false); }
 bool navidromeart_take_player(cover_image_t *out, cover_image_t *backdrop, bool *finished) {
 	memset(backdrop, 0, sizeof(*backdrop));
 	bool found = navidromeart_take(ND_ART_PLAYER_SLOT, out, finished);
@@ -569,3 +570,5 @@ bool navidromeart_take_player(cover_image_t *out, cover_image_t *backdrop, bool 
 	}
 	return found;
 }
+
+void navidromeart_request_player_local(const nd_library_t *library, const char *id, int size, int w, int h) { request(ND_ART_PLAYER_SLOT, library, id, size, w, h, true); }
