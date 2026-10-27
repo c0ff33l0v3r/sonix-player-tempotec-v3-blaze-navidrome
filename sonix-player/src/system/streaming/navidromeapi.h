@@ -32,4 +32,6 @@ const char *nd_api_report(const char *host, const char *user, const char *passwo
 		const char *method, const char *query, bool (*current)(void *), void *arg,
 		nd_document_t *out, int *status);
 
+const char *nd_api_lyrics(const char *host, const char *user, const char *password, const char *id, bool (*current)(void *), void *arg, nd_document_t *out, int *status);
+
 #endif

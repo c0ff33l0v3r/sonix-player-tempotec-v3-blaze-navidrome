@@ -1162,6 +1162,12 @@ void navidrome_reset(void) {
 	pthread_mutex_unlock(&lock);
 }
 
+static void (*lyrics_shutdown)(void);
+void navidrome_set_lyrics_shutdown(void (*shutdown)(void)) {
+	pthread_mutex_lock(&lock);
+	lyrics_shutdown = shutdown;
+	pthread_mutex_unlock(&lock);
+}
 void navidrome_shutdown(void) {
 	pthread_mutex_lock(&lock);
 	clear_secrets();
@@ -1171,7 +1177,11 @@ void navidrome_shutdown(void) {
 	g.started = false;
 	g.listener = NULL;
 	void (*shutdown_downloads)(void) = g.shutdown_downloads;
+	void (*shutdown_lyrics)(void) = lyrics_shutdown;
+	lyrics_shutdown = NULL;
 	pthread_mutex_unlock(&lock);
+	if (shutdown_lyrics)
+		shutdown_lyrics();
 	nd_offline_shutdown();
 	if (shutdown_downloads)
 		shutdown_downloads();

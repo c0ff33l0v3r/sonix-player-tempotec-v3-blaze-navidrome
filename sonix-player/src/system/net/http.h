@@ -234,6 +234,8 @@ typedef struct {
 http_session_t *http_session_new(bool (*current)(void *), void *user);
 // Reporting has one HTTP attempt: no redirect replay, small finite body budget.
 bool http_session_report(http_session_t *session, size_t max_bytes);
+// Lyrics: separate single DNS quota, finite 1-MiB body, no redirects.
+bool http_session_lyrics(http_session_t *session);
 // Opt-in original binary transfers. Defaults for finite JSON remain unchanged.
 bool http_session_binary(http_session_t *session, size_t max_bytes, int deadline_seconds);
 // Protected finite artwork: no redirect replay; other binary callers retain behavior.

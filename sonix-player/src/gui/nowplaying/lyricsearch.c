@@ -28,6 +28,11 @@ static lv_obj_t *preview_text; // inside `preview`
 static lv_obj_t *apply_bar;	   // Apply, under the words
 
 static char file_path[1024];
+static nd_lyric_target_t nd_target;
+static bool nd_active, nd_server, nd_applying;
+static unsigned nd_token, nd_generation;
+static lv_obj_t *apply_button;
+
 static lrclib_record_t *records;
 static int record_count;
 static int previewing = -1; // the record whose words are up, -1 on the list
@@ -119,6 +124,12 @@ static bool back_guard(void) {
 	if (previewing < 0) {
 		return false;
 	}
+	if (nd_active && nd_applying) {
+		nd_lyrics_cancel(nd_token);
+		nd_generation++;
+		nd_applying = false;
+		lv_obj_remove_state(apply_button, LV_STATE_DISABLED);
+	}
 	show_list();
 	return true;
 }
@@ -132,9 +143,38 @@ static void row_clicked_cb(lv_event_t *e) {
 	show_preview((int)(intptr_t)lv_event_get_user_data(e));
 }
 
+static void nd_applied(nd_lyric_result_t *result, void *user) {
+	if ((unsigned)(uintptr_t)user != nd_generation || !nd_active)
+		return;
+	nd_applying = false;
+	lv_obj_remove_state(apply_button, LV_STATE_DISABLED);
+	if (result->error) {
+		toast_error(result->error);
+		return;
+	}
+	char reference[sizeof(nd_target.reference)];
+	snprintf(reference, sizeof(reference), "%s", result->target.reference);
+	show_list();
+	back_btn_cb(NULL);
+	player_lyrics_reload(reference);
+	toast_success("lyrics_downloaded");
+}
+
 static void apply_cb(lv_event_t *e) {
 	(void)e;
 	if (switcher_back_drag_active() || previewing < 0) {
+		return;
+	}
+	if (nd_active) {
+		if (nd_applying)
+			return;
+		nd_token = nd_lyrics_submit(&nd_target, nd_server ? ND_LYRIC_SELECT : ND_LYRIC_APPLY, nd_server ? NULL : records[previewing].text, previewing, nd_applied, (void *)(uintptr_t)nd_generation);
+		if (!nd_token) {
+			toast_error("nd_busy");
+			return;
+		}
+		nd_applying = true;
+		lv_obj_add_state(apply_button, LV_STATE_DISABLED);
 		return;
 	}
 	if (!lrclib_save(file_path, records[previewing].text)) {
@@ -229,6 +269,10 @@ static void add_row(int index) {
 }
 
 void lyricsearch_open(const char *path, lrclib_record_t *records_in, int count) {
+	nd_active = nd_server = nd_applying = false;
+	nd_generation++;
+	if (apply_button)
+		lv_obj_remove_state(apply_button, LV_STATE_DISABLED);
 	lrclib_free(records, record_count);
 	records = records_in;
 	record_count = count;
@@ -246,15 +290,43 @@ void lyricsearch_open(const char *path, lrclib_record_t *records_in, int count) 
 	switcher_set_player_return(lyricsearch_screen);
 }
 
+void lyricsearch_open_navidrome(const nd_lyric_target_t *target, lrclib_record_t *records_in, int count, bool server) {
+	lyricsearch_open(target->reference, records_in, count);
+	nd_target = *target;
+	nd_active = true;
+	nd_server = server;
+}
+
 // Left, whichever way: the records go, they are a few hundred kilobytes at most
 // but nothing needs them any more.
 static void unloaded_cb(lv_event_t *e) {
 	(void)e;
+	nd_lyrics_cancel(nd_token);
+	nd_token = 0;
+	nd_generation++;
+	nd_active = nd_applying = false;
 	show_list();
 	lv_obj_clean(list);
 	lrclib_free(records, record_count);
 	records = NULL;
 	record_count = 0;
+}
+
+static void nd_picker_tick(lv_timer_t *unused) {
+	(void)unused;
+	nd_lyrics_poll();
+	if (nd_active && !navidrome_playback_current(&nd_target.context, false)) {
+		nd_lyrics_cancel(nd_token);
+		nd_generation++;
+		nd_active = nd_applying = false;
+		lv_obj_add_state(apply_button, LV_STATE_DISABLED);
+		lrclib_free(records, record_count);
+		records = NULL;
+		record_count = 0;
+		lv_obj_clean(list);
+		show_list();
+		lv_label_set_text(title_label, tr("nd_lyrics_offline"));
+	}
 }
 
 void lyricsearch_init(gui_config_t *cfg) {
@@ -310,6 +382,8 @@ void lyricsearch_init(gui_config_t *cfg) {
 	lv_obj_set_scrollable(apply_bar, false);
 
 	lv_obj_t *apply = lv_btn_create(apply_bar);
+	apply_button = apply;
+	lv_timer_create(nd_picker_tick, 100, NULL);
 	lv_obj_set_size(apply, APPLY_W, APPLY_H);
 	lv_obj_center(apply);
 	lv_obj_add_style(apply, &theme_style_card, 0);

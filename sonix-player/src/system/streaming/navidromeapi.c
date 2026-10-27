@@ -305,12 +305,15 @@ bool nd_api_field_unique(const json_doc_t *doc, int object, const char *name, bo
 
 // Scan checks share the finite deadline/cancellation contract, without retaining
 // a third connection alongside the two enumeration workers.
-static const char *finite_json(const char *host, const char *user, const char *password, const char *method, const char *query, size_t limit, bool control, bool (*current)(void *), void *arg, nd_document_t *out, bool report, int *response_status) {
+static const char *finite_json(const char *host, const char *user, const char *password, const char *method, const char *query, size_t limit, bool control, bool (*current)(void *), void *arg, nd_document_t *out, int report, int *response_status) {
 	memset(out, 0, sizeof(*out));
 	http_session_t *session = http_session_new(current, arg);
 	if (!session)
 		return "nd_json_memory";
-	if (report) http_session_report(session, 65536);
+	if (report == 1)
+		http_session_report(session, 65536);
+	if (report == 2)
+		http_session_lyrics(session);
 	char url[2500];
 	const char *error = request_url(host, user, password, method, query, url, sizeof(url));
 	if (!error && !http_session_get(session, url, false, false)) {
@@ -341,7 +344,7 @@ static const char *finite_json(const char *host, const char *user, const char *p
 	}
 	if (!error) {
 		body[used] = 0;
-		json_parse_result_t parsed = json_parse_detailed(body, &out->doc, report ? 4096 : ND_API_TOKENS);
+		json_parse_result_t parsed = json_parse_detailed(body, &out->doc, report == 2 ? 65536 : report ? 4096 : ND_API_TOKENS);
 		if (parsed != JSON_PARSE_OK)
 			error = parsed == JSON_PARSE_MEMORY ? "nd_json_memory" : !control && parsed == JSON_PARSE_TOKENS ? "nd_page_large" : !control && parsed == JSON_PARSE_DEPTH ? "nd_json_depth" : "nd_response_error";
 		else {
@@ -397,4 +400,16 @@ const char *nd_api_report(const char *host, const char *user, const char *passwo
 	*status = 0;
 	return finite_json(host, user, password, method, query, 65537, false,
 		current, arg, out, true, status);
+}
+
+const char *nd_api_lyrics(const char *host, const char *user, const char *password, const char *id, bool (*current)(void *), void *arg, nd_document_t *out, int *status) {
+	char encoded[768], query[800];
+	memset(out, 0, sizeof(*out));
+	*status = 0;
+	if (!id || !*id || strlen(id) >= 256)
+		return "nd_input_long";
+	http_url_encode(id, encoded, sizeof(encoded));
+	if (snprintf(query, sizeof(query), "id=%s", encoded) >= (int)sizeof(query))
+		return "nd_input_long";
+	return finite_json(host, user, password, "getLyricsBySongId", query, 1024 * 1024 + 1, false, current, arg, out, 2, status);
 }

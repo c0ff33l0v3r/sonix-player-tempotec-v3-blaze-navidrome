@@ -5,6 +5,7 @@
 #include "src/system/library/lrclib.h"
 
 #include "lvgl/lvgl.h"
+#include "src/system/streaming/navidromelyrics.h"
 
 // The lyrics LRCLIB found for a track, to pick one from: a list of the records,
 // likeliest first, each with its title, artist, album, length and whether it is
@@ -19,5 +20,7 @@ void lyricsearch_init(gui_config_t *cfg);
 // Opens the list for the file at `path`, over the player. Takes the records,
 // which are freed when the page is left.
 void lyricsearch_open(const char *path, lrclib_record_t *records, int count);
+
+void lyricsearch_open_navidrome(const nd_lyric_target_t *target, lrclib_record_t *records, int count, bool server);
 
 #endif /* LYRICSEARCH_H */

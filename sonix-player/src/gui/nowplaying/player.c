@@ -59,19 +59,20 @@
 #include "src/system/audio/waveform.h"
 #include "src/system/net/wifi.h"
 
+#include "lvgl/lvgl.h"
 #include "lvgl/src/core/lv_obj_draw_private.h"
 #include "lvgl/src/core/lv_obj_event_private.h"
 #include "lvgl/src/font/lv_font_private.h"
+#include "lvgl/src/misc/lv_text_ap.h"
 #include "lvgl/src/misc/lv_text_private.h"
 #include "lvgl/src/widgets/slider/lv_slider_private.h"
-#include "lvgl/src/misc/lv_text_ap.h"
-#include "src/gui/shell/unchanged.h"
-#include "lvgl/lvgl.h"
 #include "src/gui/shell/uiscale.h"
+#include "src/gui/shell/unchanged.h"
 #include "src/gui/streaming/navidromeart.h"
+#include "src/gui/streaming/navidromestar.h"
+#include "src/system/streaming/navidromelyrics.h"
 #include "src/system/streaming/navidromeplay.h"
 #include "src/system/streaming/navidromestars.h"
-#include "src/gui/streaming/navidromestar.h"
 
 lv_obj_t *player_screen;
 
@@ -1459,6 +1460,16 @@ static int lyrics_pane_x;		// where the page rests
 static lv_obj_t *lyrics_view;
 static lv_obj_t *lyrics_note; // "no lyrics", in the middle of the column
 static lyrics_t lyrics_cur;
+static nd_lyric_target_t nd_lyrics_current;
+static nd_lyric_set_t nd_lyrics_versions;
+static bool nd_lyrics_active, nd_lyrics_visible_request;
+static nd_lyric_target_t nd_lyrics_menu_target, nd_lyrics_search_target;
+static bool nd_lyrics_search_intent;
+static unsigned nd_lyrics_token;
+static const char *nd_lyrics_status;
+static void nd_lyrics_action(nd_lyric_action_t action);
+static void lyrics_wifi_wait_end(void);
+
 static bool lyrics_loaded;		   // lyrics_cur belongs to lyrics_path, found or not
 static char lyrics_path[1024];	   // the file the view is for
 static unsigned lyrics_generation; // stale answers from the loader are dropped
@@ -1473,6 +1484,8 @@ static int lyrics_view_h;
 // brought to the middle; untimed ones read from the top.
 static void lyrics_pad(void) {
 	int around = lyrics_cur.synced ? lyrics_view_h / 2 - ui_px(20) : LYRICS_FADE_PX / 2;
+	if (nd_lyrics_active && nd_lyrics_versions.unsaved)
+		around = LV_MAX(around, ui_px(96));
 	lv_obj_set_style_pad_top(lyrics_view, around, 0);
 	lv_obj_set_style_pad_bottom(lyrics_view, lyrics_cur.synced ? around : LYRICS_FADE_PX, 0);
 }
@@ -1550,6 +1563,8 @@ static void lyrics_fill(void) {
 	}
 	lv_obj_clean(lyrics_view);
 	lyrics_pad();
+	if (nd_lyrics_active && nd_lyrics_versions.unsaved)
+		lv_obj_set_y(lyrics_note, lv_obj_get_y(lyrics_view));
 	lyrics_lit = -1;
 	lyrics_user_until = 0;
 	lyrics_centred = false;
@@ -1557,14 +1572,14 @@ static void lyrics_fill(void) {
 	lv_obj_scroll_to_y(lyrics_view, 0, LV_ANIM_OFF);
 
 	if (!lyrics_loaded) {
-		lyrics_note_show(NULL); // still being read
+		lyrics_note_show(nd_lyrics_active ? "nd_lyrics_loading" : NULL); // still being read
 		return;
 	}
 	if (lyrics_cur.count == 0) {
-		lyrics_note_show("lyrics_none");
+		lyrics_note_show(nd_lyrics_active && nd_lyrics_status ? nd_lyrics_status : "lyrics_none");
 		return;
 	}
-	lyrics_note_show(NULL);
+	lyrics_note_show(nd_lyrics_active && nd_lyrics_versions.unsaved ? "nd_lyrics_unsaved" : NULL);
 
 	for (int i = 0; i < lyrics_cur.count; i++) {
 		lv_obj_t *line = lv_label_create(lyrics_view);
@@ -1658,7 +1673,7 @@ static void *lyrics_worker(void *arg) {
 static bool lyrics_available(void) {
 	device_state_t state;
 	device_state_get(&state);
-	return playing_local_file(&state);
+	return playing_local_file(&state) || nd_audio_source(state.current_file) || navidromeplay_reference(state.current_file);
 }
 
 // The page is up, or on its way in or out under a finger.
@@ -1678,7 +1693,114 @@ static bool lyrics_has_words(void) { return lyrics_loaded && lyrics_cur.count > 
 // The lyrics of the file playing, read on a thread of their own as soon as it
 // starts: the tags of a FLAC are read whole, pictures included, and that is
 // not the interface's to wait for. Asked again only when the file changes.
+static void nd_lyrics_arrived(nd_lyric_result_t *result, void *unused) {
+	(void)unused;
+	device_state_t state;
+	device_state_get(&state);
+	nd_lyric_target_t target;
+	if (!nd_lyrics_target(state.current_file, &target) || !nd_lyrics_same(&target, &result->target))
+		return;
+	nd_lyrics_status = result->error;
+	if (result->error && lyrics_cur.count && sheet_open && result->action != ND_LYRIC_LOCAL && result->action != ND_LYRIC_SEARCH)
+		toast_error(result->error);
+	if (result->action == ND_LYRIC_SEARCH) {
+		if (result->error) {
+			if (sheet_open)
+				toast_error(result->error);
+			return;
+		}
+		if (sheet_open) {
+			lyricsearch_open_navidrome(&result->target, result->records, result->count, false);
+			result->records = NULL;
+			result->count = 0;
+		}
+		return;
+	}
+	if (result->set.count && !(result->set.unsaved && nd_lyrics_versions.override)) {
+		lyrics_free(&lyrics_cur);
+		nd_lyrics_free(&nd_lyrics_versions);
+		nd_lyrics_versions = result->set;
+		memset(&result->set, 0, sizeof(result->set));
+		if (!nd_lyrics_copy(&nd_lyrics_versions.versions[nd_lyrics_versions.selected].lyrics, &lyrics_cur))
+			nd_lyrics_status = "nd_json_memory";
+	}
+	lyrics_loaded = true;
+	lyrics_fill_soon();
+}
+static void nd_lyrics_action(nd_lyric_action_t action) {
+	device_state_t state;
+	device_state_get(&state);
+	nd_lyric_target_t target;
+	if (!nd_lyrics_target(state.current_file, &target)) {
+		nd_lyrics_status = "nd_lyrics_offline";
+		lyrics_loaded = true;
+		lyrics_fill_soon();
+		return;
+	}
+	nd_lyrics_token = nd_lyrics_submit(&target, action, NULL, 0, nd_lyrics_arrived, NULL);
+	if (!nd_lyrics_token) {
+		nd_lyrics_status = "nd_busy";
+		lyrics_loaded = true;
+		lyrics_fill_soon();
+	} else {
+		nd_lyrics_status = "nd_lyrics_loading";
+		if (!lyrics_cur.count)
+			lyrics_loaded = false;
+	}
+}
+
 static void lyrics_request(const device_state_t *state) {
+	if (!sheet_open && lv_screen_active() == lyricsearch_screen)
+		return;
+	nd_lyric_target_t target;
+	bool source = nd_audio_source(state->current_file) || navidromeplay_reference(state->current_file);
+	if (source) {
+		if (!nd_lyrics_target(state->current_file, &target)) {
+			if (nd_lyrics_active) {
+				nd_lyrics_cancel(nd_lyrics_token);
+				lyrics_free(&lyrics_cur);
+				nd_lyrics_free(&nd_lyrics_versions);
+				nd_lyrics_active = false;
+				lyrics_path[0] = 0;
+				lyrics_loaded = true;
+				lyrics_fill_soon();
+			}
+			return;
+		}
+		bool changed = !nd_lyrics_active || !nd_lyrics_same(&nd_lyrics_current, &target);
+		bool visible = sheet_open && (lyrics_wanted || lyrics_progress > 0);
+		if (changed) {
+			nd_lyrics_cancel(nd_lyrics_token);
+			lyrics_generation++;
+			lyrics_free(&lyrics_cur);
+			nd_lyrics_free(&nd_lyrics_versions);
+			nd_lyrics_current = target;
+			nd_lyrics_active = true;
+			nd_lyrics_visible_request = false;
+			lyrics_loaded = false;
+			snprintf(lyrics_path, sizeof(lyrics_path), "%s", state->current_file);
+			nd_lyrics_status = NULL;
+			lyrics_fill_soon();
+		}
+		if (changed || (visible && !nd_lyrics_visible_request)) {
+			nd_lyrics_action(visible ? ND_LYRIC_VIEW : ND_LYRIC_LOCAL);
+			nd_lyrics_visible_request = visible;
+		}
+		if (!visible && nd_lyrics_visible_request) {
+			nd_lyrics_cancel(nd_lyrics_token);
+			nd_lyrics_visible_request = false;
+		}
+		return;
+	}
+	if (nd_lyrics_active) {
+		nd_lyrics_cancel(nd_lyrics_token);
+		nd_lyrics_active = false;
+		nd_lyrics_visible_request = false;
+		lyrics_path[0] = 0;
+		lyrics_generation++;
+		lyrics_free(&lyrics_cur);
+		nd_lyrics_free(&nd_lyrics_versions);
+	}
 	if (!state->current_file[0] || !playing_local_file(state)) {
 		return;
 	}
@@ -1755,6 +1877,8 @@ static void lyrics_repaint_lit(void) { lyrics_paint_line(lyrics_lit, true); }
 // after the finger stops -- or, with the music paused, once it plays again:
 // until then the words stay where the finger left them.
 static void lyrics_follow(double seconds) {
+	if (nd_lyrics_active && navidromeplay_preparing())
+		return;
 	if (!lyrics_on_screen() || !lyrics_view || !lyrics_cur.synced || lyrics_cur.count == 0) {
 		return;
 	}
@@ -2097,7 +2221,7 @@ static void lyrics_layout(void) {
 	lyrics_pad();
 	lyrics_mask_build(view_w, h);
 	lv_obj_set_size(lyrics_note, view_w, LV_SIZE_CONTENT);
-	lv_obj_set_pos(lyrics_note, view_x, view_y + h / 2 - ui_px(20));
+	lv_obj_set_pos(lyrics_note, view_x, view_y + (nd_lyrics_active && nd_lyrics_versions.unsaved ? 0 : h / 2 - ui_px(20)));
 
 	if (lyrics_head) {
 		lv_obj_set_pos(lyrics_head, STUDIO_MARGIN, lyrics_head_top());
@@ -2110,10 +2234,16 @@ static void lyrics_layout(void) {
 // up from one track to the next.
 static void lyrics_commit(bool on) {
 	lyrics_wanted = on;
+	if (!on && nd_lyrics_active) {
+		nd_lyrics_cancel(nd_lyrics_token);
+		nd_lyrics_visible_request = false;
+		if (nd_lyrics_search_intent)
+			lyrics_wifi_wait_end();
+	}
 	device_state_t state;
 	device_state_get(&state);
-	lyrics_allowed = on && playing_local_file(&state);
-	lyrics_now = lyrics_allowed && lyrics_has_words();
+	lyrics_allowed = on && (playing_local_file(&state) || nd_audio_source(state.current_file) || navidromeplay_reference(state.current_file));
+	lyrics_now = lyrics_allowed && (lyrics_has_words() || nd_lyrics_active);
 	if (lyrics_now) {
 		lyrics_slide_to(LYRICS_FULL);
 		lyrics_request(&state);
@@ -2127,7 +2257,7 @@ static void lyrics_commit(bool on) {
 // up if there are any and goes if there are none; one wanted and put away for
 // a track without words comes back on the first track that has some.
 static void lyrics_settle(void) {
-	bool now = lyrics_allowed && lyrics_has_words();
+	bool now = lyrics_allowed && (lyrics_has_words() || nd_lyrics_active);
 	if (now == lyrics_now || !lyrics_pane) {
 		return;
 	}
@@ -2160,6 +2290,15 @@ static bool lyrics_fetching; // one search at a time
 void player_lyrics_reload(const char *path) {
 	device_state_t state;
 	device_state_get(&state);
+	nd_lyric_target_t target;
+	if (nd_lyrics_target(state.current_file, &target)) {
+		if (!path || strcmp(path, target.reference))
+			return;
+		nd_lyrics_visible_request = false;
+		nd_lyrics_active = false;
+		lyrics_request(&state);
+		return;
+	}
 	if (!path || strcmp(state.current_file, path) != 0) {
 		return;
 	}
@@ -2252,21 +2391,29 @@ static void lyrics_wifi_tick_cb(lv_timer_t *t) {
 	(void)t;
 	device_state_t state;
 	device_state_get(&state);
+	nd_lyric_target_t target;
+	if (nd_lyrics_search_intent && ((!sheet_open || (!lyrics_wanted && !lyrics_progress)) || !nd_lyrics_target(state.current_file, &target) || !nd_lyrics_same(&target, &nd_lyrics_search_target))) {
+		lyrics_wifi_wait_end();
+		return;
+	}
 	// Another track, or Wi-Fi switched off again: the search is no longer wanted.
 	if (!wifi_get_enabled() || strcmp(state.current_file, lyrics_wifi_path) != 0) {
 		lyrics_wifi_wait_end();
-		toast_busy_end();
+		if (!nd_lyrics_search_intent)
+			toast_busy_end();
 		return;
 	}
 	if (lyrics_wifi_online()) {
 		lyrics_wifi_wait_end();
-		toast_busy_end();
+		if (!nd_lyrics_search_intent)
+			toast_busy_end();
 		lyrics_search_run();
 		return;
 	}
 	if (lv_tick_elaps(lyrics_wifi_since) >= LYRICS_WIFI_WAIT_MS) {
 		lyrics_wifi_wait_end();
-		toast_busy_end();
+		if (!nd_lyrics_search_intent)
+			toast_busy_end();
 		toast_error("lyrics_wifi_failed");
 	}
 }
@@ -2275,23 +2422,32 @@ static void lyrics_enable_wifi_cb(void *user) {
 	(void)user;
 	device_state_t state;
 	device_state_get(&state);
-	if (!state.current_file[0] || !playing_local_file(&state)) {
+	if (!state.current_file[0] || !(playing_local_file(&state) || nd_audio_source(state.current_file) || navidromeplay_reference(state.current_file))) {
 		return;
 	}
+	nd_lyric_target_t target;
+	if (nd_lyrics_search_intent && ((!sheet_open || (!lyrics_wanted && !lyrics_progress)) || !nd_lyrics_target(state.current_file, &target) || !nd_lyrics_same(&target, &nd_lyrics_search_target)))
+		return;
 	snprintf(lyrics_wifi_path, sizeof(lyrics_wifi_path), "%s", state.current_file);
 	wifi_set_enabled(true);
 	lyrics_wifi_since = lv_tick_get();
 	if (!lyrics_wifi_timer) {
 		lyrics_wifi_timer = lv_timer_create(lyrics_wifi_tick_cb, LYRICS_WIFI_POLL_MS, NULL);
 	}
-	toast_busy_dismissable("lyrics_wifi_connecting");
+	if (!nd_lyrics_search_intent)
+		toast_busy_dismissable("lyrics_wifi_connecting");
 }
 
 // Wi-Fi is off and can be switched on: the question offers that in place of
 // the search.
 static bool lyrics_offer_wifi(void) {
+#ifdef HOST_BUILD
+	// The simulator uses the host network, independently of device WLAN controls.
+	return false;
+#endif
 	if (lyrics_wifi_timer) {
-		toast_busy_dismissable("lyrics_wifi_connecting");
+		if (!nd_lyrics_search_intent)
+			toast_busy_dismissable("lyrics_wifi_connecting");
 		return true;
 	}
 	if (wifi_get_enabled() || !wifi_available()) {
@@ -2304,6 +2460,11 @@ static bool lyrics_offer_wifi(void) {
 // The file playing looked up on LRCLIB, on a thread of its own; what is found
 // is listed to pick from.
 static void lyrics_search_start(void) {
+	device_state_t state;
+	device_state_get(&state);
+	nd_lyrics_search_intent = nd_lyrics_active;
+	if (nd_lyrics_search_intent && !nd_lyrics_target(state.current_file, &nd_lyrics_search_target))
+		return;
 	if (!lyrics_fetching && lyrics_offer_wifi()) {
 		return;
 	}
@@ -2315,15 +2476,25 @@ static void lyrics_search_run(void) {
 		toast_busy_dismissable("lyrics_downloading");
 		return;
 	}
+#ifndef HOST_BUILD
 	wifi_status_t wifi;
 	wifi_get_status(&wifi);
 	if (wifi.state != WIFI_STATE_CONNECTED) {
 		toast_error("lyrics_no_wifi");
 		return;
 	}
+#endif
 	device_state_t state;
 	device_state_get(&state);
-	if (!state.current_file[0] || !playing_local_file(&state)) {
+	if (!state.current_file[0] || !(playing_local_file(&state) || nd_audio_source(state.current_file) || navidromeplay_reference(state.current_file))) {
+		return;
+	}
+
+	if (nd_lyrics_active) {
+		nd_lyric_target_t target;
+		if (!nd_lyrics_target(state.current_file, &target) || (nd_lyrics_search_intent && !nd_lyrics_same(&target, &nd_lyrics_search_target)))
+			return;
+		nd_lyrics_action(ND_LYRIC_SEARCH);
 		return;
 	}
 
@@ -2358,9 +2529,69 @@ static void lyrics_download_cb(void *user) {
 }
 
 // The button over the words: other words for the same file, in their place.
+static bool nd_lyrics_menu_valid(void) {
+	device_state_t state;
+	device_state_get(&state);
+	nd_lyric_target_t target;
+	return nd_lyrics_target(state.current_file, &target) && nd_lyrics_same(&target, &nd_lyrics_menu_target);
+}
+static void nd_lyrics_search_action(void *unused) {
+	(void)unused;
+	if (!nd_lyrics_menu_valid())
+		return;
+	lyrics_search_start();
+}
+static void nd_lyrics_refresh_action(void *unused) {
+	(void)unused;
+	if (nd_lyrics_menu_valid())
+		nd_lyrics_action(ND_LYRIC_REFRESH);
+}
+static void nd_lyrics_server_action(void *unused) {
+	(void)unused;
+	if (nd_lyrics_menu_valid())
+		nd_lyrics_action(ND_LYRIC_SERVER);
+}
+static void nd_lyrics_versions_action(void *unused) {
+	(void)unused;
+	if (!nd_lyrics_menu_valid() || !nd_lyrics_active || nd_lyrics_versions.override || !nd_lyrics_versions.count)
+		return;
+	lrclib_record_t *records = calloc(nd_lyrics_versions.count, sizeof(*records));
+	if (!records) {
+		toast_error("nd_json_memory");
+		return;
+	}
+	for (int i = 0; i < nd_lyrics_versions.count; i++) {
+		nd_lyric_doc_t *v = &nd_lyrics_versions.versions[i];
+		records[i].text = nd_lyrics_text(&v->lyrics);
+		records[i].synced = v->lyrics.synced;
+		snprintf(records[i].track, sizeof(records[i].track), "%.*s", 159, nd_lyrics_current.title);
+		snprintf(records[i].artist, sizeof(records[i].artist), "%.*s", 159, nd_lyrics_current.artist);
+		snprintf(records[i].album, sizeof(records[i].album), "%s", v->language[0] ? v->language : tr("nd_lyrics_language_unknown"));
+		if (!records[i].text) {
+			lrclib_free(records, nd_lyrics_versions.count);
+			toast_error("nd_json_memory");
+			return;
+		}
+	}
+	lyricsearch_open_navidrome(&nd_lyrics_current, records, nd_lyrics_versions.count, true);
+}
+
 static void lyrics_find_cb(lv_event_t *e) {
 	(void)e;
 	if (player_sheet_drag_active()) {
+		return;
+	}
+	if (nd_lyrics_active) {
+		nd_lyrics_menu_target = nd_lyrics_current;
+		popover_item_t items[4];
+		int count = 0;
+		items[count++] = (popover_item_t){.label = "nd_lyrics_search", .action = nd_lyrics_search_action};
+		items[count++] = (popover_item_t){.label = "nd_lyrics_refresh", .action = nd_lyrics_refresh_action};
+		if (nd_lyrics_versions.override)
+			items[count++] = (popover_item_t){.label = "nd_lyrics_use_server", .action = nd_lyrics_server_action};
+		else if (nd_lyrics_versions.count > 1)
+			items[count++] = (popover_item_t){.label = "nd_lyrics_versions", .action = nd_lyrics_versions_action};
+		popover_show(lv_event_get_target(e), items, count);
 		return;
 	}
 	lyrics_search_start();
@@ -2403,8 +2634,11 @@ static void lyrics_drag_cb(lv_event_t *e) {
 	}
 
 	if (code == LV_EVENT_PRESSED) {
-		tracking = opening ? !lyrics_now && lyrics_available() && lyrics_loaded : lyrics_now;
-		asking = opening && !lyrics_has_words();
+		device_state_t gesture_state;
+		device_state_get(&gesture_state);
+		bool nd_source = nd_audio_source(gesture_state.current_file) || navidromeplay_reference(gesture_state.current_file);
+		tracking = opening ? !lyrics_now && lyrics_available() && (lyrics_loaded || nd_source) : lyrics_now;
+		asking = opening && !lyrics_has_words() && !nd_source;
 		engaged = false;
 		lv_indev_get_point(indev, &start);
 		return;
@@ -2480,7 +2714,7 @@ static void lyrics_drag_cb(lv_event_t *e) {
 // A tap on a timed line plays from where it is sung.
 static void lyrics_tap_cb(lv_event_t *e) {
 	(void)e;
-	if (lyrics_swiped || !lyrics_cur.synced || !lyrics_view) {
+	if ((nd_lyrics_active && navidromeplay_preparing()) || lyrics_swiped || !lyrics_cur.synced || !lyrics_view) {
 		return;
 	}
 	lv_indev_t *indev = lv_indev_active();
@@ -2770,7 +3004,10 @@ static void studio_badges_move(lv_obj_t *parent, int y) {
 		if (parent) {
 			lv_obj_set_parent(marks[i], parent);
 		}
-		lv_obj_align(marks[i], LV_ALIGN_TOP_RIGHT, -STUDIO_MARGIN, y);
+		if (marks[i] == navidrome_badge)
+			lv_obj_align(marks[i], LV_ALIGN_BOTTOM_LEFT, STUDIO_MARGIN, -STUDIO_MARGIN);
+		else
+			lv_obj_align(marks[i], LV_ALIGN_TOP_RIGHT, -STUDIO_MARGIN, y);
 	}
 }
 
@@ -2938,7 +3175,10 @@ static void studio_take_back(void) {
 		for (size_t i = 0; i < sizeof(marks) / sizeof(marks[0]); i++) {
 			if (marks[i]) {
 				lv_obj_set_parent(marks[i], cover_panel);
-				lv_obj_align(marks[i], LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
+				if (marks[i] == navidrome_badge)
+					lv_obj_align(marks[i], LV_ALIGN_BOTTOM_LEFT, BADGE_INSET, -BADGE_INSET);
+				else
+					lv_obj_align(marks[i], LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
 			}
 		}
 		set_over_cover(current_cover.pixels != NULL);
@@ -3172,7 +3412,7 @@ static void update_layout(const device_state_t *state) {
 	// Studio only wants a picture and a name, and takes whatever is playing:
 	// a file, a cached Qobuz or Tidal track, a podcast, a book, a station.
 	bool local = playing_local_file(state);
-	bool lyrics = lyrics_wanted && local;
+	bool lyrics = lyrics_wanted && (local || nd_audio_source(state->current_file) || navidromeplay_reference(state->current_file));
 	bool studio = layout_choice == PLAYER_LAYOUT_STUDIO;
 	bool wave = layout_choice == PLAYER_LAYOUT_ALTERNATIVE && local;
 	bool alt = wave;
@@ -3191,7 +3431,7 @@ static void update_layout(const device_state_t *state) {
 	if (!lyrics) {
 		lyrics_now = false;
 	} else if (same_file && lyrics_loaded) {
-		lyrics_now = lyrics_cur.count > 0;
+		lyrics_now = lyrics_cur.count > 0 || nd_lyrics_active;
 	}
 	apply_layout();
 	lyrics_request(state);
@@ -4665,6 +4905,7 @@ static const char *const PROF_UP_LED = "up_led";
 static const char *const PROF_UP_REMEMBER = "up_remember_note";
 
 static void update_progress(void) {
+	nd_lyrics_poll();
 	navidromeplay_tick();
 	navidrome_star_poll();
 	// Auto-advance or loop the folder when the track has played through.
@@ -5447,7 +5688,10 @@ void player_set_statusbar_always(bool on) {
 		lv_obj_t *const marks[] = {live_badge, qobuz_badge, tidal_badge, podcast_badge, navidrome_badge};
 		for (size_t i = 0; i < sizeof(marks) / sizeof(marks[0]); i++) {
 			if (marks[i]) {
-				lv_obj_align(marks[i], LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
+				if (marks[i] == navidrome_badge)
+					lv_obj_align(marks[i], LV_ALIGN_BOTTOM_LEFT, BADGE_INSET, -BADGE_INSET);
+				else
+					lv_obj_align(marks[i], LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
 			}
 		}
 	}
@@ -5519,6 +5763,12 @@ static void sheet_hidden_anim_ready_cb(lv_anim_t *a) {
 void player_sheet_close(bool animate) {
 	bool was_open = sheet_open;
 	sheet_open = false;
+	if (nd_lyrics_active) {
+		nd_lyrics_cancel(nd_lyrics_token);
+		nd_lyrics_visible_request = false;
+		if (nd_lyrics_search_intent)
+			lyrics_wifi_wait_end();
+	}
 	smooth_timer_sync();
 	back_btn_player_mode(false);
 	lyrics_screen_hold_update();
@@ -6153,7 +6403,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_hidden(podcast_badge, true);
 	navidrome_badge = lv_image_create(cover_panel);
 	lv_image_set_src(navidrome_badge, &icon_navidrome_badge);
-	lv_obj_align(navidrome_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
+	lv_obj_align(navidrome_badge, LV_ALIGN_BOTTOM_LEFT, BADGE_INSET, -BADGE_INSET);
 	lv_obj_set_hidden(navidrome_badge, true);
 
 	// Shown while there is no artwork for the current track.

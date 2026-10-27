@@ -388,7 +388,7 @@ without adding an Artists category. Disposable Favorites data lives in
 
 Show album opens the exact Navidrome album. Show artist opens that primary
 artist's local Albums page by ID, including offline; it is unavailable when the
-snapshot has no authoritative primary artist ID. Lyrics integration remains deferred.
+snapshot has no authoritative primary artist ID. Navidrome lyrics use the shared Music view described below.
 
 Navidrome listening reports run silently in the background, independently of
 Last.fm. A track at least 30 seconds long counts after you actually listen to
@@ -689,3 +689,39 @@ GPL-3.0, like upstream ([LICENSE](LICENSE)). Sonix Player is the work of
 thanks at the end of [UPSTREAM-README.md](UPSTREAM-README.md). The Blaze port
 is by [@carmine-bin](https://github.com/carmine-bin). Not affiliated with
 TempoTec or HiBy.
+
+## Navidrome lyrics
+
+Swipe left on Now Playing's cover to open Music's lyrics view, in normal or
+Studio layout. Timed lyrics follow the song and support seeking within the
+available audio; plain lyrics can be scrolled. The screen stays on while the
+lyrics view is visible. This does not enable the Alternative waveform layout.
+
+Previously saved lyrics load locally. With no saved version, opening the lyrics
+view requests the exact song's server lyrics using an existing Navidrome
+connection. Starting playback with the lyrics hidden, Sync and Reconnect never
+fetch lyrics. Advancing while reading requests lyrics for the new visible track.
+The search glyph offers **Refresh server lyrics**, **Choose server lyrics** when
+several versions exist, and **Search LRCLIB**. LRCLIB searching is explicit and
+uses Music's result list, preview and Apply flow; Wi-Fi is sufficient without a
+Navidrome connection or Library Sync. In the host simulator, LRCLIB uses the
+host's network directly; the device Wi-Fi switch is not required. The Navidrome
+source indicator sits in the lower-left corner, clear of the lyrics search control.
+
+An applied LRCLIB version overrides server lyrics for that exact track. Skipping
+while the picker is open keeps its original target. **Use server lyrics** switches
+back to a saved server version or fetches a usable replacement before removing
+the override. Failure leaves the override intact. Saving a choice requires
+writable selected-card storage; a server result that cannot be saved is marked
+as available for this session only.
+
+Saved versions live in `.local/navidrome/lyrics-<scope>.db`, independently of
+streaming paths and permanent originals. They remain available offline under the
+matching accessible profile/card and survive audio/artwork Clear cache. Each
+profile admits 1,024 track keys, an 8-MiB main database and 16 MiB including
+sidecars; old automatic server copies may be evicted, while applied overrides
+are retained. Full storage gives save feedback rather than discarding choices.
+Each lyric is limited to 256 KiB and 4,000 lines; server requests admit eight
+versions and a 1-MiB complete response. Lyrics are not uploaded to Navidrome or
+exported beside permanent downloads. Opening a downloaded file through ordinary
+Music continues using its own embedded lyrics and sidecars.

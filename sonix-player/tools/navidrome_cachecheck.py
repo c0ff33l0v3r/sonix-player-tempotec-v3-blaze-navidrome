@@ -33,7 +33,7 @@ with tempfile.TemporaryDirectory(prefix='sonix-polish-cache-') as temp:
         put(layout / 'art' / 'unrelated.img', 50)
     for name in ('library.db', 'favorites.db', 'library.db-wal'):
         put(modern / name, 19)
-    for name in ('playlists-scope.db', 'downloads-scope.db'):
+    for name in ('playlists-scope.db', 'downloads-scope.db', 'lyrics-scope.db'):
         put(base / name, 23)
     put(card / 'Music/Navidrome/Artist/Album/01.flac', 31)
     put(card / 'credentials.cache', 37)
@@ -69,4 +69,4 @@ with tempfile.TemporaryDirectory(prefix='sonix-polish-cache-') as temp:
     assert scan(True, path=alias / '.local/navidrome/.cache/library.db') == (0, 0, 0, 0)
     assert scan(True, path='./alias/.local/navidrome/.cache/library.db') == (0, 0, 0, 0)
     assert scan(True, path=modern / '../.cache/library.db') == (0, 0, 0, 0)
-    print('cache walker: current/legacy byte totals, audio/art/temp/completion files, partial failure and retry, in-progress context cancellation, symlink/parent escape rejection, retained metadata/Favorites/playlists/downloads/credentials/log sentinels: passed')
+    print('cache walker: current/legacy byte totals, audio/art/temp/completion files, partial failure and retry, in-progress context cancellation, symlink/parent escape rejection, retained metadata/Favorites/playlists/downloads/lyrics/credentials/log sentinels: passed')

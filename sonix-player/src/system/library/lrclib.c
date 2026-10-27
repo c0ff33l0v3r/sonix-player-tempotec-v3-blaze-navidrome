@@ -14,7 +14,13 @@
 #endif
 // A search can keep the connection quiet for well over ten seconds while
 // LRCLIB looks, and the TLS handshake on this CPU takes a few more.
+#ifdef LRCLIB_TEST
+static const char *test_api;
+void lrclib_test_api(const char *base) { test_api = base; }
+#endif
 #define LRCLIB_TIMEOUT_SECS 25
+static _Thread_local bool (*search_current)(void *);
+static _Thread_local void *search_user;
 // LRCLIB drops a share of requests under load -- no answer, a 5xx or a 429 --
 // and the same request a moment later goes through. Tries in all, with a
 // growing pause between them.
@@ -71,6 +77,39 @@ static char *record_text(const json_doc_t *doc, int record, const char *key) {
 // GET with the retries above. A 404 or another 4xx is an answer and is not
 // asked again.
 static bool api_get(const char *url, int attempts, int timeout_secs, char **body, int *status) {
+	if (search_current) {
+		*body = NULL;
+		*status = 0;
+		http_session_t *session = http_session_new(search_current, search_user);
+		bool ok = session && http_session_lyrics(session) && http_session_get(session, url, false, false);
+		char *buffer = ok ? malloc(LRCLIB_MAX_BYTES + 1) : NULL;
+		size_t used = 0;
+		if (!buffer)
+			ok = false;
+		while (ok) {
+			unsigned char chunk[1024];
+			int n = http_session_read(session, chunk, sizeof(chunk));
+			if (n < 0 || (n > 0 && ((size_t)n > LRCLIB_MAX_BYTES - used || memchr(chunk, 0, n)))) {
+				ok = false;
+				break;
+			}
+			if (!n)
+				break;
+			memcpy(buffer + used, chunk, n);
+			used += n;
+		}
+		if (session)
+			*status = http_session_status(session);
+		http_session_free(session);
+		http_clear_request_metadata();
+		if (!ok) {
+			free(buffer);
+			return false;
+		}
+		buffer[used] = 0;
+		*body = buffer;
+		return true;
+	}
 	for (int attempt = 1; attempt <= attempts; attempt++) {
 		*status = 0;
 		if (http_get_ex(url, NULL, false, body, NULL, LRCLIB_MAX_BYTES, timeout_secs, status)) {
@@ -91,7 +130,12 @@ static bool api_get(const char *url, int attempts, int timeout_secs, char **body
 // that says the track has none.
 static lrclib_result_t search(const char *query, int attempts, int timeout_secs, lrclib_record_t **list, int *count, bool *instrumental) {
 	char url[3200];
-	int n = snprintf(url, sizeof(url), LRCLIB_API "/search?%s", query);
+	const char *base = LRCLIB_API;
+#ifdef LRCLIB_TEST
+	if (test_api)
+		base = test_api;
+#endif
+	int n = snprintf(url, sizeof(url), "%s/search?%s", base, query);
 	if (n < 0 || (size_t)n >= sizeof(url)) {
 		return LRCLIB_NOT_FOUND;
 	}
@@ -104,11 +148,16 @@ static lrclib_result_t search(const char *query, int attempts, int timeout_secs,
 
 	lrclib_result_t result = LRCLIB_NETWORK;
 	json_doc_t doc;
-	if (json_parse(body, &doc)) {
+	if (search_current ? json_parse_limited(body, &doc, 65536) : json_parse(body, &doc)) {
 		int root = json_root(&doc);
 		if (root >= 0 && doc.toks[root].type == JSON_ARRAY) {
 			result = LRCLIB_NOT_FOUND;
 			int total = json_len(&doc, root);
+			if (search_current && total + *count > 20) {
+				json_free(&doc);
+				free(body);
+				return LRCLIB_LIMIT;
+			}
 			lrclib_record_t *grown = total > 0 ? realloc(*list, sizeof(**list) * (size_t)(*count + total)) : NULL;
 			if (grown) {
 				*list = grown;
@@ -204,15 +253,42 @@ lrclib_result_t lrclib_search(const char *title, const char *artist, const char 
 		if (result == LRCLIB_NOT_FOUND && instrumental) {
 			result = LRCLIB_INSTRUMENTAL;
 		}
-		fprintf(stderr, "lrclib: '%s' by '%s': %d\n", title, artist, (int)result);
+		if (!search_current)
+			fprintf(stderr, "lrclib: '%s' by '%s': %d\n", title, artist, (int)result);
 		return result;
 	}
 
 	rank(list, found, duration_secs > 0 && duration_secs <= 3600 ? duration_secs : 0, album);
-	fprintf(stderr, "lrclib: '%s' by '%s': %d records\n", title, artist, found);
+	if (!search_current)
+		fprintf(stderr, "lrclib: '%s' by '%s': %d records\n", title, artist, found);
 	*records = list;
 	*count = found;
 	return LRCLIB_OK;
+}
+
+lrclib_result_t lrclib_search_cancel(const char *title, const char *artist, const char *album, int duration, bool (*current)(void *), void *user, lrclib_record_t **records, int *count) {
+	search_current = current;
+	search_user = user;
+	lrclib_result_t result = current && current(user) ? lrclib_search(title, artist, album, duration, records, count) : LRCLIB_NETWORK;
+	if (result != LRCLIB_OK) {
+		*records = NULL;
+		*count = 0;
+	}
+	size_t total = 0;
+	for (int i = 0; result == LRCLIB_OK && i < *count; i++) {
+		size_t n = strlen((*records)[i].text);
+		if (n > 256 * 1024 || n > 1024 * 1024 - total)
+			result = LRCLIB_LIMIT;
+		total += n;
+	}
+	if (result != LRCLIB_OK && *records) {
+		lrclib_free(*records, *count);
+		*records = NULL;
+		*count = 0;
+	}
+	search_current = NULL;
+	search_user = NULL;
+	return result;
 }
 
 void lrclib_free(lrclib_record_t *records, int count) {

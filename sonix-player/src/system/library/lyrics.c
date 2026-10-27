@@ -1,6 +1,7 @@
 #include "lyrics.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -178,6 +179,8 @@ static bool parse_time(const char *t, size_t n, int32_t *ms) {
 		return false;
 	}
 	while (i < n && isdigit((unsigned char)t[i])) {
+		if (minutes > INT32_MAX / 60000)
+			return false;
 		minutes = minutes * 10 + (t[i++] - '0');
 	}
 	if (i >= n || t[i++] != ':' || i >= n || !isdigit((unsigned char)t[i])) {
@@ -185,6 +188,8 @@ static bool parse_time(const char *t, size_t n, int32_t *ms) {
 	}
 	long seconds = 0;
 	while (i < n && isdigit((unsigned char)t[i])) {
+		if (seconds > INT32_MAX / 1000)
+			return false;
 		seconds = seconds * 10 + (t[i++] - '0');
 	}
 	long fraction = 0;
@@ -199,7 +204,10 @@ static bool parse_time(const char *t, size_t n, int32_t *ms) {
 	if (i != n) {
 		return false;
 	}
-	*ms = (int32_t)(minutes * 60000 + seconds * 1000 + fraction);
+	int64_t result = (int64_t)minutes * 60000 + (int64_t)seconds * 1000 + fraction;
+	if (result > INT32_MAX)
+		return false;
+	*ms = (int32_t)result;
 	return true;
 }
 
@@ -324,9 +332,15 @@ static bool parse(char *text, lyrics_t *out) {
 			if (parse_time(line + 1, (size_t)(end - line - 1), &ms)) {
 				if (time_count < 16) {
 					times[time_count++] = ms;
-				}
+				} else
+					goto failed;
 			} else if (strncmp(line + 1, "offset:", 7) == 0) {
-				offset = (int32_t)strtol(line + 8, NULL, 10);
+				errno = 0;
+				char *after;
+				long long parsed = strtoll(line + 8, &after, 10);
+				if (errno || after == line + 8 || after != end || parsed < INT32_MIN || parsed > INT32_MAX)
+					goto failed;
+				offset = (int32_t)parsed;
 				header = true;
 			} else if (isalpha((unsigned char)line[1]) && memchr(line + 1, ':', (size_t)(end - line - 1))) {
 				header = true;
@@ -340,7 +354,8 @@ static bool parse(char *text, lyrics_t *out) {
 
 		if (synced) {
 			for (int i = 0; i < time_count; i++) {
-				add_line(&lines, &count, &cap, times[i], line);
+				if (!add_line(&lines, &count, &cap, times[i], line))
+					goto failed;
 			}
 		} else if (!header || line[0]) {
 			// Untimed: kept as written, one empty line between verses at most,
@@ -349,16 +364,18 @@ static bool parse(char *text, lyrics_t *out) {
 				blank_pending = count > 0;
 			} else {
 				if (blank_pending) {
-					add_line(&lines, &count, &cap, -1, "");
+					if (!add_line(&lines, &count, &cap, -1, ""))
+						goto failed;
 					blank_pending = false;
 				}
-				add_line(&lines, &count, &cap, -1, line);
+				if (!add_line(&lines, &count, &cap, -1, line))
+					goto failed;
 			}
 		}
 		p = next;
 	}
 
-	if (count == 0) {
+	if (count <= 0 || count > LYRICS_LINES_MAX) {
 		free(lines);
 		return false;
 	}
@@ -366,7 +383,10 @@ static bool parse(char *text, lyrics_t *out) {
 	if (synced) {
 		qsort(lines, (size_t)count, sizeof(*lines), by_time);
 		for (int i = 0; i < count; i++) {
-			lines[i].line.ms -= offset; // a positive offset shows the words sooner
+			int64_t adjusted = (int64_t)lines[i].line.ms - offset;
+			if (adjusted > INT32_MAX)
+				goto failed;
+			lines[i].line.ms = adjusted < 0 ? 0 : (int32_t)adjusted; // positive means sooner
 			if (lines[i].line.ms < 0) {
 				lines[i].line.ms = 0;
 			}
@@ -385,9 +405,23 @@ static bool parse(char *text, lyrics_t *out) {
 	out->count = count;
 	out->synced = synced;
 	return true;
+failed:
+	free(lines);
+	return false;
 }
 
 // ---------------------------------------------------------------------------
+
+bool lyrics_parse_text(const char *text, lyrics_t *out) {
+	memset(out, 0, sizeof(*out));
+	if (!text || strnlen(text, LYRICS_FILE_MAX + 1) > LYRICS_FILE_MAX)
+		return false;
+	out->arena = strdup(text);
+	if (out->arena && parse(out->arena, out))
+		return true;
+	lyrics_free(out);
+	return false;
+}
 
 bool lyrics_load(const char *path, const char *title, lyrics_t *out) {
 	memset(out, 0, sizeof(*out));

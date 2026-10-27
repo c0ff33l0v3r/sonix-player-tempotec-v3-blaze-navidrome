@@ -34,6 +34,9 @@ typedef struct {
 // empty, when there are none. Reads the card: not on the interface thread.
 bool lyrics_load(const char *path, const char *title, lyrics_t *out);
 
+// Parse a bounded UTF-8 copy; never performs I/O.
+bool lyrics_parse_text(const char *text, lyrics_t *out);
+
 void lyrics_free(lyrics_t *lyrics);
 
 // The line being sung at `ms` into the track: the last one whose time has

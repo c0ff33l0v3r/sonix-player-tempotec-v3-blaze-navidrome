@@ -15,7 +15,8 @@ typedef enum {
 	LRCLIB_NOT_FOUND,	 // nothing for these tags
 	LRCLIB_INSTRUMENTAL, // only records that say the track has no words
 	LRCLIB_NO_TAGS,		 // no title or no artist to search with
-	LRCLIB_NETWORK,		 // no answer, or not one that could be read
+	LRCLIB_LIMIT,
+	LRCLIB_NETWORK, // no answer, or not one that could be read
 } lrclib_result_t;
 
 typedef struct {
@@ -33,10 +34,17 @@ typedef struct {
 // Free them with lrclib_free().
 lrclib_result_t lrclib_search(const char *title, const char *artist, const char *album, int duration_secs, lrclib_record_t **records, int *count);
 
+// Opt-in protected finite search; legacy Music keeps its existing behavior.
+lrclib_result_t lrclib_search_cancel(const char *title, const char *artist, const char *album, int duration_secs, bool (*current)(void *), void *user, lrclib_record_t **records, int *count);
+
 void lrclib_free(lrclib_record_t *records, int count);
 
 // Writes `text` as "<the track's file name>.lrc" beside `path`. False when the
 // card would not take it.
 bool lrclib_save(const char *path, const char *text);
+
+#ifdef LRCLIB_TEST
+void lrclib_test_api(const char *base);
+#endif
 
 #endif /* LRCLIB_H */

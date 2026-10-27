@@ -1386,7 +1386,7 @@ struct http_session {
 	const char *error;
 	bool chunked, closing, complete, chunk_crlf;
 	bool binary;
-	bool no_redirect, artwork;
+	bool no_redirect, artwork, lyrics;
 	size_t wire_limit, decoded_limit, declared;
 	int deadline_ms;
 	char content_type[64];
@@ -1434,14 +1434,14 @@ static bool finite_wait(void *arg, bool write) {
 	return false;
 }
 // Resolver jobs own only a hostname and result, never credentials or request URLs.
-// Two general jobs plus independent single reporting/artwork jobs bound stalled DNS.
+// Two general jobs plus independent reporting/artwork/lyrics jobs bound stalled DNS.
 static pthread_mutex_t resolve_lock = PTHREAD_MUTEX_INITIALIZER;
 static unsigned resolve_jobs;
-static unsigned report_resolve_jobs, artwork_resolve_jobs;
+static unsigned report_resolve_jobs, artwork_resolve_jobs, lyrics_resolve_jobs;
 typedef struct {
 	pthread_mutex_t lock;
 	bool done, abandoned;
-	bool report, artwork;
+	bool report, artwork, lyrics;
 	char host[256], port[16];
 	struct addrinfo *result;
 } finite_resolve_t;
@@ -1458,6 +1458,7 @@ static void *finite_resolver(void *arg) {
 	getaddrinfo(r->host, r->port, &hints, &r->result);
 	pthread_mutex_lock(&resolve_lock);
 	if (r->artwork) artwork_resolve_jobs--;
+	else if (r->lyrics) lyrics_resolve_jobs--;
 	else if (r->report) report_resolve_jobs--;
 	else resolve_jobs--;
 	pthread_mutex_unlock(&resolve_lock);
@@ -1483,11 +1484,12 @@ static struct addrinfo *finite_resolve(http_session_t *s, const url_t *u) {
 	snprintf(r->host, sizeof(r->host), "%s", u->host);
 	snprintf(r->port, sizeof(r->port), "%d", u->port);
 	r->artwork = s->artwork;
-	r->report = s->no_redirect && !s->artwork;
+	r->lyrics = s->lyrics;
+	r->report = s->no_redirect && !s->artwork && !s->lyrics;
 	pthread_mutex_lock(&resolve_lock);
-	// Stalled reporting/artwork jobs never consume each other or audio/sync slots.
-	unsigned *jobs = r->artwork ? &artwork_resolve_jobs : r->report ? &report_resolve_jobs : &resolve_jobs;
-	bool available = *jobs < (r->report || r->artwork ? 1u : 2u);
+	// Reporting, artwork and lyrics each have a slot independent of audio/sync.
+	unsigned *jobs = r->artwork ? &artwork_resolve_jobs : r->lyrics ? &lyrics_resolve_jobs : r->report ? &report_resolve_jobs : &resolve_jobs;
+	bool available = *jobs < (r->report || r->artwork || r->lyrics ? 1u : 2u);
 	if (available) (*jobs)++;
 	pthread_mutex_unlock(&resolve_lock);
 	pthread_t thread;
@@ -1757,6 +1759,14 @@ bool http_session_report(http_session_t *s, size_t max_bytes) {
 		return false;
 	s->wire_limit = s->decoded_limit = max_bytes;
 	s->no_redirect = true;
+	return true;
+}
+bool http_session_lyrics(http_session_t *s) {
+	if (!s || s->conn.fd >= 0)
+		return false;
+	s->wire_limit = s->decoded_limit = 1024 * 1024;
+	s->deadline_ms = 30000;
+	s->no_redirect = s->lyrics = true;
 	return true;
 }
 const char *http_session_content_type(const http_session_t *s) { return s->content_type; }
