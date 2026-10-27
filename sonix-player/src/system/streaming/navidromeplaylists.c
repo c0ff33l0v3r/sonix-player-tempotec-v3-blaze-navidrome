@@ -66,20 +66,59 @@ static bool toggle(nd_playlist_store_t *s, const nd_pl_request_t *q) {
 	}
 	return ok;
 }
+// Best-effort local source resolution, but transactional persistence. Sorting
+// never obtains missing metadata from the server or changes the saved revision.
+static bool sort_backfill(nd_playlist_store_t *s, const nd_playlist_t *p, const nd_context_t *c, const nd_library_t *lib) {
+	if (!lib->ready || !nd_store_retain_source(lib))
+		return true;
+	nd_store_t source = {0};
+	if (!nd_store_open_source(&source, lib->path, lib->scope, false, false, lib->favorites)) {
+		nd_store_close(&source);
+		nd_store_release_source(lib);
+		return true;
+	}
+	sqlite3_stmt *st = NULL;
+	bool ok = nd_pl_prepare(s, &st,
+							"SELECT e.id,e.track FROM entry e LEFT JOIN entry_sort m ON m.entry=e.id AND m.track=e.track "
+							"WHERE e.p=? AND (m.entry IS NULL OR coalesce(m.album,'')='' OR coalesce(m.album_artist,'')='') ORDER BY e.id");
+	if (ok)
+		sqlite3_bind_int64(st, 1, p->id);
+	int rc = SQLITE_DONE;
+	while (ok && (rc = sqlite3_step(st)) == SQLITE_ROW) {
+		if (!navidrome_context_current(c, false)) {
+			s->error = "nd_pl_stale";
+			ok = false;
+			break;
+		}
+		const char *id = (const char *)sqlite3_column_text(st, 1);
+		nd_playrow_t row, album;
+		if (id && nd_store_metadata(&source, lib->generation, ND_TRACKS, id, &row)) {
+			if (row.album_id[0] && nd_store_metadata(&source, lib->generation, ND_ALBUMS, row.album_id, &album))
+				snprintf(row.album_artist, sizeof(row.album_artist), "%s", album.album_artist);
+			ok = nd_pl_sort_info(s, sqlite3_column_int64(st, 0), &row);
+		}
+	}
+	sqlite3_finalize(st);
+	nd_store_close(&source);
+	nd_store_release_source(lib);
+	return ok && rc == SQLITE_DONE;
+}
+
 static bool add_selected(nd_playlist_store_t *s, const nd_pl_request_t *q, const nd_context_t *c, const nd_library_t *lib, nd_pl_result_t *out) {
 	if (q->direct) {
-		if (q->source.profile != c->profile_epoch || q->source.card != c->card_epoch ||
-			!memchr(q->source.scope, 0, sizeof(q->source.scope)) || strcmp(q->source.scope, lib->scope) || !q->source.row.id[0] ||
-			!memchr(q->source.row.id, 0, sizeof(q->source.row.id)) ||
-			!memchr(q->source.row.title, 0, sizeof(q->source.row.title)) ||
-			!memchr(q->source.row.artist, 0, sizeof(q->source.row.artist)) ||
-			!memchr(q->source.row.cover, 0, sizeof(q->source.row.cover))) {
+		if (q->source.profile != c->profile_epoch || q->source.card != c->card_epoch || !memchr(q->source.scope, 0, sizeof(q->source.scope)) || strcmp(q->source.scope, lib->scope) || !q->source.row.id[0] || !memchr(q->source.row.id, 0, sizeof(q->source.row.id)) || !memchr(q->source.row.title, 0, sizeof(q->source.row.title)) || !memchr(q->source.row.artist, 0, sizeof(q->source.row.artist)) || !memchr(q->source.row.cover, 0, sizeof(q->source.row.cover)) || !memchr(q->source.album_id, 0, sizeof(q->source.album_id)) || !memchr(q->source.album, 0, sizeof(q->source.album)) || !memchr(q->source.album_artist, 0, sizeof(q->source.album_artist))) {
 			s->error = "nd_pl_stale";
 			return false;
 		}
-		return nd_pl_begin(s, q->id, q->revision) &&
-			nd_pl_append(s, q->id, &q->source.row, true, &out->added, &out->skipped) &&
-			nd_pl_finish(s, q->id, out->added > 0) && commit(s, c);
+		bool ok = nd_pl_begin(s, q->id, q->revision) && nd_pl_append(s, q->id, &q->source.row, true, &out->added, &out->skipped);
+		if (ok && out->added) {
+			nd_playrow_t row = {.row = q->source.row};
+			snprintf(row.album_id, sizeof(row.album_id), "%s", q->source.album_id);
+			snprintf(row.album, sizeof(row.album), "%s", q->source.album);
+			snprintf(row.album_artist, sizeof(row.album_artist), "%s", q->source.album_artist);
+			ok = nd_pl_sort_info(s, sqlite3_last_insert_rowid(s->db), &row);
+		}
+		return ok && nd_pl_finish(s, q->id, out->added > 0) && commit(s, c);
 	}
 	if (!lib->ready || q->generation != lib->generation) {
 		s->error = "nd_pl_stale";
@@ -102,8 +141,17 @@ static bool add_selected(nd_playlist_store_t *s, const nd_pl_request_t *q, const
 		const char *value = (const char *)sqlite3_column_text(st, 1);
 		snprintf(id, sizeof(id), "%s", value ? value : "");
 		if (sqlite3_column_int(st, 0) == ND_TRACKS) {
-			nd_row_t row;
-			ok = nd_store_track(&source, lib->generation, id, &row) && nd_pl_append(s, q->id, &row, true, &out->added, &out->skipped);
+			nd_playrow_t row;
+			int before = out->added;
+			ok = nd_store_metadata(&source, lib->generation, ND_TRACKS, id, &row) && nd_pl_append(s, q->id, &row.row, true, &out->added, &out->skipped);
+			if (ok && out->added > before) {
+				if (row.album_id[0]) {
+					nd_playrow_t album;
+					if (nd_store_metadata(&source, lib->generation, ND_ALBUMS, row.album_id, &album))
+						snprintf(row.album_artist, sizeof(row.album_artist), "%s", album.album_artist);
+				}
+				ok = nd_pl_sort_info(s, sqlite3_last_insert_rowid(s->db), &row);
+			}
 		} else if (sqlite3_column_int(st, 0) == ND_ALBUMS) {
 			nd_query_t query = {.kind = ND_TRACKS, .filter_kind = ND_ALBUMS, .favorites = lib->favorites};
 			snprintf(query.filter, sizeof(query.filter), "%s", id);
@@ -113,8 +161,16 @@ static bool add_selected(nd_playlist_store_t *s, const nd_pl_request_t *q, const
 				nd_row_t rows[ND_WINDOW];
 				if (ok)
 					ok = navidrome_context_current(c, false) && nd_store_query(&source, lib->generation, &query, first, rows, &count, &total);
-				for (int i = 0; i < count && ok; i++)
-					ok = nd_pl_append(s, q->id, &rows[i], true, &out->added, &out->skipped);
+				for (int i = 0; i < count && ok; i++) {
+					nd_playrow_t row, album;
+					int before = out->added;
+					ok = nd_store_metadata(&source, lib->generation, ND_TRACKS, rows[i].id, &row) && nd_pl_append(s, q->id, &row.row, true, &out->added, &out->skipped);
+					if (ok && out->added > before) {
+						if (nd_store_metadata(&source, lib->generation, ND_ALBUMS, id, &album))
+							snprintf(row.album_artist, sizeof(row.album_artist), "%s", album.album_artist);
+						ok = nd_pl_sort_info(s, sqlite3_last_insert_rowid(s->db), &row);
+					}
+				}
 				first += count;
 			} while (ok && count && first < total);
 		} else
@@ -225,6 +281,8 @@ static bool install_candidate(nd_playlist_store_t *s, const nd_context_t *c, con
 		ok = sqlite3_step(st) == SQLITE_DONE;
 	}
 	sqlite3_finalize(st);
+	if (ok)
+		ok = nd_pl_sort_copy(s, candidate, id);
 	st = NULL;
 	if (ok)
 		ok = nd_pl_prepare(s, &st, "UPDATE playlist SET name=? WHERE id=?");
@@ -528,7 +586,15 @@ void nd_pl_execute(const nd_pl_request_t *q, const nd_context_t *c, const nd_lib
 	case NDPL_ENTRIES:
 		out->playlist = p;
 		out->total = p.count;
-		ok = nd_pl_entries(&s, q->id, q->first, q->session, out->entries, &out->count);
+		ok = nd_pl_view_window(&s, &p, q->first, q->session, out->entries, &out->count, &out->total);
+		break;
+	case NDPL_SORT:
+		if (q->view_revision != p.view_revision || q->metadata_revision != p.metadata_revision) {
+			s.error = "nd_pl_stale";
+			ok = false;
+			break;
+		}
+		ok = nd_pl_sort_set(&s, &p, q->sort) && (q->sort != ND_PL_ORIGINAL || q->confirmed || nd_pl_view_reset(&s, p.id)) && sort_backfill(&s, &p, c, lib) && commit(&s, c) && nd_pl_get(&s, p.id, &out->playlist);
 		break;
 	case NDPL_CREATE: {
 		int64_t id;
@@ -568,8 +634,13 @@ void nd_pl_execute(const nd_pl_request_t *q, const nd_context_t *c, const nd_lib
 			ok = nd_pl_get(&s, p.id, &out->playlist);
 		break;
 	case NDPL_MOVE: {
+		if (p.sort != ND_PL_ORIGINAL || q->view_revision != p.view_revision || q->metadata_revision != p.metadata_revision) {
+			s.error = "nd_pl_stale";
+			ok = false;
+			break;
+		}
 		bool changed = false;
-		ok = nd_pl_move(&s, p.id, q->revision, q->ordinal, q->first, q->occurrence, q->track, &changed) && commit(&s, c);
+		ok = q->view_revision == p.view_revision && q->metadata_revision == p.metadata_revision && nd_pl_view_move(&s, &p, q->ordinal, q->first, q->occurrence, q->track, &changed) && commit(&s, c);
 		if (ok) {
 			out->added = changed;
 			ok = nd_pl_get(&s, p.id, &out->playlist);

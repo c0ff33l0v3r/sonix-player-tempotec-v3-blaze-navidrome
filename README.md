@@ -150,7 +150,32 @@ available offline. The metadata and artwork cache lives under
 `.local/navidrome/.cache/` on the card; credentials remain in the separate internal
 credential record in the selected protection mode. Name-sorted lists of at least
 30 entries show a letter strip while scrolling: tap or slide to jump, then it
-hides after inactivity. Album track lists retain disc/track order.
+hides after inactivity. The header Sort button switches Artists and Genres between A–Z and Z–A.
+All Tracks and Favorites Tracks offer Title, Album, Album artist and Artist in
+both directions, using retained exact-album metadata with unknown values last.
+Album/artist groups retain ascending album/disc/track order; their title letter
+strip is hidden. Library/Favorites Albums also offer oldest/newest
+release year, with unknown years last and no letter strip in year mode.
+Library categories and Favorites Tracks/Albums remember six independent choices
+across restarts; artist/genre album lists share Library Albums' choice. Album
+track lists retain disc/track order. Search keeps its existing ordering.
+
+In a saved playlist, use the **Sort icon after Shuffle** for Original order or either direction
+of Title, Album, Album artist or Artist. Each playlist remembers its own view
+across restarts, renaming, edits and Pull. Album groups retain ascending disc/track
+order; artist groups retain ascending album/disc/track order. Missing optional
+fields stay last, using retained metadata or exact-ID local metadata only;
+sorting never fetches tags or server metadata. Read-only cards can use previously
+saved choices but cannot save a new choice. Legacy entries remain usable with
+unknown optional fields. Collection and destination lists stay alphabetical.
+
+Playlist sorting changes the view and new tap/Play/Shuffle captures. It leaves
+the saved/server sequence, sync state, existing queue, whole-playlist Add to
+queue, Download and Publish unchanged. Original restores the saved sequence;
+explicit copies start in Original. Clear cache preserves these preferences.
+Ordinary Music sorting remains independent. On the host simulator, set
+`SONIX_CONFIG` to retain browse preferences across launches, as with other host
+settings. Playlist view preferences live with the saved playlist database.
 
 **Debug mode** records redacted Navidrome diagnostics to
 `.local/navidrome-debug-YYYYMMDD-HHMMSS-NNN.log` on the selected card. Settings
@@ -474,12 +499,18 @@ copy. The collection's row menu can delete only the local copy.
 Inside a saved Navidrome playlist, the rearrange button beside Play and Shuffle
 turns the row menus into drag grips. Drag a grip to move that occurrence; hold
 near either list edge to scroll farther. Dragging elsewhere still scrolls.
-Each completed drop is saved locally; wait for it to finish before another move.
+Each completed drop saves a local view order; wait for it to finish before another
+move. This order survives restart and changes new taps/Play/Shuffle only. It never
+changes the saved definition, Local changes status or the order sent by Publish
+or Upload. Whole-playlist Add to queue, Download and copies use the saved
+sequence. Choose Sort → Original order to clear local dragging and restore that
+sequence; entering Rearrange from a field sort restores any retained local drag
+order. Pull replaces saved occurrences and clears their local drag positions.
 Tap the button again or use Back to leave rearrange mode. Back or interrupted
 input cancels an unfinished drag while keeping earlier saved drops.
 Rearranging works offline without Library Sync on writable cards, including
-local copies of server-readonly playlists. It never publishes automatically or
-changes an already captured playback queue. Collection/picker name order and
+local copies of server-readonly playlists. Even explicit Publish excludes local
+drag positions. Rearranging never changes an already captured playback queue. Collection/picker name order and
 permanent download files are unchanged.
 
 For a locally created unlinked playlist, **Upload to Navidrome** is in its

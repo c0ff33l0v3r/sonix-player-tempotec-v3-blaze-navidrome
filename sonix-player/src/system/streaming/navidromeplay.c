@@ -1,7 +1,8 @@
 #include "navidromeplay.h"
-#include "navidromereports.h"
 #include "navidromeplaycatalog.h"
 #include "navidromeplayliststore.h"
+#include "navidromereports.h"
+#include "navidromesort.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/nowplaying/trackmenu.h"
 #include "src/gui/shell/gui.h"
@@ -15,8 +16,8 @@
 #include "src/system/playback/device_state.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/streaming/streamturn.h"
-#include <pthread.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,6 +27,7 @@ typedef struct source {
 	nd_context_t context;
 	nd_library_t library, album_library;
 	bool album_origin, album_pinned;
+	nd_order_t album_order;
 	const char *album_error;
 	nd_query_t query;
 	char selected[ND_ID_MAX];
@@ -659,7 +661,7 @@ static void *work(void *unused) {
 			char neighbor[ND_ID_MAX];
 			bool no_neighbor = false;
 			if (ok) {
-				ok = nd_store_album_beside(&store, s->library.generation, s->selected, !job.backward, neighbor);
+				ok = nd_store_album_beside_order(&store, s->library.generation, s->selected, !job.backward, s->album_order, neighbor);
 				no_neighbor = !ok && !store.error;
 			}
 			if (ok) {
@@ -986,6 +988,7 @@ bool navidromeplay_chain_boundary(bool forward, bool automatic) {
 	s->library = old->album_library;
 	s->album_library = old->album_library;
 	s->album_origin = true;
+	s->album_order = old->album_order;
 	s->album_pinned = nd_store_retain_source(&s->album_library);
 	s->query.kind = ND_TRACKS;
 	s->query.filter_kind = ND_ALBUMS;
@@ -1039,6 +1042,15 @@ bool navidromeplay_enqueue(const nd_library_t *lib, nd_kind_t kind, const char *
 	if (ok && timer) lv_timer_resume(timer);
 	return ok;
 }
+bool navidromeplay_occurrence_matches(const nd_library_t *lib, int64_t playlist, int64_t occurrence, const char *track) {
+	int entry;
+	source_t *s = reference_source(current_ref, &entry);
+	if (s && s->saved.playlist == playlist && current_track.saved_occurrence > 0) {
+		return lib && lib->card_epoch == s->context.card_epoch && !strcmp(lib->scope, s->library.scope) && navidrome_playback_current(&s->context, false) && occurrence == current_track.saved_occurrence;
+	}
+	return navidromeplay_matches(lib, ND_TRACKS, track);
+}
+
 bool navidromeplay_matches(const nd_library_t *lib, nd_kind_t kind, const char *id) {
 	return queue_source && current_track.row.id[0] && lib && id &&
 		lib->card_epoch == queue_source->library.card_epoch && !strcmp(lib->scope, queue_source->library.scope) &&
@@ -1075,6 +1087,7 @@ bool navidromeplay_lookup(const char *ref, nd_playrow_t *row, nd_library_t *lib)
 static void capture_album_order(source_t *s) {
 	if (s->query.kind != ND_TRACKS || s->query.filter_kind != ND_ALBUMS || !s->query.filter[0]) return;
 	s->album_origin = true;
+	s->album_order = nd_sort_preference(ND_ALBUMS, false);
 	s->album_error = "nd_album_order_required";
 	navidrome_library_snapshot(&s->album_library);
 	if (s->album_library.ready && s->album_library.card_epoch == s->library.card_epoch && !strcmp(s->album_library.scope, s->library.scope)) {
@@ -1140,11 +1153,8 @@ bool navidromeplay_playlist(const nd_library_t *lib, int64_t playlist, int64_t r
 	return ok;
 }
 static source_t *saved_source(const nd_library_t *lib, const nd_playlist_capture_t *request) {
-	if (!started || !lib || !request || request->playlist <= 0 || request->revision <= 0 ||
-		request->count <= 0 || !lib->path[0] || !lib->scope[0] ||
-		(request->whole == request->single) || (request->single &&
-		(request->ordinal < 0 || request->occurrence <= 0 || !request->track[0] ||
-		strnlen(request->track, ND_ID_MAX) == ND_ID_MAX))) return NULL;
+	if (!started || !lib || !request || request->playlist <= 0 || request->revision <= 0 || request->count <= 0 || !lib->path[0] || !lib->scope[0] || ((request->whole == request->single) && !request->view) || ((!request->whole || request->single) && (request->ordinal < 0 || request->occurrence <= 0 || !request->track[0] || strnlen(request->track, ND_ID_MAX) == ND_ID_MAX)))
+		return NULL;
 	source_t *s = calloc(1, sizeof(*s));
 	if (!s) return NULL;
 	s->refs = 1; s->capture = true; s->library = *lib; s->saved = *request;
@@ -1153,6 +1163,26 @@ static source_t *saved_source(const nd_library_t *lib, const nd_playlist_capture
 	pthread_mutex_lock(&lock); s->token = ++next_token; pthread_mutex_unlock(&lock);
 	return s;
 }
+bool navidromeplay_playlist_view(const nd_library_t *lib, const nd_playlist_capture_t *request, bool shortcut, bool shuffle, void *origin) {
+	if (!request || !request->view || request->single || request->whole != shortcut)
+		return false;
+	source_t *s = saved_source(lib, request);
+	if (!s)
+		return false;
+	s->saved_shortcut = shortcut;
+	s->saved_shuffle = shuffle;
+	if (shortcut) {
+		s->saved_random = lv_rand(0, 0x7fffffff);
+		s->album_mode = shuffle ? (config_get_bool("player", "endless_shuffle", false) ? PLAYBACK_MODE_SHUFFLE_REPEAT : PLAYBACK_MODE_SHUFFLE) : PLAYBACK_MODE_NORMAL;
+	}
+	s->origin = origin;
+	playlist_origin = origin;
+	s->playlist_origin_serial = ++playlist_origin_serial;
+	bool ok = submit(s, 0, true, true, NULL, NULL);
+	release(s);
+	return ok;
+}
+
 bool navidromeplay_playlist_shortcut(const nd_library_t *lib, int64_t playlist,
 		int64_t revision, int count, bool shuffle, void *origin) {
 	nd_playlist_capture_t request = {.playlist = playlist, .revision = revision, .count = count, .whole = true};
@@ -1170,7 +1200,11 @@ bool navidromeplay_playlist_shortcut(const nd_library_t *lib, int64_t playlist,
 	return ok;
 }
 bool navidromeplay_playlist_enqueue(const nd_library_t *lib, const nd_playlist_capture_t *request, void *origin) {
-	source_t *s = saved_source(lib, request);
+	if (!request)
+		return false;
+	nd_playlist_capture_t stored = *request;
+	stored.view = false;
+	source_t *s = saved_source(lib, &stored);
 	if (!s) return false;
 	pthread_mutex_lock(&lock);
 	bool ok = !quitting && !adding;

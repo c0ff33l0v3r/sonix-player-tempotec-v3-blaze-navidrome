@@ -23,7 +23,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         p = self.playlists[key]
         return {'id': key, 'name': p['name'], 'songCount': len(p['ids']),
                 'readonly': p.get('readonly', False), 'comment': 'preserved',
-                'entry': [{'id': i, 'title': ('Metadata ' * 35 if i.startswith('track-') else i), 'artist': 'Fixture artist', 'albumId': 'album', 'duration': 200} for i in p['ids']]}
+                'entry': [{'id': i, 'title': ('Metadata ' * 35 if i.startswith('track-') else i), 'artist': 'Fixture artist', 'albumId': 'album', 'album': 'Remote album', 'albumArtist': 'Remote credit', 'discNumber': 2, 'track': 3, 'duration': 200} for i in p['ids']]}
     def handle_api(self, posted):
         assert self.path.startswith('/prefix/rest/'), self.path
         parsed = urllib.parse.urlsplit(self.path)

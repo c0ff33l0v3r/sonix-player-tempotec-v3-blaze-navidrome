@@ -33,7 +33,7 @@ static int saved_ordinal;
 static char saved_track[ND_ID_MAX];
 static unsigned saved_shortcuts, saved_additions;
 static bool saved_shuffle;
-static nd_playlist_capture_t saved_addition;
+static nd_playlist_capture_t saved_addition, saved_view;
 bool navidromeplay_playlist_shortcut(const nd_library_t *library, int64_t playlist,
 		int64_t revision, int count, bool shuffle, void *origin) {
 	assert(library->scope[0] && count > 0 && origin == lv_screen_active());
@@ -82,6 +82,13 @@ bool navidromeplay_playlist(const nd_library_t *library, int64_t playlist, int64
 	saved_playlist = playlist; saved_revision = revision; saved_occurrence = occurrence; saved_ordinal = ordinal;
 	snprintf(saved_track, sizeof(saved_track), "%s", track);
 	return true;
+}
+bool navidromeplay_playlist_view(const nd_library_t *library, const nd_playlist_capture_t *request, bool shortcut, bool shuffle, void *origin) {
+	assert(request->view);
+	saved_view = *request;
+	if (shortcut)
+		return navidromeplay_playlist_shortcut(library, request->playlist, request->revision, request->count, shuffle, origin);
+	return navidromeplay_playlist(library, request->playlist, request->revision, request->ordinal, request->occurrence, request->track, origin);
 }
 void navidromeplay_playlist_leave(void *origin) { if (origin == pl_pages[1].screen) saved_leaves++; }
 lv_font_t font_ui_16, font_ui_24;
@@ -294,8 +301,11 @@ static void rearrange_fixture(const nd_library_t *lib) {
 	assert(lv_obj_get_parent(p->reorder) == p->play_actions);
 	lv_obj_send_event(p->reorder, LV_EVENT_CLICKED, NULL);
 	assert(p->reordering && !p->selecting && pl_back_peek());
+	char summary[220];
+	snprintf(summary, sizeof(summary), "%s", lv_label_get_text(p->status));
 	assert(!lv_obj_is_hidden(p->play_actions));
 	assert(lv_obj_has_state(p->play_buttons[0], LV_STATE_DISABLED) && lv_obj_has_state(p->play_buttons[1], LV_STATE_DISABLED));
+	assert(lv_obj_has_state(p->sort, LV_STATE_DISABLED));
 	assert(lv_obj_is_hidden(p->download) && lv_obj_is_hidden(p->buttons[0]));
 	assert(lv_image_get_src(lv_obj_get_child(p->menus[0], 0)) == &icon_grip);
 	unsigned played = playback_selections;
@@ -312,12 +322,17 @@ static void rearrange_fixture(const nd_library_t *lib) {
 	lv_obj_get_coords(p->list, &view);
 	int x = (grip.x1 + grip.x2) / 2, y = (grip.y1 + grip.y2) / 2;
 	int64_t occurrence = p->entries[0].occurrence, revision = p->playlist.revision;
+	int64_t view_revision = p->playlist.view_revision;
 	int requests = atomic_load(&calls);
 	rearrange_touch(input, x, y, true);
 	assert(p->dragging && p->drag.occurrence == occurrence);
 	for (int step = 0; step < 100; step++) {
 		rearrange_touch(input, x, view.y2 - 8, true);
+		// Check before worker delivery as well as after it: a transient Working
+		// label flashes on every new window even if the settled text is correct.
+		assert(!strcmp(lv_label_get_text(p->status), summary));
 		pl_wait(1);
+		assert(!strcmp(lv_label_get_text(p->status), summary));
 		assert(p->dragging && p->drag.occurrence == occurrence);
 	}
 	int target = p->drag_to;
@@ -327,15 +342,18 @@ static void rearrange_fixture(const nd_library_t *lib) {
 	assert(line && line->data[2] > 200 && line->data[3] > 200);
 	lv_draw_buf_destroy(line);
 	rearrange_touch(input, x, view.y2 - 8, false);
+	assert(p->move_pending && !strcmp(lv_label_get_text(p->status), summary));
 	pl_wait(1);
-	assert(!p->dragging && !p->move_pending && p->playlist.revision == revision + 1);
+	assert(!strcmp(lv_label_get_text(p->status), summary));
+	assert(!p->dragging && !p->move_pending && p->playlist.revision == revision && p->playlist.view_revision == view_revision + 1);
 	assert(atomic_load(&calls) == requests && playback_selections == played);
 	char path[1200];
 	nd_playlist_store_t store;
 	nd_playlist_entry_t rows[ND_WINDOW];
 	int count;
 	assert(nd_pl_path(lib, path) && nd_pl_open(&store, path, lib->scope, false));
-	assert(nd_pl_entries(&store, p->playlist.id, target, 0, rows, &count) && rows[0].occurrence == occurrence);
+	int total;
+	assert(nd_pl_view_window(&store, &p->playlist, target, 0, rows, &count, &total) && rows[0].occurrence == occurrence);
 	nd_pl_close(&store);
 	// Dropping at the very first row keeps the insertion rule inside the viewport.
 	lv_obj_scroll_to_y(p->list, 0, LV_ANIM_OFF); pl_wait(1);
@@ -348,7 +366,7 @@ static void rearrange_fixture(const nd_library_t *lib) {
 	lv_obj_update_layout(p->screen);
 	assert(p->dragging && p->drag_to == 0 && lv_obj_get_y(p->drop_line) == 0);
 	rearrange_touch(input, x, view.y1 + 2, false); pl_wait(1);
-	assert(p->entries[0].occurrence == moved_first && p->playlist.revision == revision + 2);
+	assert(p->entries[0].occurrence == moved_first && p->playlist.revision == revision && p->playlist.view_revision == view_revision + 2);
 	assert(pl_back() && !p->reordering && !p->selecting && pl_active(1));
 	assert(!strcmp(fixture_last_success, "medialist_playlist_order_saved"));
 	// Outside-grip drag scrolls without moving a saved occurrence.
@@ -357,6 +375,7 @@ static void rearrange_fixture(const nd_library_t *lib) {
 	lv_obj_update_layout(p->screen);
 	lv_obj_get_coords(p->rows[0], &grip);
 	revision = p->playlist.revision;
+	view_revision = p->playlist.view_revision;
 	rearrange_touch(input, grip.x1 + ui_px(20), grip.y1 + ui_px(30), true);
 	for (int i = 0; i < 5; i++) rearrange_touch(input, grip.x1 + ui_px(20), grip.y1 + ui_px(30) - (i + 1) * ui_px(12), true);
 	rearrange_touch(input, grip.x1 + ui_px(20), grip.y1 - ui_px(30), false);
@@ -386,8 +405,7 @@ static void rearrange_fixture(const nd_library_t *lib) {
 	pl_wait(1);
 	assert(p->playlist.revision == revision);
 	// A committed move with a rejected GUI post recovers by reading, never replay.
-	nd_pl_request_t q = {.action = NDPL_MOVE, .id = p->playlist.id, .revision = revision,
-		.ordinal = 0, .first = 1, .occurrence = p->entries[0].occurrence};
+	nd_pl_request_t q = {.action = NDPL_MOVE, .id = p->playlist.id, .revision = revision, .view_revision = p->playlist.view_revision, .metadata_revision = p->playlist.metadata_revision, .ordinal = 0, .first = 1, .occurrence = p->entries[0].occurrence};
 	snprintf(q.track, sizeof(q.track), "%s", p->entries[0].track.id);
 	atomic_store(&fixture_reject_posts, true);
 	pl_action(1, &q);
@@ -397,9 +415,9 @@ static void rearrange_fixture(const nd_library_t *lib) {
 	atomic_store(&fixture_reject_posts, false);
 	p->submitted = lv_tick_get() - 3000;
 	pl_tick(pl_timer); pl_wait(1);
-	assert(!p->move_pending && p->playlist.revision == revision + 1);
+	assert(!p->move_pending && p->playlist.revision == revision && p->playlist.view_revision == view_revision + 1);
 	pl_tick(pl_timer); pl_wait(1);
-	assert(p->playlist.revision == revision + 1);
+	assert(p->playlist.revision == revision && p->playlist.view_revision == view_revision + 1);
 	// A stale revision while the pointer is held cancels persistence and reloads.
 	lv_obj_send_event(p->reorder, LV_EVENT_CLICKED, NULL);
 	lv_obj_update_layout(p->screen);
@@ -416,10 +434,12 @@ static void rearrange_fixture(const nd_library_t *lib) {
 	pl_wait(1);
 	assert(fixture_notices == notices + 1 && !p->move_pending);
 	pl_tick(pl_timer); pl_wait(1);
-	assert(p->playlist.revision == revision + 2);
+	assert(p->playlist.revision == revision + 1);
 	assert(pl_back() && !p->reordering);
 	// Leaving a page after submission cannot restore its UI or emit success.
 	q.revision = p->playlist.revision;
+	q.view_revision = p->playlist.view_revision;
+	q.metadata_revision = p->playlist.metadata_revision;
 	q.occurrence = p->entries[0].occurrence;
 	snprintf(q.track, sizeof(q.track), "%s", p->entries[0].track.id);
 	unsigned serial = p->serial;
@@ -431,11 +451,139 @@ static void rearrange_fixture(const nd_library_t *lib) {
 	assert(pl_active(0) && !p->reordering && !p->dragging);
 	nd_playlist_t reopened = p->playlist;
 	pl_open_detail(&reopened); pl_wait(1);
-	assert(p->playlist.revision == revision + 3);
+	assert(p->playlist.revision == revision + 1);
+	assert(p->playlist.manual);
+	lv_obj_send_event(p->sort,LV_EVENT_CLICKED,NULL);
+	assert(fixture_menu_count==9 && !fixture_menu[0].checked);
+	fixture_menu[0].action(fixture_menu[0].user); pl_wait(1);
+	assert(!p->playlist.manual && p->entries[0].occurrence==occurrence && p->playlist.revision==revision+1);
 	lv_indev_delete(input);
 	puts("playlist rearrange: failed GUI delivery, stale revision and retired-page results passed");
 	puts("playlist rearrange: real pointer cross-window drop, repeated occurrence, local persistence, cancellation, Back and isolation passed");
 }
+static void playlist_sort_ui(nd_library_t *lib) {
+	char path[1200];
+	nd_playlist_store_t s;
+	int64_t id;
+	assert(nd_pl_path(lib, path) && nd_pl_open(&s, path, lib->scope, true));
+	assert(nd_pl_create(&s, "Sort repeated", &id) && nd_pl_begin(&s, id, 1));
+	int added = 0, skipped = 0;
+	const char *titles[] = {"Zulu", "Alpha", "Zulu"};
+	for (int i = 0; i < 3; i++) {
+		nd_row_t row = {.duration = 60};
+		strcpy(row.id, i == 1 ? "B" : "A");
+		strcpy(row.title, titles[i]);
+		assert(nd_pl_append(&s, id, &row, false, &added, &skipped));
+	}
+	nd_playlist_t p;
+	nd_playlist_entry_t stored[ND_WINDOW];
+	int n;
+	assert(nd_pl_finish(&s, id, true) && nd_pl_sql(&s, "COMMIT") && nd_pl_get(&s, id, &p));
+	char hash[ND_PL_HASH];
+	assert(nd_pl_fingerprint(&s, id, hash) && nd_pl_baseline(&s, id, "sort-fixture", hash, false, "") && nd_pl_get(&s, id, &p));
+	assert(nd_pl_entries(&s, id, 0, 0, stored, &n) && n == 3);
+	nd_pl_close(&s);
+	int requests = atomic_load(&calls);
+	pl_open_detail(&p);
+	pl_wait(1);
+	lv_obj_send_event(pl_pages[1].buttons[0], LV_EVENT_CLICKED, NULL);
+	assert(menu_index("nd_sort") < 0);
+	// Native Sort target follows Shuffle and precedes Rearrange at both widths.
+	lv_obj_update_layout(pl_pages[1].screen);
+	lv_area_t shuffle, sort, reorder, glyph;
+	lv_obj_get_coords(pl_pages[1].play_buttons[1], &shuffle);
+	lv_obj_get_coords(pl_pages[1].sort, &sort);
+	lv_obj_get_coords(pl_pages[1].reorder, &reorder);
+	lv_obj_get_coords(lv_obj_get_child(pl_pages[1].sort, 0), &glyph);
+	assert(shuffle.x2 < sort.x1 && sort.x2 < reorder.x1 && sort.y1 == shuffle.y1 && sort.y2 == reorder.y2);
+	assert(sort.x1 >= 0 && reorder.x2 < ui_panel_width && glyph.x1 >= sort.x1 && glyph.x2 <= sort.x2);
+	assert(glyph.y1 >= sort.y1 && glyph.y2 <= sort.y2);
+#ifdef NAVIDROME_NATIVE_SORT_ICONS
+	assert(icon_sort_az.header.w > 1 && lv_image_get_src(lv_obj_get_child(pl_pages[1].sort, 0)) == &icon_sort_az);
+#endif
+	lv_indev_t *pointer = lv_indev_create();
+	lv_indev_set_type(pointer, LV_INDEV_TYPE_POINTER);
+	lv_indev_set_display(pointer, lv_display_get_default());
+	lv_indev_set_read_cb(pointer, fixture_touch_read);
+	fixture_touch.point = (lv_point_t){(sort.x1 + sort.x2) / 2, (sort.y1 + sort.y2) / 2};
+	fixture_touch.state = LV_INDEV_STATE_PRESSED;
+	lv_indev_read(pointer);
+	fixture_touch.state = LV_INDEV_STATE_RELEASED;
+	lv_indev_read(pointer);
+	lv_indev_delete(pointer);
+	assert(fixture_menu_count == 9 && fixture_menu[0].checked);
+	popover_item_t stale = fixture_menu[8];
+	menu_activate("nd_sort_title_az");
+	// The visible preference changes only after the worker acknowledges COMMIT.
+	assert(pl_pages[1].playlist.sort == ND_PL_ORIGINAL);
+	pl_wait(1);
+	assert(pl_pages[1].playlist.sort == ND_PL_TITLE && pl_pages[1].playlist.revision == p.revision);
+	assert(pl_pages[1].entries[0].occurrence == stored[1].occurrence);
+	assert(pl_pages[1].entries[2].occurrence == stored[2].occurrence);
+	lv_obj_send_event(pl_pages[1].rows[2], LV_EVENT_CLICKED, NULL);
+	assert(saved_view.view && saved_view.ordinal == 2 && saved_view.stored_position == 2);
+	assert(saved_view.occurrence == stored[2].occurrence && saved_view.sort == ND_PL_TITLE);
+	lv_obj_send_event(pl_pages[1].menus[0], LV_EVENT_CLICKED, NULL);
+	menu_activate("add_to_queue");
+	assert(saved_addition.single && !saved_addition.view && saved_addition.ordinal == 1 && saved_addition.occurrence == stored[1].occurrence);
+	lv_obj_send_event(pl_pages[1].buttons[0], LV_EVENT_CLICKED, NULL);
+	menu_activate("add_to_queue");
+	assert(saved_addition.whole && !saved_addition.view);
+	lv_obj_send_event(pl_pages[1].play_buttons[0], LV_EVENT_CLICKED, NULL);
+	assert(saved_view.view && saved_view.whole && saved_view.sort == ND_PL_TITLE);
+	lv_obj_send_event(pl_pages[1].play_buttons[1], LV_EVENT_CLICKED, NULL);
+	assert(saved_shuffle && saved_view.view);
+	stale.action(stale.user);
+	pl_wait(1);
+	assert(pl_pages[1].playlist.sort == ND_PL_TITLE);
+	lv_obj_send_event(pl_pages[1].sort, LV_EVENT_CLICKED, NULL);
+	assert(fixture_menu_count == 9 && fixture_menu[1].checked);
+	assert(nd_pl_open(&s, path, lib->scope, true));
+	assert(nd_pl_sql(&s, "CREATE TRIGGER sort_fail BEFORE UPDATE ON playlist_view BEGIN SELECT RAISE(ABORT,'fixture');END;"));
+	nd_pl_close(&s);
+	menu_activate("nd_sort_artist_za");
+	pl_wait(1);
+	assert(pl_pages[1].playlist.sort == ND_PL_TITLE);
+	lv_obj_send_event(pl_pages[1].reorder, LV_EVENT_CLICKED, NULL);
+	assert(!pl_pages[1].reordering && pl_pages[1].reorder_pending);
+	pl_wait(1);
+	assert(!pl_pages[1].reordering && !pl_pages[1].reorder_pending && pl_pages[1].playlist.sort == ND_PL_TITLE);
+
+	assert(nd_pl_open(&s, path, lib->scope, true));
+	assert(nd_pl_sql(&s, "DROP TRIGGER sort_fail"));
+	assert(nd_pl_get(&s, id, &p) && p.sort == ND_PL_TITLE && p.revision == pl_pages[1].playlist.revision);
+	nd_pl_close(&s);
+	pl_load(1); pl_wait(1);
+	char summary[220];
+	snprintf(summary, sizeof(summary), "%s", lv_label_get_text(pl_pages[1].status));
+	assert(strstr(summary, "nd_pl_linked") && strstr(summary, "nd_pl_last_sync"));
+	lv_obj_send_event(pl_pages[1].reorder, LV_EVENT_CLICKED, NULL);
+	assert(!pl_pages[1].reordering && pl_pages[1].reorder_pending);
+	assert(!strcmp(lv_label_get_text(pl_pages[1].status), summary));
+	pl_wait(1);
+	assert(!strcmp(lv_label_get_text(pl_pages[1].status), summary));
+	assert(pl_pages[1].reordering && !pl_pages[1].reorder_pending && pl_pages[1].playlist.sort == ND_PL_ORIGINAL);
+	assert(pl_pages[1].entries[0].occurrence == stored[0].occurrence && pl_pages[1].playlist.revision == p.revision);
+	assert(pl_back() && !pl_pages[1].reordering && pl_pages[1].playlist.sort == ND_PL_ORIGINAL);
+	// Back during the pending reset cancels mode entry, not the committed view.
+	lv_obj_send_event(pl_pages[1].sort, LV_EVENT_CLICKED, NULL);
+	menu_activate("nd_sort_title_az");
+	pl_wait(1);
+	lv_obj_send_event(pl_pages[1].reorder, LV_EVENT_CLICKED, NULL);
+	assert(pl_pages[1].reorder_pending && pl_back());
+	pl_wait(1);
+	assert(!pl_pages[1].reordering && !pl_pages[1].reorder_pending && pl_pages[1].playlist.sort == ND_PL_ORIGINAL);
+
+	pl_pages[1].selecting = true;
+	pl_buttons(&pl_pages[1]);
+	assert(lv_obj_is_hidden(pl_pages[1].play_actions) && lv_obj_has_state(pl_pages[1].sort, LV_STATE_DISABLED));
+	lv_obj_send_event(pl_pages[1].buttons[0], LV_EVENT_CLICKED, NULL);
+	pl_wait(1);
+	assert(!pl_pages[1].selecting); // Selection More acts as Cancel, never Sort.
+	assert(atomic_load(&calls) == requests);
+	puts("sorted playlist UI: native Sort after Shuffle, nine checked choices, durable acknowledgement/failure, stale menus, exact repeated tap/entry enqueue, displayed Play/Shuffle and stored whole enqueue without HTTP: passed");
+}
+
 static void playlist_actions_ui(nd_library_t *lib) {
 	char path[1200]; nd_playlist_store_t store;
 	assert(nd_pl_path(lib, path) && nd_pl_open(&store, path, lib->scope, true));
@@ -1233,6 +1381,7 @@ int main(int argc, char **argv) {
 	library_wait(&lib);
 	saved_playlist_taps(&lib);
 	playlist_actions_ui(&lib);
+	playlist_sort_ui(&lib);
 	playlist_upload_ui(&lib);
 	navidrome_lock();
 	navidromeplaylists_refresh();

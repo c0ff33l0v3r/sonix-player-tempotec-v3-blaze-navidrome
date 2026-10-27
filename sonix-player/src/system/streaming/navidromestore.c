@@ -10,7 +10,7 @@
 #include <unistd.h>
 
 static void album_display_fields(const json_doc_t *d, int obj, nd_playrow_t *out);
-static bool album_display_put(nd_store_t *s, int64_t handle, int year, const char *genre);
+static bool album_display_put(nd_store_t *s, int64_t handle, int year, const char *genre, const char *credit);
 static void album_display_read(nd_store_t *s, int64_t handle, nd_playrow_t *out);
 
 static bool sql(nd_store_t *s, const char *text) {
@@ -35,8 +35,16 @@ static void bind(sqlite3_stmt *st, int col, const char *text) { sqlite3_bind_tex
 	"EXISTS(SELECT 1 FROM rel r JOIN entity a ON a.gen=r.gen AND a.kind=0 AND a.id=r.album "                              \
 	"WHERE r.gen=e.gen AND r.kind=2 AND r.id=e.id)"
 
-static const char *artist_filter(nd_store_t *s, nd_kind_t kind) {
-	return !s->favorites && kind == ND_ARTISTS ? " AND " ARTIST_ALBUM_SQL : "";
+static const char *artist_filter(nd_store_t *s, nd_kind_t kind) { return !s->favorites && kind == ND_ARTISTS ? " AND " ARTIST_ALBUM_SQL : ""; }
+
+static void browse_name_key(sqlite3_context *ctx, int count, sqlite3_value **values) {
+	const char *name = count ? (const char *)sqlite3_value_text(values[0]) : NULL;
+	char key[LIBRARY_SORT_KEY_MAX];
+	if (name && *name)
+		library_sort_key_ex(name, key, sizeof(key), true);
+	else
+		key[0] = 0;
+	sqlite3_result_text(ctx, key, -1, SQLITE_TRANSIENT);
 }
 
 // Per-connection views bind one immutable effective revision. Physical base rows
@@ -73,6 +81,40 @@ static bool read_view(nd_store_t *s, int64_t gen) {
 	}
 	bool ok = text && sql(s, text);
 	sqlite3_free(text);
+	if (ok && s->display) {
+		ok = sql(s, "DROP VIEW IF EXISTS temp.browse_year; CREATE TEMP VIEW browse_year AS "
+					"SELECT e.rowid AS handle,CASE WHEN a.year BETWEEN 1 AND 9999 THEN a.year ELSE 0 END AS year "
+					"FROM entity e JOIN album_display a ON a.gen=e.gen AND a.handle=e.rowid");
+		if (ok && s->local)
+			ok = sql(s, "DROP VIEW temp.browse_year; CREATE TEMP VIEW browse_year AS "
+						"SELECT e.rowid AS handle,CASE WHEN a.year BETWEEN 1 AND 9999 THEN a.year ELSE 0 END AS year "
+						"FROM entity e JOIN album_display a ON a.gen=e.gen AND a.handle=e.rowid "
+						"UNION ALL SELECT -c.key,CASE WHEN a.year BETWEEN 1 AND 9999 THEN a.year ELSE 0 END "
+						"FROM local_change c JOIN album_display a ON a.gen=c.seq AND a.handle=-c.key");
+	}
+	if (ok) {
+		sqlite3_stmt *credit = NULL;
+		ok = prepare(s, &credit, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='album_credit'");
+		bool retained = ok && sqlite3_step(credit) == SQLITE_ROW;
+		sqlite3_finalize(credit);
+		if (ok)
+			ok = sqlite3_create_function(s->db, "nd_name_key", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, browse_name_key, NULL, NULL) == SQLITE_OK;
+		if (ok)
+			ok = sql(s, "DROP VIEW IF EXISTS temp.browse_credit; CREATE TEMP VIEW browse_credit AS SELECT 0 AS handle,'' AS credit WHERE 0");
+		if (ok && retained)
+			ok = sql(s, "DROP VIEW temp.browse_credit; CREATE TEMP VIEW browse_credit AS "
+						"SELECT e.rowid AS handle,c.credit FROM entity e JOIN album_credit c ON c.gen=e.gen AND c.handle=e.rowid");
+		if (ok && retained && s->local)
+			ok = sql(s, "DROP VIEW temp.browse_credit; CREATE TEMP VIEW browse_credit AS "
+						"SELECT e.rowid AS handle,c.credit FROM entity e JOIN album_credit c ON c.gen=e.gen AND c.handle=e.rowid "
+						"UNION ALL SELECT -e.key,c.credit FROM local_change e JOIN album_credit c ON c.gen=e.seq AND c.handle=-e.key");
+		if (ok)
+			ok = sql(s, "DROP VIEW IF EXISTS temp.browse_track_order; CREATE TEMP VIEW browse_track_order AS "
+						"SELECT t.rowid AS handle,coalesce(a.sortkey,'') AS albumkey,coalesce(a.id,'') AS albumid,"
+						"nd_name_key(coalesce(nullif(c.credit,''),a.artist,'')) AS creditkey,nd_name_key(t.artist) AS artistkey "
+						"FROM browse_entity t LEFT JOIN browse_entity a ON a.gen=t.gen AND a.kind=0 AND a.id=t.album "
+						"LEFT JOIN browse_credit c ON c.handle=a.rowid WHERE t.kind=1");
+	}
 	if (ok)
 		s->view = gen;
 	return ok;
@@ -107,7 +149,7 @@ bool nd_store_open_source(nd_store_t *s, const char *path, const char *scope, bo
 		return false;
 	}
 	if (write && version != expected_version && !legacy) {
-		if (!sql(s, "BEGIN; DROP TABLE IF EXISTS track_navigation; DROP TABLE IF EXISTS album_display; DROP TABLE IF EXISTS local_view; DROP TABLE IF EXISTS local_change; DROP TABLE IF EXISTS artist_state; DROP TABLE IF EXISTS favorite_song; DROP TABLE IF EXISTS favorite_album; DROP TABLE IF EXISTS seen; DROP TABLE IF EXISTS active; DROP TABLE IF EXISTS rel;"
+		if (!sql(s, "BEGIN; DROP TABLE IF EXISTS album_credit; DROP TABLE IF EXISTS track_navigation; DROP TABLE IF EXISTS album_display; DROP TABLE IF EXISTS local_view; DROP TABLE IF EXISTS local_change; DROP TABLE IF EXISTS artist_state; DROP TABLE IF EXISTS favorite_song; DROP TABLE IF EXISTS favorite_album; DROP TABLE IF EXISTS seen; DROP TABLE IF EXISTS active; DROP TABLE IF EXISTS rel;"
 					"DROP TABLE IF EXISTS entity; DROP TABLE IF EXISTS snapshot;"
 					"CREATE TABLE snapshot(id INTEGER PRIMARY KEY,scope TEXT NOT NULL,complete INT NOT NULL DEFAULT 0,finished INT);"
 					"CREATE TABLE active(scope TEXT PRIMARY KEY,gen INT NOT NULL);"
@@ -135,6 +177,8 @@ bool nd_store_open_source(nd_store_t *s, const char *path, const char *scope, bo
 		return false;
 	}
 	// Optional metadata must not make old/read-only snapshots unusable.
+	if (write && !sql(s, "CREATE TABLE IF NOT EXISTS album_credit(gen INT,handle INT,credit TEXT,PRIMARY KEY(gen,handle));"))
+		return false;
 	if (write && !sql(s, "CREATE TABLE IF NOT EXISTS track_navigation(gen INTEGER,id TEXT,artist TEXT,PRIMARY KEY(gen,id));"))
 		return false;
 	if (!prepare(s, &st, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='track_navigation'"))
@@ -143,6 +187,10 @@ bool nd_store_open_source(nd_store_t *s, const char *path, const char *scope, bo
 	sqlite3_finalize(st);
 	if (write && !sql(s, "CREATE TABLE IF NOT EXISTS album_display(gen INT NOT NULL,handle INT NOT NULL,year INT,genre TEXT,PRIMARY KEY(gen,handle));"))
 		return false;
+	if (!prepare(s, &st, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='album_display'"))
+		return false;
+	s->display = sqlite3_step(st) == SQLITE_ROW;
+	sqlite3_finalize(st);
 	if (favorites) {
 		if (!prepare(s, &st, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_view'"))
 			return false;
@@ -575,7 +623,7 @@ bool nd_store_import(nd_store_t *s, nd_kind_t kind, const nd_document_t *documen
 		if (ok && kind == ND_ALBUMS) {
 			nd_playrow_t display = {0};
 			album_display_fields(d, obj, &display);
-			ok = album_display_put(s, album_handle, display.year, display.genre);
+			ok = album_display_put(s, album_handle, display.year, display.genre, display.album_artist);
 		}
 		if (ok && kind == ND_TRACKS) {
 			char artist[ND_ID_MAX];
@@ -774,6 +822,8 @@ void nd_store_cleanup(nd_store_t *s) {
 		sql(s, "DELETE FROM seen");
 	if (sqlite3_db_readonly(s->db, "main") == 0)
 		sql(s, s->local ? "DELETE FROM album_display WHERE (handle>0 AND NOT EXISTS(SELECT 1 FROM entity e WHERE e.gen=album_display.gen AND e.rowid=album_display.handle)) OR (handle<0 AND NOT EXISTS(SELECT 1 FROM local_change c WHERE c.seq=album_display.gen AND c.key=-album_display.handle))" : "DELETE FROM album_display WHERE NOT EXISTS(SELECT 1 FROM entity e WHERE e.gen=album_display.gen AND e.rowid=album_display.handle)");
+	if (sqlite3_db_readonly(s->db, "main") == 0)
+		sqlite3_exec(s->db, "DELETE FROM album_credit WHERE NOT EXISTS(SELECT 1 FROM album_display a WHERE a.gen=album_credit.gen AND a.handle=album_credit.handle)", NULL, NULL, NULL);
 	if (s->navigation)
 		sql(s, s->local ? "DELETE FROM track_navigation WHERE gen NOT IN(SELECT id FROM snapshot) AND gen NOT IN(SELECT seq FROM local_change)" : "DELETE FROM track_navigation WHERE gen NOT IN(SELECT id FROM snapshot)");
 	if (s->local)
@@ -811,17 +861,43 @@ bool nd_store_artist_browsable(nd_store_t *s, int64_t gen, const char *id) {
 	return found;
 }
 
+// All complete-query consumers use the same validated order. Album tracks
+// never inherit a list preference, and absent optional years are all unknown.
+static bool grouped_tracks(const nd_query_t *q) { return q->kind == ND_TRACKS && !q->filter[0] && q->order >= ND_ORDER_ALBUM && q->order <= ND_ORDER_ARTIST_DESC; }
+static const char *query_sort_join(const nd_query_t *q) { return grouped_tracks(q) ? " LEFT JOIN browse_track_order o ON o.handle=e.rowid " : " "; }
+static const char *query_order(nd_store_t *s, const nd_query_t *q, char order[768]) {
+	if (grouped_tracks(q)) {
+		const char *primary = q->order <= ND_ORDER_ALBUM_DESC ? "o.albumkey" : q->order <= ND_ORDER_ALBUM_ARTIST_DESC ? "o.creditkey" : "o.artistkey";
+		snprintf(order, 768,
+				 "(coalesce(%s,'')=''),%s %s,(coalesce(o.albumkey,'')=''),o.albumkey,"
+				 "(coalesce(o.albumid,'')=''),o.albumid,CASE WHEN e.disc>0 THEN e.disc ELSE 1 END,"
+				 "(e.track<=0),e.track,e.sortkey,e.id",
+				 primary, primary, q->order % 2 ? "DESC" : "ASC");
+		return order;
+	}
+	if (q->kind == ND_TRACKS && q->filter[0])
+		return "e.disc,e.track,e.sortkey,e.id";
+	if (q->order == ND_ORDER_NAME_DESC)
+		return "e.sortkey DESC,e.id DESC";
+	if (q->kind == ND_ALBUMS && s->display && (q->order == ND_ORDER_YEAR || q->order == ND_ORDER_YEAR_DESC))
+		return q->order == ND_ORDER_YEAR ? "coalesce((SELECT year FROM browse_year WHERE handle=e.rowid),0)<=0,"
+										   "(SELECT year FROM browse_year WHERE handle=e.rowid),e.sortkey,e.id"
+										 : "coalesce((SELECT year FROM browse_year WHERE handle=e.rowid),0)<=0,"
+										   "(SELECT year FROM browse_year WHERE handle=e.rowid) DESC,e.sortkey,e.id";
+	return "e.sortkey,e.id";
+}
+
 bool nd_store_letters(nd_store_t *s, int64_t gen, const nd_query_t *q, int first[ND_LETTER_BUCKETS]) {
 	if (!read_view(s, gen))
 		return false;
 	_Static_assert(ND_LETTER_BUCKETS == LIBRARY_INDEX_BUCKETS, "letter buckets must agree");
 	for (int i = 0; i < ND_LETTER_BUCKETS; i++)
 		first[i] = -1;
-	if (q->kind == ND_TRACKS && *q->filter)
+	if (grouped_tracks(q) || (q->kind == ND_TRACKS && *q->filter) || (q->kind == ND_ALBUMS && (q->order == ND_ORDER_YEAR || q->order == ND_ORDER_YEAR_DESC)))
 		return true;
 	const char *filter = !*q->filter ? (s->favorites && q->kind == ND_TRACKS ? " AND e.starred=1" : "") : " AND EXISTS(SELECT 1 FROM rel r WHERE r.gen=e.gen AND r.album=e.id AND r.kind=?5 AND r.id=?4)";
-	char text[1024];
-	snprintf(text, sizeof(text), "SELECT e.sortkey FROM browse_entity e JOIN snapshot s ON s.id=e.gen WHERE e.gen=?1 AND e.kind=?2 AND s.scope=?3 AND s.complete=1%s%s ORDER BY e.sortkey,e.id", filter, artist_filter(s, q->kind));
+	char text[1024], order[768];
+	snprintf(text, sizeof(text), "SELECT e.sortkey FROM browse_entity e JOIN snapshot s ON s.id=e.gen WHERE e.gen=?1 AND e.kind=?2 AND s.scope=?3 AND s.complete=1%s%s ORDER BY %s", filter, artist_filter(s, q->kind), query_order(s, q, order));
 	sqlite3_stmt *st = NULL;
 	if (!prepare(s, &st, text))
 		return false;
@@ -859,12 +935,12 @@ bool nd_store_query(nd_store_t *s, int64_t gen, const nd_query_t *q, int offset,
 	*count = *total = 0;
 	if (offset < 0 || q->kind < ND_ALBUMS || q->kind > ND_GENRES || q->favorites != s->favorites || (s->favorites && q->kind > ND_TRACKS) || !sql(s, "BEGIN"))
 		return false;
-	char where[1024], text[1400], pattern[2 * 256 + 3];
+	char where[1024], text[2200], order[768], pattern[2 * 256 + 3];
 	if (*q->search && (!library_search_pattern(q->search, pattern, sizeof(pattern)) || sqlite3_create_function(s->db, "nd_fold", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, search_fold, NULL, NULL) != SQLITE_OK)) {
 		sql(s, "ROLLBACK");
 		return false;
 	}
-	snprintf(where, sizeof(where), " FROM browse_entity e JOIN snapshot s ON s.id=e.gen WHERE e.gen=?1 AND e.kind=?2 AND s.scope=?3 AND s.complete=1%s", !q->filter[0] ? "" : q->kind == ND_TRACKS ? " AND e.album=?4" : " AND EXISTS(SELECT 1 FROM rel r WHERE r.gen=e.gen AND r.album=e.id AND r.kind=?5 AND r.id=?4)");
+	snprintf(where, sizeof(where), " FROM browse_entity e JOIN snapshot s ON s.id=e.gen %s WHERE e.gen=?1 AND e.kind=?2 AND s.scope=?3 AND s.complete=1%s", query_sort_join(q), !q->filter[0] ? "" : q->kind == ND_TRACKS ? " AND e.album=?4" : " AND EXISTS(SELECT 1 FROM rel r WHERE r.gen=e.gen AND r.album=e.id AND r.kind=?5 AND r.id=?4)");
 	if (s->favorites && q->kind == ND_TRACKS && !*q->filter)
 		strcat(where, " AND e.starred=1");
 	strcat(where, artist_filter(s, q->kind));
@@ -873,7 +949,10 @@ bool nd_store_query(nd_store_t *s, int64_t gen, const nd_query_t *q, int offset,
 	sqlite3_stmt *st = NULL;
 	bool ok = true;
 	for (int pass = 0; ok && pass < 2; pass++) {
-		snprintf(text, sizeof(text), "%s%s%s", pass ? "SELECT e.id,e.title,e.artist,e.cover,e.duration,e.disc,e.track,e.details" : "SELECT count(*)", where, pass ? q->kind == ND_TRACKS && *q->filter ? " ORDER BY e.disc,e.track,e.sortkey,e.id LIMIT ?6 OFFSET ?7" : " ORDER BY e.sortkey,e.id LIMIT ?6 OFFSET ?7" : "");
+		if (pass)
+			snprintf(text, sizeof(text), "SELECT e.id,e.title,e.artist,e.cover,e.duration,e.disc,e.track,e.details%s ORDER BY %s LIMIT ?6 OFFSET ?7", where, query_order(s, q, order));
+		else
+			snprintf(text, sizeof(text), "SELECT count(*)%s", where);
 		ok = prepare(s, &st, text);
 		if (!ok)
 			break;
@@ -933,19 +1012,19 @@ bool nd_store_play_index(nd_store_t *s, int64_t gen, const nd_query_t *q, const 
 	*start = -1;
 	if (q->kind != ND_TRACKS || q->favorites != s->favorites || !sql(s, "BEGIN"))
 		return false;
-	char text[1024], pattern[515];
+	char text[1800], order[768], pattern[515];
 	if (*q->search && (!library_search_pattern(q->search, pattern, sizeof(pattern)) || sqlite3_create_function(s->db, "nd_fold", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, search_fold, NULL, NULL) != SQLITE_OK)) {
 		sql(s, "ROLLBACK");
 		return false;
 	}
 	snprintf(text, sizeof(text),
-			 "SELECT e.rowid,e.id FROM browse_entity e JOIN snapshot s ON s.id=e.gen "
+			 "SELECT e.rowid,e.id FROM browse_entity e JOIN snapshot s ON s.id=e.gen %s "
 			 "WHERE e.gen=?1 AND e.kind=1 AND s.scope=?2 AND s.complete=1 %s %s ORDER BY %s",
+			 query_sort_join(q),
 			 q->filter[0]	? "AND e.album=?3"
 			 : s->favorites ? "AND e.starred=1"
 							: "",
-			 *q->search ? "AND nd_fold(e.title) LIKE ?4 ESCAPE '\\'" : "",
-			 q->filter[0] ? "e.disc,e.track,e.sortkey,e.id" : "e.sortkey,e.id");
+			 *q->search ? "AND nd_fold(e.title) LIKE ?4 ESCAPE '\\'" : "", query_order(s, q, order));
 	sqlite3_stmt *st = NULL;
 	bool ok = prepare(s, &st, text);
 	int64_t *entries = NULL;
@@ -995,14 +1074,18 @@ bool nd_store_play_index(nd_store_t *s, int64_t gen, const nd_query_t *q, const 
 	return true;
 }
 
-bool nd_store_album_beside(nd_store_t *s, int64_t gen, const char *id, bool forward, char next[ND_ID_MAX]) {
+bool nd_store_album_beside(nd_store_t *s, int64_t gen, const char *id, bool forward, char next[ND_ID_MAX]) { return nd_store_album_beside_order(s, gen, id, forward, ND_ORDER_NAME, next); }
+
+bool nd_store_album_beside_order(nd_store_t *s, int64_t gen, const char *id, bool forward, nd_order_t order, char next[ND_ID_MAX]) {
 	if (!read_view(s, gen) || !nd_store_contains(s, gen, ND_ALBUMS, id)) return false;
-	char query[1024];
+	nd_query_t q = {.kind = ND_ALBUMS, .order = order};
+	char query[1400], order_sql[768];
 	snprintf(query, sizeof(query),
-		"SELECT e.id FROM browse_entity e JOIN browse_entity a ON a.gen=e.gen AND a.kind=0 AND a.id=?2 "
-		"WHERE e.gen=?1 AND e.kind=0 AND e.id<>a.id "
-		"ORDER BY CASE WHEN e.sortkey %s a.sortkey OR (e.sortkey=a.sortkey AND e.id %s a.id) THEN 0 ELSE 1 END, "
-		"e.sortkey %s,e.id %s LIMIT 1", forward ? ">" : "<", forward ? ">" : "<", forward ? "ASC" : "DESC", forward ? "ASC" : "DESC");
+			 "WITH ranked AS (SELECT e.id,row_number() OVER(ORDER BY %s) AS n "
+			 "FROM browse_entity e WHERE e.gen=?1 AND e.kind=0),here AS (SELECT n FROM ranked WHERE id=?2) "
+			 "SELECT ranked.id FROM ranked,here WHERE ranked.id<>?2 "
+			 "ORDER BY CASE WHEN ranked.n %s here.n THEN 0 ELSE 1 END,ranked.n %s LIMIT 1",
+			 query_order(s, &q, order_sql), forward ? ">" : "<", forward ? "ASC" : "DESC");
 	sqlite3_stmt *st = NULL;
 	if (!prepare(s, &st, query)) return false;
 	sqlite3_bind_int64(st, 1, gen);
@@ -1094,6 +1177,11 @@ bool nd_store_play_row(nd_store_t *s, int64_t gen, int64_t handle, nd_playrow_t 
 	}
 	sqlite3_finalize(st);
 	if (ok) {
+		if (out->album_id[0]) {
+			nd_playrow_t album;
+			if (nd_store_metadata(s, gen, ND_ALBUMS, out->album_id, &album))
+				snprintf(out->album_artist, sizeof(out->album_artist), "%s", album.album_artist);
+		}
 		navigation_get(s, gen, out->row.id, out->artist_id);
 		out->row.favorite_known = nd_store_annotation(s, gen, ND_TRACKS, out->row.id, &out->row.favorite);
 	}
@@ -1207,6 +1295,7 @@ bool nd_batch_add(nd_batch_t *b, const json_doc_t *d, int obj) {
 		album_display_fields(d, obj, &display);
 		r->year = display.year;
 		r->genre = batch_string(b, display.genre);
+		r->album_artist = batch_string(b, display.album_artist);
 	}
 	if (b->favorites && (!batch_unique(d, obj, "starred") || !batch_unique(d, obj, "songCount") || !nd_metadata_starred(d, obj, &r->starred) || (b->kind == ND_ALBUMS && !favorite_count(d, obj, &r->expected))))
 		return false;
@@ -1300,7 +1389,7 @@ bool nd_store_import_batch(nd_store_t *s, const nd_batch_t *b) {
 				s->error = rc == SQLITE_CONSTRAINT ? "nd_sync_inconsistent" : "nd_cache_error";
 			}
 			if (ok && b->kind == ND_ALBUMS)
-				ok = album_display_put(s, sqlite3_last_insert_rowid(s->db), r->year, (const char *)b->arena + r->genre);
+				ok = album_display_put(s, sqlite3_last_insert_rowid(s->db), r->year, (const char *)b->arena + r->genre, (const char *)b->arena + r->album_artist);
 			if (ok && b->kind == ND_TRACKS)
 				ok = navigation_put(s, id, (const char *)b->arena + r->primary_artist);
 			for (uint32_t rel = r->relations; rel && ok;) {
@@ -1483,7 +1572,7 @@ bool nd_store_local_put(nd_store_t *s, nd_kind_t kind, const nd_playrow_t *row, 
 	sqlite3_reset(st);
 	sqlite3_clear_bindings(st);
 	if (ok && kind == ND_ALBUMS)
-		ok = album_display_put(s, -sqlite3_last_insert_rowid(s->db), row->year, row->genre);
+		ok = album_display_put(s, -sqlite3_last_insert_rowid(s->db), row->year, row->genre, row->album_artist);
 	if (ok && kind == ND_TRACKS)
 		ok = navigation_put(s, row->row.id, row->artist_id);
 	return ok;
@@ -1529,6 +1618,14 @@ static bool metadata_row(const json_doc_t *d, int obj, nd_kind_t kind, const cha
 	out->row.track = track;
 	if (!out->row.title[0])
 		snprintf(out->row.title, sizeof(out->row.title), "%s", out->row.id);
+	if (kind == ND_TRACKS) {
+		const char *credits[] = {"displayAlbumArtist", "albumArtist"};
+		for (int i = 0; i < 2 && !out->album_artist[0]; i++) {
+			int token = json_get(d, obj, credits[i]);
+			if (token >= 0 && d->toks[token].type == JSON_STRING && !label(d, obj, credits[i], out->album_artist))
+				out->album_artist[0] = 0;
+		}
+	}
 	out->row.favorite_known = true;
 	return nd_metadata_starred(d, obj, &out->row.favorite);
 }
@@ -1538,6 +1635,12 @@ bool nd_metadata_album_track(const json_doc_t *d, int obj, const char *album, nd
 // Optional album presentation data is keyed by the physical entity/local-change
 // owner, not by a mutable logical view. Old/read-only stores need no table.
 static void album_display_fields(const json_doc_t *d, int obj, nd_playrow_t *out) {
+	const char *credit[] = {"displayAlbumArtist", "albumArtist", "artist"};
+	for (int i = 0; i < 3 && !out->album_artist[0]; i++) {
+		int field_token = json_get(d, obj, credit[i]);
+		if (field_token >= 0 && d->toks[field_token].type == JSON_STRING && !label(d, obj, credit[i], out->album_artist))
+			out->album_artist[0] = 0;
+	}
 	int t = json_get(d, obj, "year");
 	bool integer = t >= 0 && d->toks[t].type == JSON_NUMBER && d->toks[t].end - d->toks[t].start <= 4;
 	for (int i = integer ? d->toks[t].start : 0; integer && i < d->toks[t].end; i++)
@@ -1557,7 +1660,7 @@ static void album_display_fields(const json_doc_t *d, int obj, nd_playrow_t *out
 	}
 }
 
-static bool album_display_put(nd_store_t *s, int64_t handle, int year, const char *genre_text) {
+static bool album_display_put(nd_store_t *s, int64_t handle, int year, const char *genre_text, const char *credit) {
 	sqlite3_stmt *st = NULL;
 	if (!prepare(s, &st, "INSERT OR REPLACE INTO album_display(gen,handle,year,genre) VALUES(?,?,?,?)"))
 		return false;
@@ -1567,11 +1670,33 @@ static bool album_display_put(nd_store_t *s, int64_t handle, int year, const cha
 	bind(st, 4, genre_text);
 	bool ok = sqlite3_step(st) == SQLITE_DONE;
 	sqlite3_finalize(st);
+	if (ok) {
+		ok = prepare(s, &st, "INSERT OR REPLACE INTO album_credit(gen,handle,credit) VALUES(?,?,?)");
+		if (ok) {
+			sqlite3_bind_int64(st, 1, s->generation);
+			sqlite3_bind_int64(st, 2, handle);
+			bind(st, 3, credit);
+			ok = sqlite3_step(st) == SQLITE_DONE;
+		}
+		sqlite3_finalize(st);
+	}
 	return ok;
 }
 
 static void album_display_read(nd_store_t *s, int64_t handle, nd_playrow_t *out) {
 	sqlite3_stmt *st = NULL;
+	const char *credit = handle < 0 ? "SELECT a.credit FROM album_credit a JOIN local_change c ON c.seq=a.gen AND c.key=-a.handle WHERE a.handle=?" : "SELECT a.credit FROM album_credit a JOIN entity e ON e.gen=a.gen AND e.rowid=a.handle WHERE a.handle=?";
+	if (sqlite3_prepare_v2(s->db, credit, -1, &st, NULL) == SQLITE_OK) {
+		sqlite3_bind_int64(st, 1, handle);
+		if (sqlite3_step(st) == SQLITE_ROW) {
+			const char *value = (const char *)sqlite3_column_text(st, 0);
+			snprintf(out->album_artist, sizeof(out->album_artist), "%s", value ? value : "");
+		}
+	}
+	sqlite3_finalize(st);
+	st = NULL;
+	if (!out->album_artist[0])
+		snprintf(out->album_artist, sizeof(out->album_artist), "%s", out->row.artist);
 	// Absence is a supported legacy format, not a cache error.
 	if (sqlite3_prepare_v2(s->db, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='album_display'", -1, &st, NULL) != SQLITE_OK)
 		return;

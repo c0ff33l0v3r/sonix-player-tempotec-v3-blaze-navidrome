@@ -151,6 +151,28 @@ static void control(const char *method) {
 	assert(!nd_api_playlist(context.host, context.user, context.password, method, NULL, NULL, &doc));
 	nd_api_free(&doc);
 }
+static void drag_view(int64_t id) {
+	nd_pl_request_t q = {.action = NDPL_ENTRIES, .id = id};
+	success(&q);
+	nd_playlist_t p = result.playlist;
+	q = (nd_pl_request_t){.action = NDPL_SORT, .id = id, .revision = p.revision, .sort = ND_PL_ORIGINAL, .confirmed = true, .view_revision = p.view_revision, .metadata_revision = p.metadata_revision};
+	success(&q);
+	q = (nd_pl_request_t){.action = NDPL_ENTRIES, .id = id};
+	success(&q);
+	p = result.playlist;
+	assert(result.count > 1);
+	nd_playlist_entry_t last = result.entries[result.count - 1];
+	q = (nd_pl_request_t){.action = NDPL_MOVE, .id = id, .revision = p.revision, .view_revision = p.view_revision, .metadata_revision = p.metadata_revision, .ordinal = result.count - 1, .first = 0, .occurrence = last.occurrence};
+	strcpy(q.track, last.track.id);
+	char fixture_path[1200];
+	nd_playlist_store_t fixture_store;
+	nd_playlist_t fixture_p;
+	assert(nd_pl_path(&library, fixture_path) && nd_pl_open(&fixture_store, fixture_path, library.scope, false) && nd_pl_get(&fixture_store, id, &fixture_p));
+	assert(fixture_p.view_revision == q.view_revision && fixture_p.metadata_revision == q.metadata_revision);
+	nd_pl_close(&fixture_store);
+	success(&q);
+	assert(result.playlist.revision == p.revision && result.playlist.dirty == p.dirty && result.playlist.manual);
+}
 int main(int argc, char **argv) {
 	assert(argc == 2);
 	snprintf(context.host, sizeof(context.host), "%s", argv[1]);
@@ -191,8 +213,7 @@ int main(int argc, char **argv) {
 	int64_t moving_occurrence = result.entries[0].occurrence;
 	int64_t original_revision = result.playlist.revision;
 	int original_calls = mutation_calls;
-	q = (nd_pl_request_t){.action = NDPL_MOVE, .id = local, .revision = original_revision,
-		.ordinal = 0, .first = 3, .occurrence = moving_occurrence};
+	q = (nd_pl_request_t){.action = NDPL_MOVE, .id = local, .revision = original_revision, .view_revision = result.playlist.view_revision, .metadata_revision = result.playlist.metadata_revision, .ordinal = 0, .first = 3, .occurrence = moving_occurrence};
 	strcpy(q.track, "B");
 	invalidate_commit = true;
 	execute(&q);
@@ -205,10 +226,10 @@ int main(int argc, char **argv) {
 	network_epoch++; // Move must remain local even with retired transport eligibility.
 	success(&q);
 	network_epoch--;
-	assert(result.added == 1 && result.playlist.revision == original_revision + 1);
+	assert(result.added == 1 && result.playlist.revision == original_revision);
 	execute(&q);
 	assert(result.error && !strcmp(result.error, "nd_pl_stale"));
-	q.revision++;
+	q.view_revision++;
 	q.ordinal = 3; q.first = 0;
 	success(&q);
 	assert(mutation_calls == original_calls);
@@ -216,6 +237,46 @@ int main(int argc, char **argv) {
 	success(&q);
 	assert(result.entries[0].occurrence == moving_occurrence && !strcmp(result.entries[3].track.id, "D"));
 	int64_t rev = result.playlist.revision;
+	// View writes use the local worker transaction, never a network request or
+	// content edit. Local-only backfill resolves exact albums and their credits.
+	char sort_path[1200];
+	nd_playlist_store_t sorting;
+	assert(nd_pl_path(&library, sort_path) && nd_pl_open(&sorting, sort_path, library.scope, true));
+	assert(nd_pl_sql(&sorting, "DELETE FROM entry_sort"));
+	nd_pl_close(&sorting);
+	assert(nd_store_open(&lib, library.path, library.scope, true, false));
+	assert(sqlite3_exec(lib.db, "UPDATE entity SET artist='Album credit' WHERE kind=0", NULL, NULL, NULL) == SQLITE_OK);
+	nd_store_close(&lib);
+	nd_playlist_t before_sort = result.playlist;
+	for (int sort = 0; sort < 9; sort++) {
+		q = (nd_pl_request_t){.action = NDPL_SORT, .id = local, .revision = before_sort.revision, .sort = (nd_pl_sort_t)sort, .view_revision = before_sort.view_revision, .metadata_revision = before_sort.metadata_revision};
+		int network_before = mutation_calls;
+		success(&q);
+		assert(result.playlist.sort == (nd_pl_sort_t)sort && result.playlist.revision == before_sort.revision);
+		assert(result.playlist.dirty == before_sort.dirty && mutation_calls == network_before);
+		before_sort = result.playlist;
+	}
+	q = (nd_pl_request_t){.action = NDPL_ENTRIES, .id = local};
+	success(&q);
+	for (int i = 0; i < result.count; i++)
+		assert(!strcmp(result.entries[i].album, "Same") && !strcmp(result.entries[i].album_artist, "Album credit"));
+	before_sort = result.playlist;
+	q = (nd_pl_request_t){.action = NDPL_SORT, .id = local, .revision = before_sort.revision, .sort = ND_PL_TITLE, .view_revision = before_sort.view_revision, .metadata_revision = before_sort.metadata_revision};
+	invalidate_commit = true;
+	execute(&q);
+	assert(result.error);
+	invalidate_commit = false;
+	q.action = NDPL_ENTRIES;
+	success(&q);
+	assert(result.playlist.sort == before_sort.sort);
+	q.action = NDPL_SORT;
+	q.metadata_revision--;
+	execute(&q);
+	assert(result.error);
+	q.metadata_revision++;
+	q.sort = ND_PL_ORIGINAL;
+	success(&q);
+
 	q = (nd_pl_request_t){.action = NDPL_SELECT_ONLY, .session = 123, .ordinal = 0, .kind = ND_ALBUMS, .generation = library.generation};
 	strcpy(q.track, "album1");
 	success(&q);
@@ -241,6 +302,9 @@ int main(int argc, char **argv) {
 	success(&q);
 	int64_t imported = result.playlist.id;
 	assert(result.playlist.count == 3 && !result.playlist.dirty);
+	q = (nd_pl_request_t){.action = NDPL_SORT, .id = imported, .revision = result.playlist.revision, .sort = ND_PL_ALBUM_ARTIST_DESC, .view_revision = result.playlist.view_revision, .metadata_revision = result.playlist.metadata_revision};
+	success(&q);
+	assert(result.playlist.sort == ND_PL_ALBUM_ARTIST_DESC);
 	q = (nd_pl_request_t){.action = NDPL_RENAME, .id = imported, .revision = 1};
 	strcpy(q.name, "Unsent");
 	success(&q);
@@ -257,15 +321,24 @@ int main(int argc, char **argv) {
 	q.candidate = result.candidate;
 	strcpy(q.checked, result.checked);
 	success(&q);
-	assert(!result.playlist.dirty && result.playlist.count == 3);
+	assert(!result.playlist.dirty && result.playlist.count == 3 && result.playlist.sort == ND_PL_ALBUM_ARTIST_DESC);
 	q = (nd_pl_request_t){.action = NDPL_ENTRIES, .id = imported};
 	success(&q);
-	assert(!strcmp(result.entries[0].track.id, "A") && !strcmp(result.entries[2].track.id, "A"));
+	assert(!strcmp(result.entries[0].track.id, "A") && !strcmp(result.entries[1].track.id, "A") && !strcmp(result.entries[2].track.id, "B"));
+	assert(!strcmp(result.entries[0].album, "Remote album") && !strcmp(result.entries[0].album_artist, "Remote credit"));
+	assert(result.entries[0].track.disc == 2 && result.entries[0].track.track == 3);
+	assert(nd_pl_open(&sorting, sort_path, library.scope, false));
+	nd_playlist_entry_t source_order[ND_WINDOW];
+	int source_count;
+	assert(nd_pl_entries(&sorting, imported, 0, 0, source_order, &source_count) && source_count == 3);
+	assert(!strcmp(source_order[0].track.id, "A") && !strcmp(source_order[1].track.id, "B") && !strcmp(source_order[2].track.id, "A"));
+	nd_pl_close(&sorting);
 	int64_t occurrence = result.entries[0].occurrence;
 	rev = result.playlist.revision;
 	q = (nd_pl_request_t){.action = NDPL_REMOVE, .id = imported, .revision = rev, .occurrence = occurrence};
 	success(&q);
 	assert(result.playlist.count == 2 && result.playlist.dirty);
+	drag_view(imported);
 	rev = result.playlist.revision;
 	q = (nd_pl_request_t){.action = NDPL_PUBLISH, .id = imported, .revision = rev};
 	success(&q);
@@ -273,7 +346,7 @@ int main(int argc, char **argv) {
 	q.confirmed = true;
 	strcpy(q.checked, result.checked);
 	success(&q);
-	assert(!result.playlist.dirty);
+	assert(!result.playlist.dirty && result.playlist.sort == ND_PL_ORIGINAL && result.playlist.manual);
 	// Another client changed server state: confirmation must disclose the conflict.
 	control("fixtureChange");
 	q.confirmed = false;

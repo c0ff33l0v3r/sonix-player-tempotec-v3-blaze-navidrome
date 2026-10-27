@@ -105,6 +105,13 @@ static void search_tap(lv_display_t *display, lv_obj_t *row) {
 	lv_indev_delete(pointer);
 }
 int main(int argc, char **argv) {
+	// Search must ignore every independently changed browsing preference.
+	config_set_int("navidrome", "sort_albums", ND_ORDER_YEAR_DESC);
+	config_set_int("navidrome", "sort_tracks", ND_ORDER_ALBUM_ARTIST_DESC);
+	config_set_int("navidrome", "sort_artists", ND_ORDER_NAME_DESC);
+	config_set_int("navidrome", "sort_genres", ND_ORDER_NAME_DESC);
+	config_set_int("navidrome", "sort_favorite_albums", ND_ORDER_YEAR);
+	config_set_int("navidrome", "sort_favorite_tracks", ND_ORDER_ARTIST_DESC);
 	alarm(60);
 	int width = argc > 1 ? atoi(argv[1]) : 320;
 	char dir[] = "/tmp/sonix-nd-search-ui-XXXXXX";

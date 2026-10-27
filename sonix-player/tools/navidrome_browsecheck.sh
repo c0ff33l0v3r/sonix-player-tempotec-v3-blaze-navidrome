@@ -12,7 +12,18 @@ if [ -f build_host/system/db/sqlite3_impl.o ]; then
     check_sqlite=build_host/system/db/sqlite3_impl.o
 fi
 find build_host/lvgl -name '*.o' -print > "$check_dir/lvgl-objects"
-${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -O1 -g \
+python3 - "$check_dir/navidrome_sorticons.inc" <<'PYICON'
+from pathlib import Path
+import sys
+s = Path('src/gui/shell/icons.c').read_text()
+parts = []
+for name in ['sort_az', 'sort_za', 'sort_year_asc', 'sort_year_desc']:
+    a = s.index(f'static const uint8_t icon_{name}_data[] = {{')
+    b = s.index('\n};', s.index(f'const lv_image_dsc_t icon_{name} = {{', a)) + 3
+    parts.append(s[a:b])
+Path(sys.argv[1]).write_text('\n'.join(parts))
+PYICON
+${CC:-cc} -DNAVIDROME_NATIVE_SORT_ICONS -I"$check_dir" -std=gnu11 -Wall -Wextra -Werror -O1 -g \
     -ffunction-sections -fdata-sections ${NAVIDROME_CHECK_FLAGS:-} \
     -DHOST_BUILD -DNAVIDROME_TEST -DLV_CONF_INCLUDE_SIMPLE -DLV_FONT_UNSCII_8=1 -I. -Ilvgl \
     tools/navidrome_browsecheck.c tools/navidrome_test_support.c lvgl/src/font/lv_font_unscii_8.c \

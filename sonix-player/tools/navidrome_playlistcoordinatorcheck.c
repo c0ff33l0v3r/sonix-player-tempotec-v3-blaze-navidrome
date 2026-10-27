@@ -152,26 +152,81 @@ static void saved_rearrange_check(nd_library_t *lib, lv_obj_t *origin) {
 	char path[1200]; nd_playlist_store_t store;
 	assert(nd_pl_path(lib, path) && nd_pl_open(&store, path, lib->scope, true));
 	bool changed;
-	assert(nd_pl_move(&store, saved.id, saved.revision, 2, 0, saved_entries[2].occurrence,
-		saved_entries[2].track.id, &changed) && changed && nd_pl_sql(&store, "COMMIT"));
-	assert(nd_pl_get(&store, saved.id, &saved));
+	int64_t content_revision = saved.revision;
+	assert(nd_pl_view_move(&store, &saved, 2, 0, saved_entries[2].occurrence, saved_entries[2].track.id, &changed) && changed && nd_pl_sql(&store, "COMMIT"));
+	assert(nd_pl_get(&store, saved.id, &saved) && saved.revision == content_revision && saved.manual);
+	nd_playlist_entry_t displayed[ND_WINDOW];
+	int displayed_count, total;
+	assert(nd_pl_view_window(&store, &saved, 0, 0, displayed, &displayed_count, &total) && displayed[0].occurrence == saved_entries[2].occurrence);
 	nd_pl_close(&store);
 	assert(starts == before + 1 && atomic_load(&fetches) == preparations && !strcmp(playback.current_file, audible));
 	assert(playback.status == status && playlist_get_mode() == PLAYBACK_MODE_REPEAT_ONE && playlist_current_entry() == 2);
 	saved_metadata(0, "Saved occurrence 0"); saved_metadata(2, "Saved occurrence 2");
-	assert(navidromeplay_playlist(lib, saved.id, saved.revision, 0, saved_entries[2].occurrence, saved_entries[2].track.id, origin));
+	nd_playlist_capture_t local_view = {.playlist = saved.id, .revision = saved.revision, .count = saved.count, .view = true, .sort = saved.sort, .view_revision = saved.view_revision, .metadata_revision = saved.metadata_revision, .ordinal = 0, .stored_position = displayed[0].position, .stored_ordinal = displayed[0].ordinal, .occurrence = displayed[0].occurrence};
+	strcpy(local_view.track, displayed[0].track.id);
+	assert(navidromeplay_playlist_view(lib, &local_view, false, false, origin));
 	wait_started(before + 2);
 	assert(playlist_current_entry() == 0 && !strcmp(playback.metadata.title, "Saved occurrence 2"));
 	saved_metadata(1, "Saved occurrence 0"); saved_metadata(2, "Saved occurrence 1");
 	// Restore the saved definition for the existing shared mode/action fixtures.
 	assert(nd_pl_open(&store, path, lib->scope, true));
-	assert(nd_pl_move(&store, saved.id, saved.revision, 0, 2, saved_entries[2].occurrence,
-		saved_entries[2].track.id, &changed) && nd_pl_sql(&store, "COMMIT") && nd_pl_get(&store, saved.id, &saved));
+	assert(nd_pl_sort_set(&store, &saved, ND_PL_ORIGINAL) && nd_pl_view_reset(&store, saved.id) && nd_pl_sql(&store, "COMMIT") && nd_pl_get(&store, saved.id, &saved));
+	assert(saved.revision == content_revision && !saved.manual);
 	nd_pl_close(&store);
 	assert(atomic_load(&calls) == requests);
 	navidromeplay_stop(); album_coordinator_idle();
 	puts("saved rearrange coordinator: installed queue/audio/mode unchanged, new start uses exact moved occurrence and fresh order: passed");
 }
+static void saved_sort_check(nd_library_t *lib, lv_obj_t *origin) {
+	char path[1200];
+	nd_playlist_store_t s;
+	assert(nd_pl_path(lib, path) && nd_pl_open(&s, path, lib->scope, true));
+	assert(nd_pl_get(&s, saved.id, &saved) && nd_pl_sort_set(&s, &saved, ND_PL_TITLE_DESC) && nd_pl_sql(&s, "COMMIT"));
+	assert(nd_pl_get(&s, saved.id, &saved));
+	nd_playlist_entry_t rows[ND_WINDOW];
+	int n, total;
+	assert(nd_pl_view_window(&s, &saved, 0, 0, rows, &n, &total) && n == 3);
+	nd_pl_close(&s);
+	nd_playlist_capture_t view = {.playlist = saved.id, .revision = saved.revision, .count = saved.count, .view = true, .sort = saved.sort, .view_revision = saved.view_revision, .metadata_revision = saved.metadata_revision, .ordinal = 0, .stored_position = rows[0].position, .stored_ordinal = rows[0].ordinal, .occurrence = rows[0].occurrence};
+	strcpy(view.track, rows[0].track.id);
+	int requests = atomic_load(&calls), begin = starts;
+	playlist_set_mode(PLAYBACK_MODE_REPEAT_ONE);
+	assert(navidromeplay_playlist_view(lib, &view, false, false, origin));
+	wait_started(begin + 1);
+	assert(playlist_current_entry() == 0 && playlist_get_mode() == PLAYBACK_MODE_REPEAT_ONE);
+	saved_metadata(0, "Saved occurrence 2");
+	saved_metadata(1, "Saved occurrence 1");
+	saved_metadata(2, "Saved occurrence 0");
+	assert(navidromeplay_occurrence_matches(lib, saved.id, rows[0].occurrence, rows[0].track.id));
+	assert(!navidromeplay_occurrence_matches(lib, saved.id, rows[2].occurrence, rows[2].track.id));
+	assert(nd_pl_open(&s, path, lib->scope, true));
+	assert(nd_pl_sort_set(&s, &saved, ND_PL_TITLE) && nd_pl_sql(&s, "COMMIT") && nd_pl_get(&s, saved.id, &saved));
+	nd_pl_close(&s);
+	saved_metadata(0, "Saved occurrence 2");
+	saved_metadata(2, "Saved occurrence 0"); // Sealed queue remains descending.
+	view.whole = true;
+	view.sort = saved.sort;
+	view.view_revision = saved.view_revision;
+	view.metadata_revision = saved.metadata_revision;
+	begin = starts;
+	assert(navidromeplay_playlist_view(lib, &view, true, false, origin));
+	wait_started(begin + 1);
+	assert(playlist_current_entry() == 0 && playlist_get_mode() == PLAYBACK_MODE_NORMAL);
+	saved_metadata(0, "Saved occurrence 0");
+	begin = starts;
+	assert(navidromeplay_playlist_view(lib, &view, true, true, origin));
+	wait_started(begin + 1);
+	assert(playlist_get_mode() == PLAYBACK_MODE_SHUFFLE && playlist_count() == 3);
+	assert(nd_pl_open(&s, path, lib->scope, true));
+	assert(nd_pl_sort_set(&s, &saved, ND_PL_ORIGINAL) && nd_pl_sql(&s, "COMMIT") && nd_pl_get(&s, saved.id, &saved));
+	nd_pl_close(&s);
+	navidromeplay_stop();
+	album_coordinator_idle();
+	playlist_clear();
+	assert(atomic_load(&calls) == requests);
+	puts("sorted coordinator: descending repeated tap and occurrence markers, ascending Play/Shuffle, preserved tap mode, sealed-order independence and no HTTP: passed");
+}
+
 int main(void) {
 	fixture_gui_thread = pthread_self();
 	alarm(90);
@@ -191,6 +246,7 @@ int main(void) {
 	saved_create(&lib, 3);
 	saved_rearrange_check(&lib, origin);
 	saved_actions_check(&lib, origin);
+	saved_sort_check(&lib, origin);
 	int requests = atomic_load(&calls);
 	for (int mode = PLAYBACK_MODE_NORMAL; mode <= PLAYBACK_MODE_SHUFFLE_REPEAT; mode++) {
 		int begin = starts;

@@ -101,3 +101,27 @@ __attribute__((weak)) bool navidromeplay_preparing(void) { return false; }
 
 // Fixtures without the production transfer worker have no audio demand.
 __attribute__((weak)) unsigned streamturn_observe(bool *idle) { *idle = true; return 0; }
+// Isolated presentation preferences for focused fixtures; production disk
+// persistence is covered with the real config module in the sorting check.
+static const char *const fixture_sort_keys[] = {"sort_albums", "sort_tracks", "sort_artists", "sort_genres", "sort_favorite_albums", "sort_favorite_tracks"};
+static long fixture_sort_values[6];
+__attribute__((weak)) long config_get_int(const char *section, const char *key, long fallback) {
+	if (!strcmp(section, "navidrome"))
+		for (int i = 0; i < 6; i++)
+			if (!strcmp(key, fixture_sort_keys[i]))
+				return fixture_sort_values[i];
+	return fallback;
+}
+__attribute__((weak)) void config_set_int(const char *section, const char *key, long value) {
+	if (!strcmp(section, "navidrome"))
+		for (int i = 0; i < 6; i++)
+			if (!strcmp(key, fixture_sort_keys[i]))
+				fixture_sort_values[i] = value;
+}
+
+extern bool navidromeplay_matches(const nd_library_t *, nd_kind_t, const char *) __attribute__((weak));
+__attribute__((weak)) bool navidromeplay_occurrence_matches(const nd_library_t *library, int64_t playlist, int64_t occurrence, const char *track) {
+	(void)playlist;
+	(void)occurrence;
+	return navidromeplay_matches && navidromeplay_matches(library, ND_TRACKS, track);
+}

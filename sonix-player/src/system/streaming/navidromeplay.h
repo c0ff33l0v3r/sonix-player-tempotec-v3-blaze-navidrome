@@ -11,6 +11,7 @@ bool navidromeplay_chain(bool forward); // Compatible manual-boundary entry.
 bool navidromeplay_chain_boundary(bool forward, bool automatic);
 bool navidromeplay_enqueuing(void);
 bool navidromeplay_enqueue(const nd_library_t *library, nd_kind_t kind, const char *id, int64_t session);
+bool navidromeplay_occurrence_matches(const nd_library_t *library, int64_t playlist, int64_t occurrence, const char *track);
 bool navidromeplay_matches(const nd_library_t *library, nd_kind_t kind, const char *id);
 void navidromeplay_retry_metadata(const char *reference);
 bool navidromeplay_lookup(const char *reference, nd_playrow_t *track, nd_library_t *library);
@@ -22,6 +23,7 @@ bool navidromeplay_playlist(const nd_library_t *library, int64_t playlist, int64
 		int ordinal, int64_t occurrence, const char *track, void *origin);
 bool navidromeplay_playlist_shortcut(const nd_library_t *library, int64_t playlist,
 		int64_t revision, int count, bool shuffle, void *origin);
+bool navidromeplay_playlist_view(const nd_library_t *library, const nd_playlist_capture_t *request, bool shortcut, bool shuffle, void *origin);
 bool navidromeplay_playlist_enqueue(const nd_library_t *library, const nd_playlist_capture_t *request, void *origin);
 void navidromeplay_playlist_leave(void *origin); // suppress late navigation and queue feedback
 bool navidromeplay_search(const nd_library_t *library, const nd_context_t *identity, const nd_query_t *query, const char *id, void *origin);

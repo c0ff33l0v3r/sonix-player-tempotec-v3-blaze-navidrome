@@ -24,12 +24,18 @@ for name in ('download', 'reorder', 'grip', 'shuffle', 'play_small'):
     end = text.index('\n};', text.index(f'const lv_image_dsc_t icon_{name} = {{', start)) + 3
     parts.append(text[start:end] + '\n')
 Path(sys.argv[1]).write_text(''.join(parts))
+parts = []
+for name in ('sort_az', 'sort_za', 'sort_year_asc', 'sort_year_desc'):
+    start = text.index(f'static const uint8_t icon_{name}_data[] = {{')
+    end = text.index('\n};', text.index(f'const lv_image_dsc_t icon_{name} = {{', start)) + 3
+    parts.append(text[start:end] + '\n')
+Path(sys.argv[1]).with_name('navidrome_sorticons.inc').write_text(''.join(parts))
 PY
 baseline_flags=
 if [ -n "${SONIX_EXPECT_EDGE_FLASH:-}" ]; then baseline_flags=-DNAVIDROME_EDGE_BASELINE; fi
 ${CC:-cc} $baseline_flags -DNAVIDROME_BROWSE_SOURCE=\"${SONIX_BROWSE_SOURCE:-src/gui/streaming/navidromebrowse.c}\" -std=gnu11 -Wall -Wextra -Werror -O1 -g \
     -ffunction-sections -fdata-sections ${NAVIDROME_CHECK_FLAGS:-} \
-    -DHOST_BUILD -DNAVIDROME_TEST -DLV_CONF_INCLUDE_SIMPLE -DLV_FONT_UNSCII_8=1 -I. -Ilvgl \
+    -DNAVIDROME_NATIVE_SORT_ICONS -I"$check_dir" -DHOST_BUILD -DNAVIDROME_TEST -DLV_CONF_INCLUDE_SIMPLE -DLV_FONT_UNSCII_8=1 -I. -Ilvgl \
     tools/navidrome_playlistuicheck.c tools/navidrome_test_support.c "$check_dir/download-icon.c" lvgl/src/font/lv_font_unscii_8.c \
     src/system/streaming/navidromedebug.c src/system/streaming/navidrome.c src/system/streaming/navidromeapi.c src/system/streaming/navidromebatch.c \
     src/system/streaming/navidromeplaylists.c src/system/streaming/navidromeplayliststore.c src/system/core/sha256.c \

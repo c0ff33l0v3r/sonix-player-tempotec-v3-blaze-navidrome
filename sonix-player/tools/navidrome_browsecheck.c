@@ -27,6 +27,11 @@ extern const lv_font_t lv_font_unscii_8;
 lv_style_t theme_style_icon;
 static const uint8_t fixture_pixel[4] = {255, 255, 255, 255};
 #define FIXTURE_ICON {.header = {.magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_ARGB8888, .w = 1, .h = 1, .stride = 4}, .data = fixture_pixel, .data_size = 4}
+#ifdef NAVIDROME_NATIVE_SORT_ICONS
+#include "navidrome_sorticons.inc"
+#else
+const lv_image_dsc_t icon_sort_az = FIXTURE_ICON, icon_sort_za = FIXTURE_ICON, icon_sort_year_asc = FIXTURE_ICON, icon_sort_year_desc = FIXTURE_ICON;
+#endif
 const lv_image_dsc_t icon_download = FIXTURE_ICON, icon_album_big = FIXTURE_ICON, icon_shuffle = FIXTURE_ICON, icon_list_queue = FIXTURE_ICON, icon_star_plus = FIXTURE_ICON, icon_close = FIXTURE_ICON, icon_list_plus = FIXTURE_ICON, icon_ellipsis_vertical = FIXTURE_ICON, icon_check = FIXTURE_ICON;
 #ifndef NAVIDROME_PLAYLIST_UI
 void navidromeplaylists_pick_source(int64_t session, int64_t generation, lv_obj_t *origin, bool favorites) {
@@ -55,7 +60,7 @@ void switcher_set_back_guard_peek(lv_obj_t *screen, bool (*handler)(void)) {
 	(void)screen;
 	(void)handler;
 }
-popover_item_t fixture_menu[7];
+popover_item_t fixture_menu[9];
 int fixture_menu_count;
 void popover_close(void) {}
 void popover_show(lv_obj_t *anchor, const popover_item_t *items, int count) {
@@ -355,6 +360,20 @@ int main(void) {
 	navidromebrowse_open(ND_TRACKS);
 	window_wait(0);
 	assert(pages[0].total == 17000 && pages[0].count == ND_WINDOW);
+#ifdef NAVIDROME_NATIVE_SORT_ICONS
+	lv_obj_update_layout(pages[0].screen);
+	lv_obj_t *glyph = lv_obj_get_child(pages[0].sort, 0);
+	assert(icon_sort_az.header.w > 1 && lv_image_get_src(glyph) == &icon_sort_az);
+	lv_area_t control, icon, title;
+	lv_obj_get_coords(pages[0].sort, &control);
+	lv_obj_get_coords(glyph, &icon);
+	lv_label_set_text(pages[0].title, "A deliberately very long translated library title");
+	browse_selection_ui(&pages[0]);
+	lv_obj_update_layout(pages[0].screen);
+	lv_obj_get_coords(pages[0].title, &title);
+	assert(control.x1 >= 0 && control.x2 < width && title.x2 < control.x1);
+	assert(icon.x1 >= control.x1 && icon.x2 <= control.x2 && icon.y1 >= control.y1 && icon.y2 <= control.y2);
+#endif
 	assert(lv_obj_get_width(pages[0].images[0]) == ui_px(ND_ART_THUMB_SIZE));
 	assert(lv_image_get_inner_align(pages[0].images[0]) == LV_IMAGE_ALIGN_CONTAIN);
 	lv_area_t art_bounds, row_bounds, name_bounds;
@@ -418,6 +437,53 @@ int main(void) {
 	azindex_set_rows(pages[0].index, pages[0].letters, 30, false);
 	assert(pages[0].index->enabled);
 	puts("real letter strip: full-library Z jump, rapid coalescing, 29/30 eligibility and inactivity hide: passed");
+	// Production sorting owns complete query order, independently of Music.
+	lv_obj_send_event(pages[0].sort, LV_EVENT_CLICKED, NULL);
+	assert(fixture_menu_count == 8);
+	fixture_menu[pages[0].query.order == ND_ORDER_NAME ? 1 : 0].action(fixture_menu[pages[0].query.order == ND_ORDER_NAME ? 1 : 0].user);
+	window_wait(0);
+	assert(pages[0].query.order == ND_ORDER_NAME_DESC && pages[0].index->descending);
+	assert(pages[0].first == 0 && pages[0].data[0].title[0] == 'Z');
+	assert(nd_sort_preference(ND_TRACKS, false) == ND_ORDER_NAME_DESC);
+	assert(nd_sort_preference(ND_TRACKS, true) == ND_ORDER_NAME);
+	go(pages[0].index, 26);
+	window_wait(0);
+	assert(pages[0].index->descending);
+	lv_obj_send_event(pages[0].sort, LV_EVENT_CLICKED, NULL);
+	assert(fixture_menu_count == 8);
+	fixture_menu[pages[0].query.order == ND_ORDER_NAME ? 1 : 0].action(fixture_menu[pages[0].query.order == ND_ORDER_NAME ? 1 : 0].user);
+	window_wait(0);
+	assert(pages[0].query.order == ND_ORDER_NAME && !pages[0].index->descending);
+	puts("real LVGL full-query name toggle, reversed map, first position and independent Favorites preference: passed");
+	for (int choice = 2; choice < 8; choice++) {
+		lv_obj_send_event(pages[0].sort, LV_EVENT_CLICKED, NULL);
+		assert(fixture_menu_count == 8);
+		fixture_menu[choice].action(fixture_menu[choice].user);
+		window_wait(0);
+		assert(pages[0].query.order == (nd_order_t)(choice + 2) && !pages[0].index->enabled && pages[0].total == 17000);
+	}
+	lv_obj_send_event(pages[0].sort, LV_EVENT_CLICKED, NULL);
+	fixture_menu[0].action(fixture_menu[0].user);
+	window_wait(0);
+	assert(pages[0].index->enabled);
+
+	navidromebrowse_open(ND_ALBUMS);
+	window_wait(0);
+	lv_obj_send_event(pages[0].sort, LV_EVENT_CLICKED, NULL);
+	assert(fixture_menu_count == 4 && fixture_menu[0].checked);
+	popover_item_t retired_sort = fixture_menu[2];
+	lv_obj_send_event(pages[0].sort, LV_EVENT_CLICKED, NULL);
+	retired_sort.action(retired_sort.user);
+	assert(pages[0].query.order == ND_ORDER_NAME);
+	fixture_menu[3].action(fixture_menu[3].user);
+	window_wait(0);
+	assert(pages[0].query.order == ND_ORDER_YEAR_DESC && !pages[0].index->enabled);
+	lv_obj_send_event(pages[0].sort, LV_EVENT_CLICKED, NULL);
+	assert(fixture_menu_count == 4 && fixture_menu[3].checked);
+	fixture_menu[0].action(fixture_menu[0].user);
+	window_wait(0);
+	assert(pages[0].query.order == ND_ORDER_NAME && pages[0].index->enabled);
+	puts("real LVGL checked album-year menu and suppressed/restored letter navigation: passed");
 
 	navidromebrowse_open(ND_ALBUMS);
 	window_wait(0);

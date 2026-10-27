@@ -31,8 +31,8 @@
 
 typedef struct {
 	lv_obj_t *screen, *list, *extent, *title, *status, *buttons[3];
-	lv_obj_t *download, *reorder, *drop_line;
-	bool reordering, move_pending, order_saved, dragging;
+	lv_obj_t *download, *sort, *reorder, *drop_line;
+	bool reordering, reorder_pending, move_pending, order_saved, dragging;
 	nd_pl_request_t drag;
 	int drag_to;
 	lv_obj_t *play_actions, *play_buttons[2];
@@ -135,6 +135,13 @@ static void pl_buttons(pl_page_t *p) {
 				if (enabled) lv_obj_remove_state(p->play_buttons[i], LV_STATE_DISABLED);
 				else lv_obj_add_state(p->play_buttons[i], LV_STATE_DISABLED);
 			}
+		}
+		if (p->sort) {
+			nd_library_t lib;
+			navidrome_library_snapshot(&lib);
+			bool disabled = p->loading || p->selecting || p->reordering || p->reorder_pending || navidrome_playlists_busy() || !lib.writable || p->playlist.pending;
+			lv_obj_set_state(p->sort, LV_STATE_DISABLED, disabled);
+			lv_image_set_src(lv_obj_get_child(p->sort, 0), p->playlist.sort != ND_PL_ORIGINAL && p->playlist.sort % 2 == 0 ? &icon_sort_za : &icon_sort_az);
 		}
 		if (p->download) {
 			nd_library_t lib;
@@ -278,7 +285,7 @@ static void pl_confirm_ok(void *unused) {
 static void pl_open_detail(const nd_playlist_t *playlist) {
 	pl_page_t *p = &pl_pages[1];
 	pl_drag_cancel(p);
-	p->reordering = p->move_pending = p->order_saved = false;
+	p->reordering = p->reorder_pending = p->move_pending = p->order_saved = false;
 	p->download_token = ++pl_download_token;
 	p->download_pending = false;
 	p->playlist = *playlist;
@@ -306,6 +313,7 @@ static void pl_done(nd_pl_result_t *r, void *value) {
 	bool moved = r->request.action == NDPL_MOVE;
 	if (moved) p->move_pending = false;
 	if (r->error) {
+		p->reorder_pending = false;
 		lv_label_set_text(p->status, tr(r->error));
 		gui_notify_popup(r->error);
 		if (moved) { pl_drag_cancel(p); p->reload = true; }
@@ -318,6 +326,15 @@ static void pl_done(nd_pl_result_t *r, void *value) {
 	if (moved) {
 		p->playlist = r->playlist;
 		p->order_saved |= r->added > 0;
+		pl_load(page);
+		free(r);
+		return;
+	}
+	if (action == NDPL_SORT) {
+		p->playlist = r->playlist;
+		p->first = 0;
+		lv_obj_set_height(p->extent, 1);
+		lv_obj_scroll_to_y(p->list, 0, LV_ANIM_OFF);
 		pl_load(page);
 		free(r);
 		return;
@@ -442,6 +459,12 @@ static void pl_done(nd_pl_result_t *r, void *value) {
 			p->playlist = r->playlist;
 			lv_label_set_text(p->title, p->playlist.name);
 		}
+		if (page == 1 && p->reordering && p->playlist.sort != ND_PL_ORIGINAL)
+			p->reordering = false;
+		if (page == 1 && p->reorder_pending) {
+			p->reorder_pending = false;
+			p->reordering = p->playlist.sort == ND_PL_ORIGINAL && lib.writable && !p->selecting;
+		}
 		pl_show_rows(p, keep_art);
 	} else {
 		if (r->playlist.id && page == 1)
@@ -488,11 +511,15 @@ static void pl_action(int page, nd_pl_request_t *q) {
 	p->loading = true;
 	pl_buttons(p);
 	p->submitted = lv_tick_get();
-	lv_label_set_text(p->status, tr("nd_working"));
+	// Drag scrolling and local move saves leave the playlist summary unchanged.
+	// Replacing it for each window read makes it flash while the pointer is held.
+	bool rearrange = page == 1 && (p->reordering || p->reorder_pending) &&
+		(q->action == NDPL_ENTRIES || q->action == NDPL_MOVE || q->action == NDPL_SORT);
+	if (!rearrange) lv_label_set_text(p->status, tr("nd_working"));
 }
 static void pl_reorder_exit(pl_page_t *p, bool feedback) {
 	pl_drag_cancel(p);
-	p->reordering = false;
+	p->reordering = p->reorder_pending = false;
 	if (feedback && p->order_saved) toast_success("medialist_playlist_order_saved");
 	p->order_saved = false;
 	pl_reorder_rows(p);
@@ -508,6 +535,14 @@ static void pl_reorder_clicked(lv_event_t *event) {
 	if (!lib.writable || !*lib.path) { gui_notify_popup("nd_cache_readonly"); return; }
 	if (p->playlist.count < 2 || navidrome_playlists_busy()) return;
 	popover_close();
+	if (p->playlist.sort != ND_PL_ORIGINAL) {
+		nd_pl_request_t q = {.action = NDPL_SORT, .id = p->playlist.id, .revision = p->playlist.revision, .sort = ND_PL_ORIGINAL, .confirmed = true, .view_revision = p->playlist.view_revision, .metadata_revision = p->playlist.metadata_revision};
+		p->reorder_pending = true;
+		pl_action(1, &q);
+		if (!p->loading)
+			p->reorder_pending = false;
+		return;
+	}
 	p->order_saved = false;
 	p->reordering = true;
 	pl_reorder_rows(p);
@@ -526,13 +561,12 @@ static void pl_grip(lv_event_t *event) {
 	if (code == LV_EVENT_PRESSED) {
 		if (p->loading || p->move_pending || navidrome_playlists_busy()) return;
 		for (int i = 0; i < p->count; i++) if (p->menus[i] == lv_event_get_current_target(event)) {
-			p->drag = (nd_pl_request_t){.action = NDPL_MOVE, .id = p->playlist.id,
-				.revision = p->playlist.revision, .ordinal = p->first + i, .occurrence = p->entries[i].occurrence};
-			snprintf(p->drag.track, sizeof(p->drag.track), "%s", p->entries[i].track.id);
-			p->drag_to = p->drag.ordinal;
-			p->dragging = true;
-			pl_reorder_rows(p);
-			break;
+				p->drag = (nd_pl_request_t){.action = NDPL_MOVE, .id = p->playlist.id, .revision = p->playlist.revision, .view_revision = p->playlist.view_revision, .metadata_revision = p->playlist.metadata_revision, .ordinal = p->first + i, .occurrence = p->entries[i].occurrence};
+				snprintf(p->drag.track, sizeof(p->drag.track), "%s", p->entries[i].track.id);
+				p->drag_to = p->drag.ordinal;
+				p->dragging = true;
+				pl_reorder_rows(p);
+				break;
 		}
 		return;
 	}
@@ -671,6 +705,7 @@ static void *pl_bind_menu(int page, const nd_playlist_t *playlist, const nd_play
 	pl_target.capture = (nd_playlist_capture_t){.playlist = playlist->id, .revision = playlist->revision,
 		.count = playlist->count, .whole = entry == NULL, .single = entry != NULL, .ordinal = ordinal};
 	if (entry) {
+		pl_target.capture.ordinal = entry->position;
 		pl_target.capture.occurrence = entry->occurrence;
 		snprintf(pl_target.capture.track, sizeof(pl_target.capture.track), "%s", entry->track.id);
 	}
@@ -685,11 +720,9 @@ static bool pl_menu_valid(void *user, nd_library_t *lib) {
 	int page = pl_target.page;
 	pl_page_t *p = &pl_pages[page];
 	navidrome_library_snapshot(lib);
-	bool ok = (unsigned)(uintptr_t)user == pl_target.token && pl_target.token == pl_menu_token &&
-		pl_active(page) && p->serial == pl_target.serial && !p->loading && !p->selecting && !p->reordering && !pl_gesture() &&
-		navidrome_playback_current(&pl_target.identity, false) && p->epoch == lib->epoch &&
-		p->card == lib->card_epoch && !strcmp(p->scope, lib->scope);
-	if (ok && page == 1) ok = p->playlist.id == pl_target.playlist.id && p->playlist.revision == pl_target.playlist.revision;
+	bool ok = (unsigned)(uintptr_t)user == pl_target.token && pl_target.token == pl_menu_token && pl_active(page) && p->serial == pl_target.serial && !p->loading && !p->selecting && !p->reordering && !p->reorder_pending && !pl_gesture() && navidrome_playback_current(&pl_target.identity, false) && p->epoch == lib->epoch && p->card == lib->card_epoch && !strcmp(p->scope, lib->scope);
+	if (ok && page == 1)
+		ok = p->playlist.id == pl_target.playlist.id && p->playlist.revision == pl_target.playlist.revision && p->playlist.view_revision == pl_target.playlist.view_revision && p->playlist.metadata_revision == pl_target.playlist.metadata_revision;
 	if (!ok) gui_notify_popup("nd_pl_stale");
 	return ok;
 }
@@ -722,7 +755,8 @@ static void pl_play(lv_event_t *event) {
 	navidrome_library_snapshot(&lib);
 	if (p->epoch != lib.epoch || p->card != lib.card_epoch || strcmp(p->scope, lib.scope)) { gui_notify_popup("nd_pl_stale"); return; }
 	bool shuffle = lv_event_get_current_target(event) == p->play_buttons[1];
-	if (!navidromeplay_playlist_shortcut(&lib, p->playlist.id, p->playlist.revision, p->playlist.count, shuffle, p->screen))
+	nd_playlist_capture_t request = {.playlist = p->playlist.id, .revision = p->playlist.revision, .count = p->playlist.count, .whole = true, .view = true, .sort = p->playlist.sort, .view_revision = p->playlist.view_revision, .metadata_revision = p->playlist.metadata_revision};
+	if (!navidromeplay_playlist_view(&lib, &request, true, shuffle, p->screen))
 		gui_notify_popup("nd_audio_unavailable");
 	pl_buttons(p);
 }
@@ -773,6 +807,33 @@ static void pl_download_menu(void *user) {
 		pl_pages[1].playlist.id == pl_menu_playlist.id && pl_pages[1].playlist.revision == pl_menu_playlist.revision)
 		pl_download(NULL);
 }
+static void pl_sort_chosen(void *user) {
+	uintptr_t encoded = (uintptr_t)user;
+	nd_pl_sort_t sort = (nd_pl_sort_t)(encoded & 15);
+	nd_library_t lib;
+	if (!pl_menu_valid((void *)(encoded >> 4), &lib))
+		return;
+	pl_page_t *p = &pl_pages[1];
+	nd_pl_request_t q = {.action = NDPL_SORT, .id = p->playlist.id, .revision = p->playlist.revision, .sort = sort, .view_revision = p->playlist.view_revision, .metadata_revision = p->playlist.metadata_revision};
+	pl_action(1, &q);
+}
+static void pl_sort_menu(void *user) {
+	nd_library_t lib;
+	if (!pl_menu_valid(user, &lib))
+		return;
+	const char *labels[] = {"nd_sort_original", "nd_sort_title_az", "nd_sort_title_za", "nd_sort_album_az", "nd_sort_album_za", "nd_sort_album_artist_az", "nd_sort_album_artist_za", "nd_sort_artist_az", "nd_sort_artist_za"};
+	popover_item_t items[9];
+	for (int i = 0; i < 9; i++)
+		items[i] = (popover_item_t){labels[i], pl_sort_chosen, (void *)(((uintptr_t)user << 4) | (uintptr_t)i), i == (int)pl_target.playlist.sort && !(i == 0 && pl_target.playlist.manual)};
+	popover_show(pl_pages[1].sort, items, 9);
+}
+static void pl_sort_clicked(lv_event_t *event) {
+	(void)event;
+	pl_page_t *p = &pl_pages[1];
+	if (!pl_active(1) || pl_gesture() || p->loading || p->selecting || p->reordering || p->reorder_pending || lv_obj_has_state(p->sort, LV_STATE_DISABLED))
+		return;
+	pl_sort_menu(pl_bind_menu(1, &p->playlist, NULL, 0));
+}
 static void pl_button(lv_event_t *event) {
 	if (pl_gesture())
 		return;
@@ -818,7 +879,8 @@ static void pl_button(lv_event_t *event) {
 	pl_menu_playlist = p->playlist;
 	void *menu = pl_bind_menu(1, &p->playlist, NULL, 0);
 	if (slot == 0) {
-		popover_item_t items[6]; int n = 0;
+		popover_item_t items[7];
+		int n = 0;
 		items[n++] = (popover_item_t){"rename", pl_rename, NULL, false};
 		if (p->playlist.count) items[n++] = (popover_item_t){"add_to_queue", pl_queue, menu, false};
 		items[n++] = (popover_item_t){"nd_pl_download", pl_download_menu, (void *)(uintptr_t)++pl_download_menu_token, false};
@@ -880,8 +942,9 @@ static void pl_row(lv_event_t *event) {
 				gui_notify_popup("nd_pl_stale");
 				return;
 			}
-			if (!navidromeplay_playlist(&lib, p->playlist.id, p->playlist.revision,
-					p->first + index, p->entries[index].occurrence, p->entries[index].track.id, p->screen))
+			nd_playlist_capture_t request = {.playlist = p->playlist.id, .revision = p->playlist.revision, .count = p->playlist.count, .view = true, .sort = p->playlist.sort, .view_revision = p->playlist.view_revision, .metadata_revision = p->playlist.metadata_revision, .ordinal = p->first + index, .occurrence = p->entries[index].occurrence, .stored_position = p->entries[index].position, .stored_ordinal = p->entries[index].ordinal};
+			snprintf(request.track, sizeof(request.track), "%s", p->entries[index].track.id);
+			if (!navidromeplay_playlist_view(&lib, &request, false, false, p->screen))
 				gui_notify_popup("nd_audio_unavailable");
 		}
 		return;
@@ -1001,13 +1064,13 @@ static void pl_unloaded(lv_event_t *event) {
 	confirm_close();
 	pl_name_hide();
 }
-static bool pl_back_peek(void) { return !lv_obj_is_hidden(pl_name_layer) || (pl_active(1) && (pl_pages[1].selecting || pl_pages[1].reordering)); }
+static bool pl_back_peek(void) { return !lv_obj_is_hidden(pl_name_layer) || (pl_active(1) && (pl_pages[1].selecting || pl_pages[1].reordering || pl_pages[1].reorder_pending)); }
 static bool pl_back(void) {
 	if (!lv_obj_is_hidden(pl_name_layer)) {
 		pl_name_hide();
 		return true;
 	}
-	if (pl_active(1) && pl_pages[1].reordering) {
+	if (pl_active(1) && (pl_pages[1].reordering || pl_pages[1].reorder_pending)) {
 		pl_reorder_exit(&pl_pages[1], true);
 		return true;
 	}
@@ -1045,7 +1108,7 @@ void navidromeplaylists_refresh(void) {
 		if (i == 1) {
 			pl_buttons(p);
 			for (int row = 0; row < p->count; row++) {
-				bool marked = navidromeplay_matches(&lib, ND_TRACKS, p->entries[row].track.id);
+				bool marked = navidromeplay_occurrence_matches(&lib, p->playlist.id, p->entries[row].occurrence, p->entries[row].track.id);
 				playmark_show(p->playmarks[row], marked);
 			}
 		}
@@ -1139,6 +1202,9 @@ bool navidromeplaylists_bind_current(const char *path) {
 		playlist_current_path(pl_current_ref, sizeof(pl_current_ref)) && navidrome_context(&identity, false);
 	if (ok) {
 		pl_current_track.row = row.row;
+		snprintf(pl_current_track.album_id, sizeof(pl_current_track.album_id), "%s", row.album_id);
+		snprintf(pl_current_track.album, sizeof(pl_current_track.album), "%s", row.album);
+		snprintf(pl_current_track.album_artist, sizeof(pl_current_track.album_artist), "%s", row.album_artist);
 		pl_current_track.profile = identity.profile_epoch;
 		pl_current_track.card = identity.card_epoch;
 		snprintf(pl_current_track.scope, sizeof(pl_current_track.scope), "%s", lib.scope);
@@ -1231,8 +1297,12 @@ void navidromeplaylists_init(gui_config_t *cfg) {
 			lv_obj_set_style_pad_column(p->play_actions, ui_px(20), 0);
 			lv_obj_set_scrollable(p->play_actions, false);
 			lv_obj_set_event_bubble(p->play_actions, true);
-			for (int i = 0; i < 2; i++) {
-				lv_obj_t *button = p->play_buttons[i] = lv_btn_create(p->play_actions);
+			for (int i = 0; i < 3; i++) {
+				lv_obj_t *button = lv_btn_create(p->play_actions);
+				if (i == 2)
+					p->sort = button;
+				else
+					p->play_buttons[i] = button;
 				lv_obj_set_size(button, ui_px(56), ui_px(56));
 				lv_obj_set_style_border_width(button, 0, 0);
 				lv_obj_set_style_shadow_width(button, 0, 0);
@@ -1242,10 +1312,10 @@ void navidromeplaylists_init(gui_config_t *cfg) {
 				lv_obj_set_style_opa(button, LV_OPA_50, LV_STATE_PRESSED);
 				lv_obj_set_style_opa(button, LV_OPA_40, LV_STATE_DISABLED);
 				lv_obj_t *glyph = lv_image_create(button);
-				lv_image_set_src(glyph, i ? &icon_shuffle : &icon_play_small);
+				lv_image_set_src(glyph, i == 2 ? &icon_sort_az : i ? &icon_shuffle : &icon_play_small);
 				lv_obj_add_style(glyph, &theme_style_icon, 0);
 				lv_obj_center(glyph);
-				lv_obj_add_event_cb(button, pl_play, LV_EVENT_CLICKED, NULL);
+				lv_obj_add_event_cb(button, i == 2 ? pl_sort_clicked : pl_play, LV_EVENT_CLICKED, NULL);
 				switcher_attach_back_gesture(button);
 				player_sheet_attach_drag(button, true);
 			}

@@ -8,7 +8,7 @@
 #include "src/system/core/lang.h"
 #include "src/gui/shell/uiscale.h"
 
-#define POPOVER_MAX_ITEMS 7
+#define POPOVER_MAX_ITEMS 9
 #define POPOVER_WIDTH ui_px(284)
 #define POPOVER_ROW_HEIGHT ui_px(62)
 #define POPOVER_RADIUS ui_px(16)
@@ -73,7 +73,9 @@ void popover_init(void) {
 	lv_obj_set_style_pad_gap(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_scrollable(card, false);
+	lv_obj_set_scrollable(card, true);
+	lv_obj_set_scroll_dir(card, LV_DIR_VER);
+	lv_obj_set_scrollbar_mode(card, LV_SCROLLBAR_MODE_AUTO);
 	// A tap on the card itself must not fall through to the veil.
 	lv_obj_set_event_bubble(card, false);
 }
@@ -107,6 +109,13 @@ void popover_show(lv_obj_t *anchor, const popover_item_t *items, int count) {
 	}
 	lv_obj_set_width(card, width);
 
+	// Resolve the full-screen veil before measuring: hidden objects may still
+	// have zero geometry on the first menu opening.
+	lv_obj_set_hidden(veil, false);
+	lv_obj_update_layout(veil);
+	// Cap large/translated menus to the screen and keep every choice reachable.
+	lv_obj_set_style_max_height(card, lv_obj_get_height(veil) - 2 * POPOVER_MARGIN, 0);
+	lv_obj_scroll_to_y(card, 0, LV_ANIM_OFF);
 	// Rebuild the rows.
 	lv_obj_clean(card);
 	for (int i = 0; i < count; i++) {

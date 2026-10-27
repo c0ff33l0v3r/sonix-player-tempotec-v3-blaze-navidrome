@@ -11,6 +11,8 @@
 #define ND_WINDOW 16
 #define ND_LETTER_BUCKETS 28
 typedef enum { ND_ALBUMS, ND_TRACKS, ND_ARTISTS, ND_GENRES } nd_kind_t;
+// Zero preserves callers which do not opt into presentation sorting (Search).
+typedef enum { ND_ORDER_NAME, ND_ORDER_NAME_DESC, ND_ORDER_YEAR, ND_ORDER_YEAR_DESC, ND_ORDER_ALBUM, ND_ORDER_ALBUM_DESC, ND_ORDER_ALBUM_ARTIST, ND_ORDER_ALBUM_ARTIST_DESC, ND_ORDER_ARTIST, ND_ORDER_ARTIST_DESC } nd_order_t;
 typedef struct {
 	char id[ND_ID_MAX], title[ND_TEXT_MAX], artist[ND_TEXT_MAX], cover[ND_ID_MAX];
 	int duration, disc, track;
@@ -34,7 +36,7 @@ typedef struct {
 	sqlite3_stmt *insert, *relationship, *genre;
 	sqlite3_stmt *favorite_album, *favorite_seen, *favorite_member, *favorite_song;
 	sqlite3_stmt *local_insert, *local_artist, *annotation;
-	bool favorites, local, navigation;
+	bool favorites, local, navigation, display;
 	int64_t view;
 	char scope[33], path[1024]; // Exact published source path, including relative roots.
 	int64_t generation;
@@ -47,13 +49,16 @@ typedef struct {
 	nd_kind_t filter_kind;
 	char filter[ND_ID_MAX];
 	char search[256]; // Literal substring, separate from an opaque relationship ID.
+	nd_order_t order;
 } nd_query_t;
 
 typedef struct {
 	nd_row_t row;
 	char album_id[ND_ID_MAX], album[ND_TEXT_MAX], artist_id[ND_ID_MAX];
+	char album_artist[ND_TEXT_MAX];
 	char genre[ND_TEXT_MAX]; // Optional display text, never a navigation identity.
 	int year;
+	int64_t saved_occurrence; // Captured source identity, never a server song ID.
 } nd_playrow_t;
 
 typedef struct {
@@ -71,6 +76,7 @@ bool nd_store_album_window(nd_store_t *store, int64_t generation, const nd_query
 // Worker-only compact queue index and bounded individual row resolution.
 bool nd_store_play_index(nd_store_t *store, int64_t generation, const nd_query_t *query, const char *selected, int64_t **handles, int *count, int *start);
 bool nd_store_album_beside(nd_store_t *store, int64_t generation, const char *id, bool forward, char next[ND_ID_MAX]);
+bool nd_store_album_beside_order(nd_store_t *store, int64_t generation, const char *id, bool forward, nd_order_t order, char next[ND_ID_MAX]);
 // Worker-owned TEMP staging; each add deduplicates handles within this batch.
 bool nd_store_queue_add(nd_store_t *store, int64_t generation, nd_kind_t kind, const char *id);
 bool nd_store_queue_finish(nd_store_t *store, int64_t **handles, int *count);

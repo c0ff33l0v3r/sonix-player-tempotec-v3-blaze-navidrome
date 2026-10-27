@@ -47,7 +47,7 @@ void *__wrap_calloc(size_t n, size_t size) {
 int __real_sqlite3_step(sqlite3_stmt *st);
 int __wrap_sqlite3_step(sqlite3_stmt *st) {
 	const char *sql = sqlite3_sql(st);
-	if (sql && fail_read && !strncmp(sql, "SELECT id,track,title,artist,cover,duration FROM entry", 51)) {
+	if (sql && fail_read && (!strncmp(sql, "SELECT id,track,title,artist,cover,duration FROM entry", 51) || !strncmp(sql, "WITH saved AS", 13))) {
 		fail_read = false;
 		return SQLITE_IOERR;
 	}

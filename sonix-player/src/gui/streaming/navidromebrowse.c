@@ -1,30 +1,31 @@
-#include "navidromebrowse.h"
-#include "navidromerow.h"
-#include "navidromeofflinebadge.h"
-#include "src/system/streaming/navidromedownloads.h"
-#include "src/system/core/config.h"
 #include "navidromealbum.h"
 #include "navidromeart.h"
+#include "navidromebrowse.h"
 #include "navidromefavorites.h"
+#include "navidromeofflinebadge.h"
 #include "navidromepage.h"
 #include "navidromeplaylists.h"
+#include "navidromerow.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/nowplaying/coverflow.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/azindex.h"
 #include "src/gui/shell/icons.h"
-#include "src/gui/shell/popover.h"
 #include "src/gui/shell/playmark.h"
+#include "src/gui/shell/popover.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
 #include "src/gui/shell/uiscale.h"
+#include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
 #include "src/system/streaming/navidrome.h"
+#include "src/system/streaming/navidromedownloads.h"
 #include "src/system/streaming/navidromeplay.h"
 #include "src/system/streaming/navidromeplaylists.h"
+#include "src/system/streaming/navidromesort.h"
 #include "src/system/streaming/navidromestars.h"
 #include <limits.h>
 #include <pthread.h>
@@ -56,7 +57,7 @@ typedef struct {
 	bool selecting, select_busy, queue_busy, picking;
 	int64_t session;
 	int64_t favorite_revision;
-	lv_obj_t *select_download, *select_queue, *select_add, *select_close, *select_favorite, *menus[ND_WINDOW];
+	lv_obj_t *sort, *select_download, *select_queue, *select_add, *select_close, *select_favorite, *menus[ND_WINDOW];
 	bool chosen[ND_WINDOW];
 } browse_page_t;
 static browse_page_t pages[3];
@@ -192,8 +193,8 @@ static void window_done(void *value) {
 		p->map_ready = true;
 	}
 	if (!p->map_bound) {
-		bool alphabetical = !(p->query.kind == ND_TRACKS && *p->query.filter);
-		azindex_set_rows(p->index, alphabetical && p->map_ready ? p->letters : NULL, p->total, false);
+		bool alphabetical = !(p->query.kind == ND_TRACKS && *p->query.filter) && p->query.order < ND_ORDER_YEAR;
+		azindex_set_rows(p->index, alphabetical && p->map_ready ? p->letters : NULL, p->total, p->query.order == ND_ORDER_NAME_DESC);
 		p->map_bound = true;
 	}
 	memcpy(p->data, result->rows, sizeof(p->data));
@@ -367,6 +368,7 @@ static void *read_windows(void *unused) {
 }
 
 static void submit_window(browse_page_t *p) {
+	browse_selection_ui(p);
 	nd_library_t library;
 	browse_snapshot(p->query.favorites, &library);
 	if (!library.ready)
@@ -398,7 +400,7 @@ static void submit_window(browse_page_t *p) {
 	snprintf(request.anchor, sizeof(request.anchor), "%s", p->anchor);
 	request.first = first;
 	p->requested_first = first;
-	request.need_map = !p->map_ready || p->library.epoch != library.epoch || p->library.generation != library.generation;
+	request.need_map = p->query.order < ND_ORDER_YEAR && !(p->query.kind == ND_TRACKS && p->query.filter[0]) && (!p->map_ready || p->library.epoch != library.epoch || p->library.generation != library.generation);
 	if (request.need_map) {
 		p->map_bound = false;
 		azindex_set_rows(p->index, NULL, 0, false);
@@ -486,6 +488,7 @@ static void row_clicked(lv_event_t *e) {
 			next->query.favorites = p->query.favorites;
 			next->query.kind = p->query.kind == ND_ALBUMS ? ND_TRACKS : ND_ALBUMS;
 			next->query.filter_kind = p->query.kind;
+			next->query.order = next->query.kind == ND_ALBUMS ? nd_sort_preference(ND_ALBUMS, next->query.favorites) : ND_ORDER_NAME;
 			lv_snprintf(next->query.filter, sizeof(next->query.filter), "%s", p->data[i].id);
 			lv_label_set_text(next->title, p->data[i].title);
 			next->count = next->total = 0;
@@ -639,6 +642,7 @@ static void browse_open(nd_kind_t kind, bool picking, bool favorites) {
 	memset(&p->query, 0, sizeof(p->query));
 	p->query.kind = kind;
 	p->query.favorites = favorites;
+	p->query.order = nd_sort_preference(kind, favorites);
 	p->selecting = false;
 	p->selected = 0;
 	p->session++;
@@ -707,6 +711,7 @@ bool navidromebrowse_artist(const char *id, const char *title) {
 	p->session++;
 	browse_selection_ui(p);
 	p->query.kind = ND_ALBUMS;
+	p->query.order = nd_sort_preference(ND_ALBUMS, false);
 	p->query.filter_kind = ND_ARTISTS;
 	lv_snprintf(p->query.filter, sizeof(p->query.filter), "%s", id);
 	lv_label_set_text(p->title, title && *title ? title : tr("artists"));
@@ -749,7 +754,11 @@ static void browse_selection_ui(browse_page_t *p) {
 		lv_obj_set_style_text_color(p->selection_status, p->album.tinted ? p->album.ink : theme()->text_primary, 0);
 		lv_obj_move_foreground(p->selection_status);
 	}
-	lv_obj_t *buttons[] = {p->select_add, p->select_close, p->select_favorite, p->select_queue, p->select_download};
+	bool sortable = !(p->query.kind == ND_TRACKS && p->query.filter[0]);
+	lv_obj_set_hidden(p->sort, p->selecting || !sortable);
+	const lv_image_dsc_t *sort_icon = p->query.order == ND_ORDER_YEAR ? &icon_sort_year_asc : p->query.order == ND_ORDER_YEAR_DESC ? &icon_sort_year_desc : p->query.order % 2 ? &icon_sort_za : &icon_sort_az;
+	lv_image_set_src(lv_obj_get_child(p->sort, 0), sort_icon);
+	lv_obj_t *buttons[] = {p->select_add, p->select_close, p->select_favorite, p->select_queue, p->select_download, p->sort};
 	for (unsigned i = 0; i < sizeof(buttons) / sizeof(*buttons); i++) {
 		if (buttons[i])
 			navidromealbum_icon(&p->album, lv_obj_get_child(buttons[i], 0));
@@ -1020,6 +1029,59 @@ static void browse_menu_cb(lv_event_t *e) {
 		}
 }
 
+static browse_page_t *sort_page;
+static unsigned sort_serial;
+static uintptr_t sort_token;
+
+static void browse_sort_pick(void *value) {
+	browse_page_t *p = sort_page;
+	uintptr_t encoded = (uintptr_t)value;
+	nd_order_t order = (nd_order_t)(encoded & 15);
+	if ((encoded >> 4) != sort_token || !p || p->serial != sort_serial || p->selecting || gesture() || lv_screen_active() != p->screen)
+		return;
+	if (!nd_sort_save(p->query.kind, p->query.favorites, order)) {
+		gui_notify_popup("nd_cache_error");
+		return;
+	}
+	p->query.order = order;
+	p->serial++;
+	p->map_ready = p->map_bound = false;
+	azindex_set_rows(p->index, NULL, 0, false);
+	p->count = p->total = 0;
+	lv_obj_set_height(p->extent, 1);
+	lv_obj_scroll_to_y(p->list, 0, LV_ANIM_OFF);
+	for (int i = 0; i < ND_WINDOW; i++)
+		lv_obj_set_hidden(p->rows[i], true);
+	submit_window(p);
+}
+
+static void browse_sort_clicked(lv_event_t *event) {
+	browse_page_t *p = lv_event_get_user_data(event);
+	if (p->selecting || gesture() || lv_screen_active() != p->screen)
+		return;
+	sort_page = p;
+	sort_serial = p->serial;
+	sort_token = (sort_token + 1) & (UINTPTR_MAX >> 4);
+	if (p->query.kind == ND_TRACKS) {
+		const char *labels[] = {"nd_sort_title_az", "nd_sort_title_za", "nd_sort_album_az", "nd_sort_album_za", "nd_sort_album_artist_az", "nd_sort_album_artist_za", "nd_sort_artist_az", "nd_sort_artist_za"};
+		const nd_order_t orders[] = {ND_ORDER_NAME, ND_ORDER_NAME_DESC, ND_ORDER_ALBUM, ND_ORDER_ALBUM_DESC, ND_ORDER_ALBUM_ARTIST, ND_ORDER_ALBUM_ARTIST_DESC, ND_ORDER_ARTIST, ND_ORDER_ARTIST_DESC};
+		popover_item_t choices[8];
+		for (int i = 0; i < 8; i++)
+			choices[i] = (popover_item_t){labels[i], browse_sort_pick, (void *)((sort_token << 4) | orders[i]), orders[i] == p->query.order};
+		popover_show(p->sort, choices, 8);
+		return;
+	}
+	if (p->query.kind != ND_ALBUMS) {
+		browse_sort_pick((void *)((sort_token << 4) | (p->query.order == ND_ORDER_NAME_DESC ? ND_ORDER_NAME : ND_ORDER_NAME_DESC)));
+		return;
+	}
+	const char *labels[] = {"medialist_sort_name_az", "medialist_sort_name_za", "medialist_sort_year_up", "medialist_sort_year_down"};
+	popover_item_t choices[4];
+	for (int i = 0; i < 4; i++)
+		choices[i] = (popover_item_t){labels[i], browse_sort_pick, (void *)((sort_token << 4) | (uintptr_t)i), i == (int)p->query.order};
+	popover_show(p->sort, choices, 4);
+}
+
 void navidromebrowse_init(gui_config_t *cfg) {
 	pitch = ui_px(100) + ui_px(8);
 	for (int level = 0; level < 3; level++) {
@@ -1030,6 +1092,20 @@ void navidromebrowse_init(gui_config_t *cfg) {
 		p->title = settingsrow_title(p->screen, cfg, "navidrome");
 		settingsrow_title_corner_slots(p->title, cfg, 0);
 		p->session = 2000 + level;
+		p->sort = lv_btn_create(p->screen);
+		lv_obj_set_size(p->sort, ui_px(56), ui_px(56));
+		lv_obj_align(p->sort, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
+		lv_obj_set_style_bg_opa(p->sort, LV_OPA_TRANSP, 0);
+		lv_obj_set_style_border_width(p->sort, 0, 0);
+		lv_obj_set_style_shadow_width(p->sort, 0, 0);
+		lv_obj_set_style_pad_all(p->sort, 0, 0);
+		lv_obj_t *sort_icon = lv_image_create(p->sort);
+		lv_image_set_src(sort_icon, &icon_sort_az);
+		lv_obj_add_style(sort_icon, &theme_style_icon, 0);
+		lv_obj_center(sort_icon);
+		lv_obj_add_event_cb(p->sort, browse_sort_clicked, LV_EVENT_CLICKED, p);
+		switcher_attach_back_gesture(p->sort);
+		player_sheet_attach_drag(p->sort, true);
 		for (int slot = 0; slot < 5; slot++) {
 			lv_obj_t *button = lv_btn_create(p->screen);
 			if (slot == 4)

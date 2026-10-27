@@ -1,5 +1,6 @@
 #include "navidromeplayliststore.h"
 #include "src/system/core/sha256.h"
+#include "src/system/library/library.h"
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
@@ -8,6 +9,10 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+static bool playlist_sort_open(nd_playlist_store_t *s, bool write);
+static bool playlist_view_read(nd_playlist_store_t *s, nd_playlist_t *p);
+static bool playlist_sorted_rows(nd_playlist_store_t *s, int64_t id, int offset, int64_t session, nd_pl_sort_t sort, bool view, nd_playlist_entry_t *out, int limit, int *count);
 
 bool nd_pl_sql(nd_playlist_store_t *s, const char *sql) {
 	if (sqlite3_exec(s->db, sql, NULL, NULL, NULL) == SQLITE_OK)
@@ -103,6 +108,8 @@ bool nd_pl_open(nd_playlist_store_t *s, const char *path, const char *scope, boo
 	bool ok = sqlite3_step(st) == SQLITE_ROW && !strcmp((const char *)sqlite3_column_text(st, 0), scope) && sqlite3_step(st) == SQLITE_DONE;
 	sqlite3_finalize(st);
 	if (ok)
+		ok = playlist_sort_open(s, write);
+	if (ok)
 		s->error = NULL;
 	return ok;
 }
@@ -172,6 +179,8 @@ bool nd_pl_get(nd_playlist_store_t *s, int64_t id, nd_playlist_t *out) {
 		ok = nd_pl_fingerprint(s, id, hash);
 	if (ok)
 		out->dirty = *out->remote && strcmp(hash, out->baseline);
+	if (ok)
+		ok = playlist_view_read(s, out);
 	if (!ok && !s->error)
 		s->error = "nd_pl_stale";
 	return ok;
@@ -197,29 +206,9 @@ bool nd_pl_list(nd_playlist_store_t *s, int offset, nd_playlist_t out[ND_WINDOW]
 	sqlite3_finalize(st);
 	return ok && rc == SQLITE_DONE;
 }
-bool nd_pl_entries(nd_playlist_store_t *s, int64_t id, int offset, int64_t session, nd_playlist_entry_t out[ND_WINDOW], int *count) {
-	*count = 0;
-	sqlite3_stmt *st = NULL;
-	if (!nd_pl_prepare(s, &st, "SELECT id,track,title,artist,cover,duration,EXISTS(SELECT 1 FROM selection WHERE session=? AND occurrence=entry.id) FROM entry WHERE p=? ORDER BY ordinal LIMIT 16 OFFSET ?"))
-		return false;
-	sqlite3_bind_int64(st, 1, session);
-	sqlite3_bind_int64(st, 2, id);
-	sqlite3_bind_int(st, 3, offset);
-	int rc;
-	while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
-		nd_playlist_entry_t *e = &out[(*count)++];
-		memset(e, 0, sizeof(*e));
-		e->occurrence = sqlite3_column_int64(st, 0);
-		text(st, 1, e->track.id, sizeof(e->track.id));
-		text(st, 2, e->track.title, sizeof(e->track.title));
-		text(st, 3, e->track.artist, sizeof(e->track.artist));
-		text(st, 4, e->track.cover, sizeof(e->track.cover));
-		e->track.duration = sqlite3_column_int(st, 5);
-		e->selected = sqlite3_column_int(st, 6);
-	}
-	sqlite3_finalize(st);
-	return rc == SQLITE_DONE;
-}
+
+bool nd_pl_entries(nd_playlist_store_t *s, int64_t id, int offset, int64_t session, nd_playlist_entry_t out[ND_WINDOW], int *count) { return playlist_sorted_rows(s, id, offset, session, ND_PL_ORIGINAL, false, out, ND_WINDOW, count); }
+
 static bool play_rows(nd_playlist_store_t *s, int64_t id, int64_t revision, int first,
 		nd_playlist_entry_t *out, int limit, int *count, int *total) {
 	*count = *total = 0;
@@ -239,30 +228,8 @@ static bool play_rows(nd_playlist_store_t *s, int64_t id, int64_t revision, int 
 		}
 	}
 	sqlite3_finalize(st);
-	st = NULL;
-	if (ok) ok = nd_pl_prepare(s, &st, "SELECT id,track,title,artist,cover,duration FROM entry WHERE p=? ORDER BY ordinal LIMIT ? OFFSET ?");
-	if (ok) {
-		sqlite3_bind_int64(st, 1, id);
-		sqlite3_bind_int(st, 2, limit);
-		sqlite3_bind_int(st, 3, first);
-		int rc;
-		while ((rc = sqlite3_step(st)) == SQLITE_ROW && ok) {
-			nd_playlist_entry_t *e = &out[(*count)++];
-			memset(e, 0, sizeof(*e));
-			e->occurrence = sqlite3_column_int64(st, 0);
-			const char *track = (const char *)sqlite3_column_text(st, 1);
-			int bytes = sqlite3_column_bytes(st, 1);
-			ok = e->occurrence > 0 && track && bytes > 0 && (size_t)bytes < sizeof(e->track.id) && strlen(track) == (size_t)bytes;
-			if (!ok) break;
-			memcpy(e->track.id, track, (size_t)bytes + 1);
-			text(st, 2, e->track.title, sizeof(e->track.title));
-			text(st, 3, e->track.artist, sizeof(e->track.artist));
-			text(st, 4, e->track.cover, sizeof(e->track.cover));
-			e->track.duration = sqlite3_column_int(st, 5);
-		}
-		ok = ok && rc == SQLITE_DONE && *count == (*total - first < limit ? *total - first : limit);
-	}
-	sqlite3_finalize(st);
+	if (ok)
+		ok = playlist_sorted_rows(s, id, first, 0, ND_PL_ORIGINAL, false, out, limit, count) && *count == (*total - first < limit ? *total - first : limit);
 	if (ok) ok = nd_pl_sql(s, "COMMIT");
 	if (!ok) sqlite3_exec(s->db, "ROLLBACK", NULL, NULL, NULL);
 	if (!ok && !s->error) s->error = "nd_pl_storage_error";
@@ -471,8 +438,12 @@ bool nd_pl_append(nd_playlist_store_t *s, int64_t id, const nd_row_t *r, bool de
 	sqlite3_bind_int(st, 6, r->duration);
 	bool ok = sqlite3_step(st) == SQLITE_DONE;
 	sqlite3_finalize(st);
-	if (ok)
-		(*added)++;
+	if (ok) {
+		nd_playrow_t info = {.row = *r};
+		ok = nd_pl_sort_info(s, sqlite3_last_insert_rowid(s->db), &info);
+		if (ok)
+			(*added)++;
+	}
 	return ok;
 }
 bool nd_pl_copy(nd_playlist_store_t *s, int64_t id, const char *name, int64_t *copy) {
@@ -486,7 +457,7 @@ bool nd_pl_copy(nd_playlist_store_t *s, int64_t id, const char *name, int64_t *c
 	sqlite3_bind_int64(st, 2, id);
 	bool ok = sqlite3_step(st) == SQLITE_DONE;
 	sqlite3_finalize(st);
-	return ok;
+	return ok && nd_pl_sort_copy(s, id, *copy);
 }
 bool nd_pl_baseline(nd_playlist_store_t *s, int64_t id, const char *remote, const char *hash, bool readonly, const char *changed) {
 	sqlite3_stmt *st = NULL;
@@ -568,9 +539,343 @@ bool nd_pl_decode(nd_playlist_store_t *s, const nd_document_t *doc, int64_t *id,
 		if (!*row.title)
 			snprintf(row.title, sizeof(row.title), "%s", row.id);
 		row.duration = json_obj_long(d, t, "duration", 0);
-		if (ok)
-			ok = nd_pl_append(s, *id, &row, false, &added, &skipped);
+		if (ok) {
+			nd_playrow_t info = {.row = row};
+			nd_pl_field(d, t, "albumId", info.album_id, sizeof(info.album_id), false, false);
+			nd_pl_field(d, t, "album", info.album, sizeof(info.album), false, true);
+			if (!nd_pl_field(d, t, "displayAlbumArtist", info.album_artist, sizeof(info.album_artist), false, true))
+				info.album_artist[0] = 0;
+			if (!info.album_artist[0] && !nd_pl_field(d, t, "albumArtist", info.album_artist, sizeof(info.album_artist), false, true))
+				info.album_artist[0] = 0;
+			long disc = json_obj_long(d, t, "discNumber", 0), number = json_obj_long(d, t, "track", 0);
+			info.row.disc = disc > 0 && disc <= INT_MAX ? (int)disc : 0;
+			info.row.track = number > 0 && number <= INT_MAX ? (int)number : 0;
+			ok = nd_pl_append(s, *id, &info.row, false, &added, &skipped) && nd_pl_sort_info(s, sqlite3_last_insert_rowid(s->db), &info);
+		}
 	}
 	remote->count = added;
 	return ok && added == expected && nd_pl_fingerprint(s, *id, remote->baseline);
+}
+
+// Worker-only presentation state. None of these operations edits saved order.
+static void playlist_sort_key(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+	const char *value = argc ? (const char *)sqlite3_value_text(argv[0]) : NULL;
+	char key[LIBRARY_SORT_KEY_MAX];
+	library_sort_key_ex(value ? value : "", key, sizeof(key), true);
+	sqlite3_result_text(ctx, key, -1, SQLITE_TRANSIENT);
+}
+
+static bool playlist_sort_open(nd_playlist_store_t *s, bool write) {
+	if (sqlite3_create_function(s->db, "nd_sort_key", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, playlist_sort_key, NULL, NULL) != SQLITE_OK)
+		return false;
+	if (write && !nd_pl_sql(s, "BEGIN IMMEDIATE;"
+							   "CREATE TABLE IF NOT EXISTS playlist_view(id INTEGER PRIMARY KEY REFERENCES playlist(id) ON DELETE CASCADE,"
+							   "sort INT NOT NULL DEFAULT 0,version INT NOT NULL DEFAULT 0,metadata INT NOT NULL DEFAULT 0);"
+							   "CREATE TABLE IF NOT EXISTS entry_sort(entry INTEGER PRIMARY KEY REFERENCES entry(id) ON DELETE CASCADE,"
+							   "track TEXT NOT NULL,album_id TEXT,album TEXT,album_artist TEXT,disc INT,number INT);"
+							   "CREATE TABLE IF NOT EXISTS entry_view(entry INTEGER PRIMARY KEY REFERENCES entry(id) ON DELETE CASCADE,"
+							   "p INTEGER NOT NULL REFERENCES playlist(id) ON DELETE CASCADE,track TEXT NOT NULL,position INTEGER NOT NULL);"
+							   "CREATE INDEX IF NOT EXISTS entry_view_order ON entry_view(p,position,entry);COMMIT;")) {
+		sqlite3_exec(s->db, "ROLLBACK", NULL, NULL, NULL);
+		return false;
+	}
+	sqlite3_stmt *st = NULL;
+	if (!nd_pl_prepare(s, &st, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('playlist_view','entry_sort')"))
+		return false;
+	s->sorting = sqlite3_step(st) == SQLITE_ROW && sqlite3_column_int(st, 0) == 2;
+	sqlite3_finalize(st);
+	if (!nd_pl_prepare(s, &st, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='entry_view'"))
+		return false;
+	s->local_order = s->sorting && sqlite3_step(st) == SQLITE_ROW;
+	sqlite3_finalize(st);
+	return true;
+}
+
+static bool playlist_view_read(nd_playlist_store_t *s, nd_playlist_t *p) {
+	p->sort = ND_PL_ORIGINAL;
+	p->view_revision = p->metadata_revision = 0;
+	if (!s->sorting)
+		return true;
+	sqlite3_stmt *st = NULL;
+	if (!nd_pl_prepare(s, &st, "SELECT sort,version,metadata FROM playlist_view WHERE id=?"))
+		return false;
+	sqlite3_bind_int64(st, 1, p->id);
+	int rc = sqlite3_step(st);
+	if (rc == SQLITE_ROW) {
+		int sort = sqlite3_column_int(st, 0);
+		p->sort = sort >= ND_PL_ORIGINAL && sort <= ND_PL_ARTIST_DESC ? sort : ND_PL_ORIGINAL;
+		p->view_revision = sqlite3_column_int64(st, 1);
+		p->metadata_revision = sqlite3_column_int64(st, 2);
+	}
+	sqlite3_finalize(st);
+	if (rc != SQLITE_ROW && rc != SQLITE_DONE)
+		return false;
+	if (s->local_order) {
+		if (!nd_pl_prepare(s, &st, "SELECT 1 FROM entry_view v JOIN entry e ON e.id=v.entry AND e.track=v.track AND e.p=v.p WHERE e.p=? LIMIT 1"))
+			return false;
+		sqlite3_bind_int64(st, 1, p->id);
+		p->manual = sqlite3_step(st) == SQLITE_ROW;
+		sqlite3_finalize(st);
+	}
+	return true;
+}
+
+bool nd_pl_sort_set(nd_playlist_store_t *s, const nd_playlist_t *expected, nd_pl_sort_t sort) {
+	if (!s->sorting || sort < ND_PL_ORIGINAL || sort > ND_PL_ARTIST_DESC || !nd_pl_begin(s, expected->id, expected->revision))
+		return false;
+	nd_playlist_t current;
+	if (!nd_pl_get(s, expected->id, &current) || current.pending || current.view_revision != expected->view_revision || current.metadata_revision != expected->metadata_revision) {
+		s->error = "nd_pl_stale";
+		return false;
+	}
+	sqlite3_stmt *st = NULL;
+	if (!nd_pl_prepare(s, &st,
+					   "INSERT INTO playlist_view(id,sort,version) VALUES(?,?,1) "
+					   "ON CONFLICT(id) DO UPDATE SET sort=excluded.sort,version=version+(sort<>excluded.sort) WHERE version<9223372036854775807"))
+		return false;
+	sqlite3_bind_int64(st, 1, expected->id);
+	sqlite3_bind_int(st, 2, sort);
+	bool ok = sqlite3_step(st) == SQLITE_DONE && sqlite3_changes(s->db) == 1;
+	sqlite3_finalize(st);
+	return ok;
+}
+
+bool nd_pl_sort_info(nd_playlist_store_t *s, int64_t occurrence, const nd_playrow_t *info) {
+	sqlite3_int64 last_entry = sqlite3_last_insert_rowid(s->db);
+	if (!s->sorting)
+		return true;
+	sqlite3_stmt *st = NULL;
+	if (!nd_pl_prepare(s, &st,
+					   "INSERT INTO entry_sort(entry,track,album_id,album,album_artist,disc,number) "
+					   "SELECT id,track,?2,?3,?4,?5,?6 FROM entry WHERE id=?1 AND track=?7 "
+					   "ON CONFLICT(entry) DO UPDATE SET track=excluded.track,"
+					   "album_id=coalesce(nullif(excluded.album_id,''),album_id),album=coalesce(nullif(excluded.album,''),album),"
+					   "album_artist=coalesce(nullif(excluded.album_artist,''),album_artist),"
+					   "disc=CASE WHEN excluded.disc>0 THEN excluded.disc ELSE disc END,number=CASE WHEN excluded.number>0 THEN excluded.number ELSE number END "
+					   "WHERE track IS NOT excluded.track OR album_id IS NOT coalesce(nullif(excluded.album_id,''),album_id) "
+					   "OR album IS NOT coalesce(nullif(excluded.album,''),album) "
+					   "OR album_artist IS NOT coalesce(nullif(excluded.album_artist,''),album_artist) "
+					   "OR disc IS NOT CASE WHEN excluded.disc>0 THEN excluded.disc ELSE disc END "
+					   "OR number IS NOT CASE WHEN excluded.number>0 THEN excluded.number ELSE number END"))
+		return false;
+	sqlite3_bind_int64(st, 1, occurrence);
+	nd_pl_bind(st, 2, info->album_id);
+	nd_pl_bind(st, 3, info->album);
+	nd_pl_bind(st, 4, info->album_artist);
+	sqlite3_bind_int(st, 5, info->row.disc);
+	sqlite3_bind_int(st, 6, info->row.track);
+	nd_pl_bind(st, 7, info->row.id);
+	bool ok = sqlite3_step(st) == SQLITE_DONE;
+	int changed = sqlite3_changes(s->db);
+	sqlite3_finalize(st);
+	if (ok && changed) {
+		if (!nd_pl_prepare(s, &st,
+						   "INSERT INTO playlist_view(id,metadata) SELECT p,1 FROM entry WHERE id=? "
+						   "ON CONFLICT(id) DO UPDATE SET metadata=metadata+1 WHERE metadata<9223372036854775807"))
+			return false;
+		sqlite3_bind_int64(st, 1, occurrence);
+		ok = sqlite3_step(st) == SQLITE_DONE && sqlite3_changes(s->db) == 1;
+		sqlite3_finalize(st);
+	}
+	// Preserve the entry insert identity consumed by existing append callers.
+	sqlite3_set_last_insert_rowid(s->db, last_entry);
+	return ok;
+}
+
+bool nd_pl_sort_copy(nd_playlist_store_t *s, int64_t from, int64_t to) {
+	if (!s->sorting)
+		return true;
+	sqlite3_stmt *st = NULL;
+	if (!nd_pl_prepare(s, &st,
+					   "INSERT INTO entry_sort(entry,track,album_id,album,album_artist,disc,number) "
+					   "SELECT d.id,d.track,m.album_id,m.album,m.album_artist,m.disc,m.number FROM entry d "
+					   "JOIN entry e ON e.p=?1 AND e.ordinal=d.ordinal AND e.track=d.track "
+					   "JOIN entry_sort m ON m.entry=e.id AND m.track=e.track WHERE d.p=?2"))
+		return false;
+	sqlite3_bind_int64(st, 1, from);
+	sqlite3_bind_int64(st, 2, to);
+	bool ok = sqlite3_step(st) == SQLITE_DONE;
+	sqlite3_finalize(st);
+	return ok;
+}
+
+static void playlist_order(nd_pl_sort_t sort, char out[1024]) {
+	if (sort == ND_PL_ORIGINAL) {
+		snprintf(out, 1024, "e.ordinal,e.id");
+		return;
+	}
+	const char *primary = sort <= ND_PL_TITLE_DESC ? "e.title" : sort <= ND_PL_ALBUM_DESC ? "m.album" : sort <= ND_PL_ALBUM_ARTIST_DESC ? "m.album_artist" : "e.artist";
+	const char *secondary = sort <= ND_PL_TITLE_DESC ? ""
+													 : "(coalesce(m.album,'')=''),nd_sort_key(m.album),(coalesce(m.album_id,'')=''),coalesce(m.album_id,''),"
+													   "CASE WHEN m.disc>0 THEN m.disc ELSE 1 END,(coalesce(m.number,0)<=0),coalesce(m.number,0),nd_sort_key(e.title),";
+	snprintf(out, 1024, "(coalesce(%s,'')=''),nd_sort_key(%s) %s,%se.ordinal,e.id", primary, primary, sort % 2 == 0 ? "DESC" : "ASC", secondary);
+}
+
+static bool playlist_sorted_rows(nd_playlist_store_t *s, int64_t id, int offset, int64_t session, nd_pl_sort_t sort, bool view, nd_playlist_entry_t *out, int limit, int *count) {
+	*count = 0;
+	char order[1024], query[2400];
+	playlist_order(sort, order);
+	if (view && s->local_order && sort == ND_PL_ORIGINAL)
+		snprintf(order, sizeof(order), "(v.entry IS NULL),v.position,e.ordinal,e.id");
+	const char *join = s->sorting ? "LEFT JOIN entry_sort m ON m.entry=e.id AND m.track=e.track" : "LEFT JOIN (SELECT 0 AS entry,'' AS album_id,'' AS album,'' AS album_artist,0 AS disc,0 AS number WHERE 0) m ON m.entry=e.id";
+	snprintf(query, sizeof(query),
+			 "WITH saved AS (SELECT *,row_number() OVER(ORDER BY ordinal,id)-1 AS position FROM entry WHERE p=?1) "
+			 "SELECT e.id,e.track,e.title,e.artist,e.cover,e.duration,"
+			 "EXISTS(SELECT 1 FROM selection WHERE session=?2 AND occurrence=e.id),e.position,e.ordinal,"
+			 "m.album_id,m.album,m.album_artist,coalesce(m.disc,0),coalesce(m.number,0) "
+			 "FROM saved e %s %s ORDER BY %s LIMIT ?4 OFFSET ?3",
+			 join, view && s->local_order ? "LEFT JOIN entry_view v ON v.entry=e.id AND v.track=e.track AND v.p=e.p" : "", order);
+	sqlite3_stmt *st = NULL;
+	if (!nd_pl_prepare(s, &st, query))
+		return false;
+	sqlite3_bind_int64(st, 1, id);
+	sqlite3_bind_int64(st, 2, session);
+	sqlite3_bind_int(st, 3, offset);
+	sqlite3_bind_int(st, 4, limit);
+	int rc;
+	while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+		nd_playlist_entry_t *e = &out[(*count)++];
+		memset(e, 0, sizeof(*e));
+		e->occurrence = sqlite3_column_int64(st, 0);
+		text(st, 1, e->track.id, sizeof(e->track.id));
+		text(st, 2, e->track.title, sizeof(e->track.title));
+		text(st, 3, e->track.artist, sizeof(e->track.artist));
+		text(st, 4, e->track.cover, sizeof(e->track.cover));
+		e->track.duration = sqlite3_column_int(st, 5);
+		e->selected = sqlite3_column_int(st, 6);
+		e->position = sqlite3_column_int(st, 7);
+		e->ordinal = sqlite3_column_int(st, 8);
+		text(st, 9, e->album_id, sizeof(e->album_id));
+		text(st, 10, e->album, sizeof(e->album));
+		text(st, 11, e->album_artist, sizeof(e->album_artist));
+		e->track.disc = sqlite3_column_int(st, 12);
+		e->track.track = sqlite3_column_int(st, 13);
+	}
+	sqlite3_finalize(st);
+	return rc == SQLITE_DONE;
+}
+
+bool nd_pl_view_window(nd_playlist_store_t *s, const nd_playlist_t *expected, int first, int64_t session, nd_playlist_entry_t out[ND_WINDOW], int *count, int *total) {
+	*count = *total = 0;
+	if (first < 0 || !nd_pl_sql(s, "BEGIN"))
+		return false;
+	nd_playlist_t current = {.id = expected->id};
+	sqlite3_stmt *st = NULL;
+	bool ok = nd_pl_prepare(s, &st, "SELECT rev,(SELECT count(*) FROM entry WHERE p=playlist.id) FROM playlist WHERE id=?");
+	if (ok) {
+		sqlite3_bind_int64(st, 1, expected->id);
+		ok = sqlite3_step(st) == SQLITE_ROW && sqlite3_column_int64(st, 0) == expected->revision;
+		if (ok) {
+			sqlite3_int64 size = sqlite3_column_int64(st, 1);
+			ok = size >= 0 && size <= INT_MAX;
+			if (ok)
+				*total = (int)size;
+		}
+	}
+	sqlite3_finalize(st);
+	if (ok)
+		ok = playlist_view_read(s, &current) && current.sort == expected->sort && current.view_revision == expected->view_revision && current.metadata_revision == expected->metadata_revision;
+	if (!ok)
+		s->error = "nd_pl_stale";
+	if (ok)
+		ok = playlist_sorted_rows(s, expected->id, first, session, expected->sort, true, out, ND_WINDOW, count);
+	if (ok)
+		ok = nd_pl_sql(s, "COMMIT");
+	if (!ok)
+		sqlite3_exec(s->db, "ROLLBACK", NULL, NULL, NULL);
+	return ok;
+}
+
+void nd_pl_entry_info(const nd_playlist_entry_t *entry, nd_playrow_t *row) {
+	memset(row, 0, sizeof(*row));
+	row->row = entry->track;
+	row->saved_occurrence = entry->occurrence;
+	snprintf(row->album_id, sizeof(row->album_id), "%s", entry->album_id);
+	snprintf(row->album, sizeof(row->album), "%s", entry->album);
+	snprintf(row->album_artist, sizeof(row->album_artist), "%s", entry->album_artist);
+}
+
+// Rearrangement is presentation state. Canonical entry ordinals remain the
+// definition used by fingerprinting, Publish, Upload and non-view consumers.
+bool nd_pl_view_move(nd_playlist_store_t *s, const nd_playlist_t *expected, int from, int to, int64_t occurrence, const char *track, bool *changed) {
+	*changed = false;
+	if (!s->local_order || !nd_pl_begin(s, expected->id, expected->revision))
+		return false;
+	nd_playlist_t p;
+	bool ok = nd_pl_get(s, expected->id, &p) && p.sort == ND_PL_ORIGINAL && !p.pending && p.view_revision == expected->view_revision && p.metadata_revision == expected->metadata_revision && from >= 0 && to >= 0 && from < p.count && to < p.count && track;
+	sqlite3_stmt *st = NULL;
+	if (ok)
+		ok = nd_pl_prepare(s, &st,
+						   "SELECT e.id,e.track FROM entry e LEFT JOIN entry_view v ON v.entry=e.id AND v.track=e.track AND v.p=e.p "
+						   "WHERE e.p=? ORDER BY (v.entry IS NULL),v.position,e.ordinal,e.id LIMIT 1 OFFSET ?");
+	if (ok) {
+		sqlite3_bind_int64(st, 1, p.id);
+		sqlite3_bind_int(st, 2, from);
+		ok = sqlite3_step(st) == SQLITE_ROW && sqlite3_column_int64(st, 0) == occurrence && !strcmp((const char *)sqlite3_column_text(st, 1), track);
+	}
+	sqlite3_finalize(st);
+	if (!ok) {
+		s->error = "nd_pl_stale";
+		return false;
+	}
+	if (from == to)
+		return true;
+	ok = nd_pl_sql(s, "PRAGMA temp.cache_size=-256; CREATE TEMP TABLE IF NOT EXISTS view_positions(entry INTEGER PRIMARY KEY,position INTEGER); DELETE FROM view_positions");
+	if (ok)
+		ok = nd_pl_prepare(s, &st,
+						   "INSERT INTO view_positions SELECT id,CASE WHEN n=?2 THEN ?3 WHEN ?2<?3 AND n>?2 AND n<=?3 THEN n-1 "
+						   "WHEN ?2>?3 AND n>=?3 AND n<?2 THEN n+1 ELSE n END FROM "
+						   "(SELECT e.id,row_number() OVER(ORDER BY (v.entry IS NULL),v.position,e.ordinal,e.id)-1 n FROM entry e "
+						   "LEFT JOIN entry_view v ON v.entry=e.id AND v.track=e.track AND v.p=e.p WHERE e.p=?1)");
+	if (ok) {
+		sqlite3_bind_int64(st, 1, p.id);
+		sqlite3_bind_int(st, 2, from);
+		sqlite3_bind_int(st, 3, to);
+		ok = sqlite3_step(st) == SQLITE_DONE;
+	}
+	sqlite3_finalize(st);
+	st = NULL;
+	if (ok)
+		ok = nd_pl_prepare(s, &st,
+						   "INSERT INTO entry_view(entry,p,track,position) "
+						   "SELECT e.id,e.p,e.track,m.position FROM entry e JOIN view_positions m ON m.entry=e.id WHERE e.p=? "
+						   "ON CONFLICT(entry) DO UPDATE SET p=excluded.p,track=excluded.track,position=excluded.position");
+	if (ok) {
+		sqlite3_bind_int64(st, 1, p.id);
+		ok = sqlite3_step(st) == SQLITE_DONE;
+	}
+	sqlite3_finalize(st);
+	st = NULL;
+	if (ok)
+		ok = nd_pl_prepare(s, &st,
+						   "INSERT INTO playlist_view(id,version) VALUES(?,1) "
+						   "ON CONFLICT(id) DO UPDATE SET version=version+1 WHERE version<9223372036854775807");
+	if (ok) {
+		sqlite3_bind_int64(st, 1, p.id);
+		ok = sqlite3_step(st) == SQLITE_DONE && sqlite3_changes(s->db) == 1;
+	}
+	sqlite3_finalize(st);
+	*changed = ok;
+	return ok;
+}
+bool nd_pl_view_reset(nd_playlist_store_t *s, int64_t id) {
+	if (!s->local_order)
+		return true;
+	sqlite3_stmt *st = NULL;
+	if (!nd_pl_prepare(s, &st, "DELETE FROM entry_view WHERE p=?"))
+		return false;
+	sqlite3_bind_int64(st, 1, id);
+	bool ok = sqlite3_step(st) == SQLITE_DONE;
+	int changed = sqlite3_changes(s->db);
+	sqlite3_finalize(st);
+	st = NULL;
+	if (ok && changed) {
+		ok = nd_pl_prepare(s, &st, "UPDATE playlist_view SET version=version+1 WHERE id=? AND version<9223372036854775807");
+		if (ok) {
+			sqlite3_bind_int64(st, 1, id);
+			ok = sqlite3_step(st) == SQLITE_DONE && sqlite3_changes(s->db) == 1;
+		}
+		sqlite3_finalize(st);
+	}
+	return ok;
 }

@@ -2,10 +2,11 @@
 #define NAVIDROMEPLAYLISTS_H
 #include "navidrome.h"
 #include "navidromeplayliststore.h"
-typedef enum { NDPL_LIST, NDPL_ENTRIES, NDPL_CREATE, NDPL_RENAME, NDPL_DELETE, NDPL_COPY, NDPL_SELECT, NDPL_SELECT_ONLY, NDPL_CLEAR, NDPL_ADD, NDPL_REMOVE, NDPL_CATALOGUE, NDPL_CATALOGUE_WINDOW, NDPL_IMPORT, NDPL_PULL, NDPL_PULL_ACCEPT, NDPL_UPLOAD, NDPL_PUBLISH, NDPL_VERIFY, NDPL_RECOVER, NDPL_RECREATE, NDPL_MOVE } nd_pl_action_t;
+typedef enum { NDPL_LIST, NDPL_ENTRIES, NDPL_CREATE, NDPL_RENAME, NDPL_DELETE, NDPL_COPY, NDPL_SELECT, NDPL_SELECT_ONLY, NDPL_CLEAR, NDPL_ADD, NDPL_REMOVE, NDPL_CATALOGUE, NDPL_CATALOGUE_WINDOW, NDPL_IMPORT, NDPL_PULL, NDPL_PULL_ACCEPT, NDPL_UPLOAD, NDPL_PUBLISH, NDPL_VERIFY, NDPL_RECOVER, NDPL_RECREATE, NDPL_MOVE, NDPL_SORT } nd_pl_action_t;
 // Owned direct addition; independent of replaceable Library/Favorites generations.
 typedef struct {
 	nd_row_t row;
+	char album_id[ND_ID_MAX], album[ND_TEXT_MAX], album_artist[ND_TEXT_MAX];
 	unsigned profile, card;
 	char scope[33];
 } nd_pl_track_t;
@@ -13,6 +14,8 @@ typedef struct {
 	nd_pl_action_t action;
 	int64_t id, revision, session, occurrence, candidate, generation;
 	int first, ordinal;
+	nd_pl_sort_t sort;
+	int64_t view_revision, metadata_revision;
 	nd_kind_t kind;
 	char name[ND_PL_NAME], remote[ND_ID_MAX], track[ND_ID_MAX], checked[ND_PL_HASH];
 	bool confirmed, favorites;

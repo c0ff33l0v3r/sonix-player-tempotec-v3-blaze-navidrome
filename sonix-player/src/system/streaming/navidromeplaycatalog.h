@@ -10,7 +10,9 @@ typedef struct {
 	char track[ND_ID_MAX];
 	// Zero count retains ordinary-tap compatibility. whole allows worker-chosen starts.
 	int count;
-	bool whole, single;
+	bool whole, single, view;
+	int sort, stored_position, stored_ordinal;
+	int64_t view_revision, metadata_revision;
 } nd_playlist_capture_t;
 // Worker-only local revision capture. Repeated track IDs retain distinct positions.
 nd_playcatalog_t *nd_playcatalog_playlist(const nd_library_t *library, const nd_context_t *identity,
