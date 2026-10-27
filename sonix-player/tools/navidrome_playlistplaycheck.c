@@ -26,7 +26,11 @@ static bool current(void *unused) {
 		if (action == 4) { atomic_store(&eligible, false); return false; }
 		nd_playlist_store_t s;
 		assert(nd_pl_open(&s, store_path, library.scope, true));
-		assert(nd_pl_edit(&s, request.playlist, request.revision, "Changed", action == 3));
+		if (action == 5) {
+			bool changed;
+			assert(nd_pl_move(&s, request.playlist, request.revision, request.ordinal, 0,
+				request.occurrence, request.track, &changed) && changed);
+		} else assert(nd_pl_edit(&s, request.playlist, request.revision, "Changed", action == 3));
 		assert(nd_pl_sql(&s, "COMMIT"));
 		nd_pl_close(&s);
 	}
@@ -129,8 +133,20 @@ int main(int argc, char **argv) {
 		assert(!strcmp(row.row.title, "Saved fallback") && !strcmp(row.row.artist, "Saved artist") && !*row.album_id && !*row.artist_id);
 		assert(atoi(row.row.id + 5) == i % 7);
 	}
-	// Saved definition changes and deletion cannot change the captured source.
+	// Reordering preserves the sealed source and maps the exact occurrence in a new capture.
 	nd_playlist_store_t s;
+	assert(nd_pl_open(&s, store_path, library.scope, true));
+	bool changed;
+	assert(nd_pl_move(&s, request.playlist, request.revision, 4999, 0, request.occurrence, request.track, &changed) && changed && nd_pl_sql(&s, "COMMIT"));
+	nd_pl_close(&s);
+	request.revision++; request.ordinal = 0;
+	nd_playcatalog_t *reordered = capture(&error);
+	assert(reordered && !error && nd_playcatalog_start(reordered) == 0);
+	assert(nd_playcatalog_read(c, 0, &row) && !strcmp(row.row.id, "song-00000"));
+	assert(nd_playcatalog_read(c, 4999, &row) && !strcmp(row.row.id, tapped.track) && nd_playcatalog_start(c) == 4999);
+	assert(nd_playcatalog_read(reordered, 0, &row) && !strcmp(row.row.id, tapped.track));
+	retire_catalog(reordered);
+	// Saved definition changes and deletion cannot change the captured source.
 	assert(nd_pl_open(&s, store_path, library.scope, true));
 	assert(nd_pl_edit(&s, request.playlist, request.revision, NULL, true) && nd_pl_sql(&s, "COMMIT"));
 	nd_pl_close(&s);
@@ -152,6 +168,9 @@ int main(int argc, char **argv) {
 	assert(c && !error && nd_playcatalog_count(c) == 4 && nd_playcatalog_start(c) == 3);
 	assert(nd_playcatalog_read(c, 1, &row) && !strcmp(row.row.id, "song-00002"));
 	retire_catalog(c);
+	make_playlist(5000, 4999);
+	action = 5; rejected("nd_pl_stale"); action = 0;
+	puts("saved rearrange capture: sealed sequence retained, fresh exact occurrence mapped, concurrent move rejected stale: passed");
 	make_playlist(64, 63);
 	library.writable = false;
 	request.whole = true; request.count = 64;

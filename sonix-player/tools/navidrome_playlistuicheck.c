@@ -8,6 +8,7 @@
 #undef icon_download
 #undef icon_shuffle
 extern const lv_image_dsc_t icon_download;
+lv_style_t theme_style_accent_bg;
 extern const lv_image_dsc_t icon_shuffle;
 #include "src/gui/streaming/navidromeplaylists.c"
 #ifdef NAVIDROME_EDGE_BASELINE
@@ -264,6 +265,177 @@ static int remote_index(const char *id) {
 	assert(!"remote catalogue ID missing");
 	return -1;
 }
+static void rearrange_touch(lv_indev_t *input, int x, int y, bool down) {
+	fixture_touch.point = (lv_point_t){.x = x, .y = y};
+	fixture_touch.state = down ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+	lv_tick_inc(20);
+	lv_indev_read(input);
+}
+static void rearrange_fixture(const nd_library_t *lib) {
+	pl_page_t *p = &pl_pages[1];
+	lv_obj_scroll_to_y(p->list, 0, LV_ANIM_OFF);
+	pl_wait(1);
+	int actual_count = p->playlist.count;
+	for (int small = 0; small < 2; small++) {
+		p->playlist.count = small; pl_buttons(p);
+		assert(lv_obj_has_state(p->reorder, LV_STATE_DISABLED));
+		lv_obj_send_event(p->reorder, LV_EVENT_CLICKED, NULL);
+		assert(!p->reordering);
+	}
+	p->playlist.count = actual_count; pl_buttons(p);
+	lv_obj_update_layout(p->screen);
+	lv_area_t play_bounds, shuffle_bounds, reorder_bounds;
+	lv_obj_get_coords(p->play_buttons[0], &play_bounds);
+	lv_obj_get_coords(p->play_buttons[1], &shuffle_bounds);
+	lv_obj_get_coords(p->reorder, &reorder_bounds);
+	assert(play_bounds.y1 == shuffle_bounds.y1 && shuffle_bounds.y1 == reorder_bounds.y1);
+	assert(play_bounds.y2 == shuffle_bounds.y2 && shuffle_bounds.y2 == reorder_bounds.y2);
+	assert(play_bounds.x2 < shuffle_bounds.x1 && shuffle_bounds.x2 < reorder_bounds.x1);
+	assert(lv_obj_get_parent(p->reorder) == p->play_actions);
+	lv_obj_send_event(p->reorder, LV_EVENT_CLICKED, NULL);
+	assert(p->reordering && !p->selecting && pl_back_peek());
+	assert(!lv_obj_is_hidden(p->play_actions));
+	assert(lv_obj_has_state(p->play_buttons[0], LV_STATE_DISABLED) && lv_obj_has_state(p->play_buttons[1], LV_STATE_DISABLED));
+	assert(lv_obj_is_hidden(p->download) && lv_obj_is_hidden(p->buttons[0]));
+	assert(lv_image_get_src(lv_obj_get_child(p->menus[0], 0)) == &icon_grip);
+	unsigned played = playback_selections;
+	lv_obj_send_event(p->rows[0], LV_EVENT_CLICKED, NULL);
+	lv_obj_send_event(p->rows[0], LV_EVENT_LONG_PRESSED, NULL);
+	assert(playback_selections == played && !p->selecting);
+	lv_indev_t *input = lv_indev_create();
+	lv_indev_set_type(input, LV_INDEV_TYPE_POINTER);
+	lv_indev_set_display(input, lv_display_get_default());
+	lv_indev_set_read_cb(input, fixture_touch_read);
+	lv_obj_update_layout(p->screen);
+	lv_area_t grip, view;
+	lv_obj_get_coords(p->menus[0], &grip);
+	lv_obj_get_coords(p->list, &view);
+	int x = (grip.x1 + grip.x2) / 2, y = (grip.y1 + grip.y2) / 2;
+	int64_t occurrence = p->entries[0].occurrence, revision = p->playlist.revision;
+	int requests = atomic_load(&calls);
+	rearrange_touch(input, x, y, true);
+	assert(p->dragging && p->drag.occurrence == occurrence);
+	for (int step = 0; step < 100; step++) {
+		rearrange_touch(input, x, view.y2 - 8, true);
+		pl_wait(1);
+		assert(p->dragging && p->drag.occurrence == occurrence);
+	}
+	int target = p->drag_to;
+	assert(target >= ND_WINDOW && !lv_obj_is_hidden(p->drop_line));
+	lv_obj_update_layout(p->screen);
+	lv_draw_buf_t *line = lv_snapshot_take(p->drop_line, LV_COLOR_FORMAT_ARGB8888);
+	assert(line && line->data[2] > 200 && line->data[3] > 200);
+	lv_draw_buf_destroy(line);
+	rearrange_touch(input, x, view.y2 - 8, false);
+	pl_wait(1);
+	assert(!p->dragging && !p->move_pending && p->playlist.revision == revision + 1);
+	assert(atomic_load(&calls) == requests && playback_selections == played);
+	char path[1200];
+	nd_playlist_store_t store;
+	nd_playlist_entry_t rows[ND_WINDOW];
+	int count;
+	assert(nd_pl_path(lib, path) && nd_pl_open(&store, path, lib->scope, false));
+	assert(nd_pl_entries(&store, p->playlist.id, target, 0, rows, &count) && rows[0].occurrence == occurrence);
+	nd_pl_close(&store);
+	// Dropping at the very first row keeps the insertion rule inside the viewport.
+	lv_obj_scroll_to_y(p->list, 0, LV_ANIM_OFF); pl_wait(1);
+	lv_obj_update_layout(p->screen);
+	lv_obj_get_coords(p->menus[1], &grip);
+	int64_t moved_first = p->entries[1].occurrence;
+	x = (grip.x1 + grip.x2) / 2; y = (grip.y1 + grip.y2) / 2;
+	rearrange_touch(input, x, y, true);
+	rearrange_touch(input, x, view.y1 + 2, true);
+	lv_obj_update_layout(p->screen);
+	assert(p->dragging && p->drag_to == 0 && lv_obj_get_y(p->drop_line) == 0);
+	rearrange_touch(input, x, view.y1 + 2, false); pl_wait(1);
+	assert(p->entries[0].occurrence == moved_first && p->playlist.revision == revision + 2);
+	assert(pl_back() && !p->reordering && !p->selecting && pl_active(1));
+	assert(!strcmp(fixture_last_success, "medialist_playlist_order_saved"));
+	// Outside-grip drag scrolls without moving a saved occurrence.
+	lv_obj_scroll_to_y(p->list, 0, LV_ANIM_OFF); pl_wait(1);
+	lv_obj_send_event(p->reorder, LV_EVENT_CLICKED, NULL);
+	lv_obj_update_layout(p->screen);
+	lv_obj_get_coords(p->rows[0], &grip);
+	revision = p->playlist.revision;
+	rearrange_touch(input, grip.x1 + ui_px(20), grip.y1 + ui_px(30), true);
+	for (int i = 0; i < 5; i++) rearrange_touch(input, grip.x1 + ui_px(20), grip.y1 + ui_px(30) - (i + 1) * ui_px(12), true);
+	rearrange_touch(input, grip.x1 + ui_px(20), grip.y1 - ui_px(30), false);
+	pl_wait(1);
+	assert(!p->dragging && p->playlist.revision == revision);
+	lv_obj_scroll_to_y(p->list, 0, LV_ANIM_OFF); pl_wait(1);
+	lv_obj_update_layout(p->screen);
+	lv_obj_get_coords(p->menus[0], &grip);
+	x = (grip.x1 + grip.x2) / 2; y = (grip.y1 + grip.y2) / 2;
+	rearrange_touch(input, x, y, true);
+	assert(p->dragging);
+	lv_obj_send_event(p->menus[0], LV_EVENT_PRESS_LOST, NULL);
+	assert(!p->dragging);
+	rearrange_touch(input, x, y, false);
+	assert(p->playlist.revision == revision);
+	// Explicit LVGL input reset is cancellation, too.
+	rearrange_touch(input, x, y, true);
+	assert(p->dragging);
+	lv_indev_reset(input, NULL);
+	assert(!p->dragging);
+	rearrange_touch(input, x, y, false);
+	// Back cancels an unfinished drag rather than committing it on release.
+	rearrange_touch(input, x, y, true);
+	assert(p->dragging);
+	assert(pl_back() && !p->dragging && !p->reordering);
+	rearrange_touch(input, x, y, false);
+	pl_wait(1);
+	assert(p->playlist.revision == revision);
+	// A committed move with a rejected GUI post recovers by reading, never replay.
+	nd_pl_request_t q = {.action = NDPL_MOVE, .id = p->playlist.id, .revision = revision,
+		.ordinal = 0, .first = 1, .occurrence = p->entries[0].occurrence};
+	snprintf(q.track, sizeof(q.track), "%s", p->entries[0].track.id);
+	atomic_store(&fixture_reject_posts, true);
+	pl_action(1, &q);
+	p->move_pending = true;
+	for (int i = 0; navidrome_playlists_busy() && i < 10000; i++) usleep(1000);
+	assert(!navidrome_playlists_busy());
+	atomic_store(&fixture_reject_posts, false);
+	p->submitted = lv_tick_get() - 3000;
+	pl_tick(pl_timer); pl_wait(1);
+	assert(!p->move_pending && p->playlist.revision == revision + 1);
+	pl_tick(pl_timer); pl_wait(1);
+	assert(p->playlist.revision == revision + 1);
+	// A stale revision while the pointer is held cancels persistence and reloads.
+	lv_obj_send_event(p->reorder, LV_EVENT_CLICKED, NULL);
+	lv_obj_update_layout(p->screen);
+	lv_obj_get_coords(p->menus[0], &grip);
+	x = (grip.x1 + grip.x2) / 2; y = (grip.y1 + grip.y2) / 2;
+	rearrange_touch(input, x, y, true);
+	assert(p->dragging);
+	assert(nd_pl_open(&store, path, lib->scope, true));
+	assert(nd_pl_edit(&store, p->playlist.id, p->playlist.revision, "Revised while dragging", false) && nd_pl_sql(&store, "COMMIT"));
+	nd_pl_close(&store);
+	rearrange_touch(input, x, y + p->pitch, true);
+	unsigned notices = fixture_notices;
+	rearrange_touch(input, x, y + p->pitch, false);
+	pl_wait(1);
+	assert(fixture_notices == notices + 1 && !p->move_pending);
+	pl_tick(pl_timer); pl_wait(1);
+	assert(p->playlist.revision == revision + 2);
+	assert(pl_back() && !p->reordering);
+	// Leaving a page after submission cannot restore its UI or emit success.
+	q.revision = p->playlist.revision;
+	q.occurrence = p->entries[0].occurrence;
+	snprintf(q.track, sizeof(q.track), "%s", p->entries[0].track.id);
+	unsigned serial = p->serial;
+	pl_action(1, &q);
+	assert(p->serial != serial);
+	navidromeplaylists_open();
+	for (int i = 0; navidrome_playlists_busy() && i < 10000; i++) usleep(1000);
+	drain(); pl_tick(pl_timer); pl_wait(0);
+	assert(pl_active(0) && !p->reordering && !p->dragging);
+	nd_playlist_t reopened = p->playlist;
+	pl_open_detail(&reopened); pl_wait(1);
+	assert(p->playlist.revision == revision + 3);
+	lv_indev_delete(input);
+	puts("playlist rearrange: failed GUI delivery, stale revision and retired-page results passed");
+	puts("playlist rearrange: real pointer cross-window drop, repeated occurrence, local persistence, cancellation, Back and isolation passed");
+}
 static void playlist_actions_ui(nd_library_t *lib) {
 	char path[1200]; nd_playlist_store_t store;
 	assert(nd_pl_path(lib, path) && nd_pl_open(&store, path, lib->scope, true));
@@ -449,6 +621,8 @@ static void saved_playlist_taps(const nd_library_t *lib) {
 	pl_wait(1);
 	navidromeplaylists_refresh();
 	puts("repeated playlist occurrences: overlap retains exact occurrence widget/pixels, bottom bounce submits no query/artwork: passed");
+	rearrange_fixture(lib);
+	p = detail->playlist;
 	assert(!lv_obj_is_hidden(pl_pages[1].download) && !lv_obj_has_state(pl_pages[1].download, LV_STATE_DISABLED));
 	lv_obj_update_layout(pl_pages[1].screen);
 	lv_area_t download_bounds;
@@ -484,7 +658,7 @@ static void saved_playlist_taps(const nd_library_t *lib) {
 	unsigned before = saved_taps;
 	lv_obj_send_event(pl_pages[1].rows[2], LV_EVENT_CLICKED, NULL);
 	assert(saved_taps == before + 1 && saved_playlist == id && saved_revision == p.revision && saved_ordinal == 2);
-	assert(saved_occurrence == pl_pages[1].entries[2].occurrence && !strcmp(saved_track, "song-00000"));
+	assert(saved_occurrence == pl_pages[1].entries[2].occurrence && !strcmp(saved_track, pl_pages[1].entries[2].track.id));
 	dragging = true;
 	lv_obj_send_event(pl_pages[1].download, LV_EVENT_CLICKED, NULL);
 	assert(download_submissions == submitted + 1);
@@ -594,6 +768,9 @@ int main(int argc, char **argv) {
 	lv_init();
 	font_ui_28 = font_ui_24_bold = font_ui_14 = font_ui_16 = font_ui_18 = font_ui_20 = font_ui_24 = lv_font_unscii_8;
 	lv_display_t *display = lv_display_create(ui_panel_width, panel_height);
+	lv_style_init(&theme_style_accent_bg);
+	lv_style_set_bg_opa(&theme_style_accent_bg, LV_OPA_COVER);
+	lv_style_set_bg_color(&theme_style_accent_bg, lv_color_hex(0xFF0000));
 	lv_style_init(&theme_style_icon);
 	lv_style_set_image_recolor_opa(&theme_style_icon, LV_OPA_COVER);
 	navidrome_screen = lv_obj_create(NULL);
@@ -1041,6 +1218,11 @@ int main(int argc, char **argv) {
 	navidromeplaylists_open();
 	pl_wait(0);
 	assert(pl_pages[0].total == 1);
+	lv_obj_send_event(pl_pages[0].rows[0], LV_EVENT_CLICKED, NULL); pl_wait(1);
+	assert(lv_obj_has_state(pl_pages[1].reorder, LV_STATE_DISABLED));
+	lv_obj_send_event(pl_pages[1].reorder, LV_EVENT_CLICKED, NULL);
+	assert(!pl_pages[1].reordering);
+	navidromeplaylists_open(); pl_wait(0);
 	pl_name_show(0, false, NULL);
 	lv_textarea_set_text(pl_name_field, "Cannot write");
 	pl_name_accept(NULL);

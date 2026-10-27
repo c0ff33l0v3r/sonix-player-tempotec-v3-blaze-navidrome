@@ -346,6 +346,75 @@ bool nd_pl_begin(nd_playlist_store_t *s, int64_t id, int64_t rev) {
 	}
 	return true;
 }
+bool nd_pl_move(nd_playlist_store_t *s, int64_t id, int64_t revision,
+				int from, int to, int64_t occurrence, const char *track, bool *changed) {
+	*changed = false;
+	if (!nd_pl_begin(s, id, revision))
+		return false;
+	sqlite3_stmt *st = NULL;
+	nd_playlist_t p;
+	bool ok = nd_pl_get(s, id, &p) && from >= 0 && to >= 0 && from < p.count && to < p.count && track;
+	if (ok) ok = nd_pl_prepare(s, &st, "SELECT id,track FROM entry WHERE p=? ORDER BY ordinal LIMIT 1 OFFSET ?");
+	if (ok) {
+		sqlite3_bind_int64(st, 1, id);
+		sqlite3_bind_int(st, 2, from);
+		ok = sqlite3_step(st) == SQLITE_ROW && sqlite3_column_int64(st, 0) == occurrence &&
+			!strcmp((const char *)sqlite3_column_text(st, 1), track);
+	}
+	sqlite3_finalize(st);
+	st = NULL;
+	if (!ok) s->error = "nd_pl_stale";
+	if (ok && from != to) {
+		// temp_store=FILE and the small SQLite cache bound mapping memory. All
+		// temporary ordinals lie below the existing minimum, avoiding UNIQUE
+		// collisions without deleting/recreating stable occurrence identities.
+		int64_t low = 0;
+		ok = nd_pl_prepare(s, &st, "SELECT min(ordinal) FROM entry WHERE p=?");
+		if (ok) {
+			sqlite3_bind_int64(st, 1, id);
+			ok = sqlite3_step(st) == SQLITE_ROW;
+			if (ok) low = sqlite3_column_int64(st, 0);
+		}
+		sqlite3_finalize(st);
+		st = NULL;
+		if (ok && low < INT64_MIN + (int64_t)p.count) {
+			s->error = "nd_pl_storage_error";
+			ok = false;
+		}
+		if (ok) ok = nd_pl_sql(s, "PRAGMA temp.cache_size=-256; CREATE TEMP TABLE move_positions(id INTEGER PRIMARY KEY,stage INTEGER,target INTEGER)");
+		if (ok) ok = nd_pl_prepare(s, &st,
+			"INSERT INTO move_positions SELECT id,?2-n,CASE WHEN n=?3 THEN ?4 WHEN ?3<?4 AND n>?3 AND n<=?4 THEN n-1 WHEN ?3>?4 AND n>=?4 AND n<?3 THEN n+1 ELSE n END "
+			"FROM (SELECT id,row_number() OVER(ORDER BY ordinal)-1 AS n FROM entry WHERE p=?1)");
+		if (ok) {
+			sqlite3_bind_int64(st, 1, id);
+			sqlite3_bind_int64(st, 2, (low < 0 ? low : 0) - 1);
+			sqlite3_bind_int(st, 3, from);
+			sqlite3_bind_int(st, 4, to);
+			ok = sqlite3_step(st) == SQLITE_DONE;
+		}
+		sqlite3_finalize(st);
+		st = NULL;
+		const char *updates[] = {
+			"UPDATE entry SET ordinal=(SELECT stage FROM move_positions WHERE id=entry.id) WHERE p=?",
+			"UPDATE entry SET ordinal=(SELECT target FROM move_positions WHERE id=entry.id) WHERE p=?"};
+		for (unsigned i = 0; ok && i < 2; i++) {
+			ok = nd_pl_prepare(s, &st, updates[i]);
+			if (ok) {
+				sqlite3_bind_int64(st, 1, id);
+				ok = sqlite3_step(st) == SQLITE_DONE;
+			}
+			sqlite3_finalize(st);
+			st = NULL;
+		}
+		if (ok) ok = nd_pl_sql(s, "DROP TABLE move_positions") && nd_pl_finish(s, id, true);
+		*changed = ok;
+	}
+	if (!ok) {
+		sqlite3_exec(s->db, "ROLLBACK", NULL, NULL, NULL);
+		if (!s->error) s->error = "nd_pl_storage_error";
+	}
+	return ok;
+}
 bool nd_pl_finish(nd_playlist_store_t *s, int64_t id, bool changed) {
 	sqlite3_stmt *st = NULL;
 	bool ok = nd_pl_prepare(s, &st, "UPDATE playlist SET rev=rev+? WHERE id=?");

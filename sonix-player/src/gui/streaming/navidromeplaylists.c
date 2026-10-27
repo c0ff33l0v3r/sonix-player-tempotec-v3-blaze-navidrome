@@ -31,7 +31,10 @@
 
 typedef struct {
 	lv_obj_t *screen, *list, *extent, *title, *status, *buttons[3];
-	lv_obj_t *download;
+	lv_obj_t *download, *reorder, *drop_line;
+	bool reordering, move_pending, order_saved, dragging;
+	nd_pl_request_t drag;
+	int drag_to;
 	lv_obj_t *play_actions, *play_buttons[2];
 	int content_top;
 	unsigned download_token;
@@ -100,6 +103,23 @@ static nd_pl_request_t pl_add_request(int64_t id, int64_t revision) {
 }
 static bool pl_gesture(void) { return player_sheet_drag_active() || switcher_back_drag_active() || coverflow_drag_active(); }
 static bool pl_active(int page) { return lv_screen_active() == pl_pages[page].screen; }
+static void pl_drag_cancel(pl_page_t *p) {
+	p->dragging = false;
+	if (p->drop_line) lv_obj_set_hidden(p->drop_line, true);
+	for (int i = 0; i < ND_WINDOW; i++)
+		lv_obj_set_style_border_width(p->rows[i], 0, 0);
+}
+static void pl_reorder_rows(pl_page_t *p) {
+	if (p != &pl_pages[1]) return;
+	for (int i = 0; i < ND_WINDOW; i++) {
+		lv_image_set_src(lv_obj_get_child(p->menus[i], 0), p->reordering ? &icon_grip : &icon_ellipsis_vertical);
+		lv_obj_set_scroll_chain_ver(p->menus[i], !p->reordering);
+		lv_obj_set_press_lock(p->menus[i], p->reordering);
+		bool carried = p->dragging && i < p->count && p->entries[i].occurrence == p->drag.occurrence;
+		lv_obj_set_style_border_width(p->rows[i], carried ? ui_px(2) : 0, 0);
+		if (carried) lv_obj_set_style_border_color(p->rows[i], theme()->accent, 0);
+	}
+}
 static void pl_buttons(pl_page_t *p) {
 	int page = (int)(p - pl_pages);
 	for (int i = 0; i < 3; i++)
@@ -111,7 +131,7 @@ static void pl_buttons(pl_page_t *p) {
 			lv_obj_set_y(p->list, top);
 			lv_obj_set_height(p->list, pl_cfg->screen_height - top);
 			for (int i = 0; i < 2; i++) {
-				bool enabled = !p->loading && !p->selecting && p->playlist.count > 0 && !navidromeplay_preparing();
+				bool enabled = !p->loading && !p->selecting && !p->reordering && p->playlist.count > 0 && !navidromeplay_preparing();
 				if (enabled) lv_obj_remove_state(p->play_buttons[i], LV_STATE_DISABLED);
 				else lv_obj_add_state(p->play_buttons[i], LV_STATE_DISABLED);
 			}
@@ -119,12 +139,25 @@ static void pl_buttons(pl_page_t *p) {
 		if (p->download) {
 			nd_library_t lib;
 			navidrome_library_snapshot(&lib);
-			lv_obj_set_hidden(p->download, p->selecting);
+			lv_obj_set_hidden(p->download, p->selecting || p->reordering);
 			if (p->loading || p->download_pending || !p->playlist.count || !lib.writable || !lib.scope[0])
 				lv_obj_add_state(p->download, LV_STATE_DISABLED);
 			else lv_obj_remove_state(p->download, LV_STATE_DISABLED);
 		}
-		lv_obj_set_hidden(p->buttons[2], p->selecting);
+		lv_obj_set_hidden(p->buttons[2], p->selecting || p->reordering);
+		if (p->reordering) {
+			lv_obj_set_hidden(p->buttons[0], true);
+			lv_obj_set_hidden(p->buttons[1], true);
+		}
+		if (p->reorder) {
+			nd_library_t lib;
+			navidrome_library_snapshot(&lib);
+			lv_obj_set_hidden(p->reorder, p->selecting);
+			if (p->loading || p->download_pending || p->playlist.count < 2 || !lib.writable || !*lib.path)
+				lv_obj_add_state(p->reorder, LV_STATE_DISABLED);
+			else lv_obj_remove_state(p->reorder, LV_STATE_DISABLED);
+			lv_obj_set_style_image_recolor(lv_obj_get_child(p->reorder, 0), p->reordering ? theme()->accent : theme()->text_primary, 0);
+		}
 		lv_image_set_src(lv_obj_get_child(p->buttons[0], 0), p->selecting ? &icon_close : &icon_ellipsis_vertical);
 		lv_image_set_src(lv_obj_get_child(p->buttons[1], 0), p->selecting ? &icon_trash : &icon_refresh);
 	}
@@ -233,6 +266,7 @@ static void pl_show_rows(pl_page_t *p, const bool keep_art[ND_WINDOW]) {
 		}
 		navidromeofflinebadge_bind(&p->offline, p->screen, &q, p->details);
 	}
+	pl_reorder_rows(p);
 	pl_status(p);
 	pl_buttons(p);
 }
@@ -243,6 +277,8 @@ static void pl_confirm_ok(void *unused) {
 }
 static void pl_open_detail(const nd_playlist_t *playlist) {
 	pl_page_t *p = &pl_pages[1];
+	pl_drag_cancel(p);
+	p->reordering = p->move_pending = p->order_saved = false;
 	p->download_token = ++pl_download_token;
 	p->download_pending = false;
 	p->playlist = *playlist;
@@ -267,15 +303,25 @@ static void pl_done(nd_pl_result_t *r, void *value) {
 		return;
 	}
 	p->loading = false;
+	bool moved = r->request.action == NDPL_MOVE;
+	if (moved) p->move_pending = false;
 	if (r->error) {
 		lv_label_set_text(p->status, tr(r->error));
 		gui_notify_popup(r->error);
+		if (moved) { pl_drag_cancel(p); p->reload = true; }
 		pl_buttons(p);
 		if (r->request.action == NDPL_UPLOAD || r->request.action == NDPL_VERIFY) pl_load(page);
 		free(r);
 		return;
 	}
 	nd_pl_action_t action = r->request.action;
+	if (moved) {
+		p->playlist = r->playlist;
+		p->order_saved |= r->added > 0;
+		pl_load(page);
+		free(r);
+		return;
+	}
 	if (r->confirm) {
 		pl_confirm_request = r->request;
 		pl_confirm_request.confirmed = true;
@@ -392,6 +438,7 @@ static void pl_done(nd_pl_result_t *r, void *value) {
 		memcpy(p->playlists, r->playlists, sizeof(p->playlists));
 		memcpy(p->entries, r->entries, sizeof(p->entries));
 		if (action == NDPL_ENTRIES) {
+			if (p->playlist.revision != r->playlist.revision) pl_drag_cancel(p);
 			p->playlist = r->playlist;
 			lv_label_set_text(p->title, p->playlist.name);
 		}
@@ -442,6 +489,85 @@ static void pl_action(int page, nd_pl_request_t *q) {
 	pl_buttons(p);
 	p->submitted = lv_tick_get();
 	lv_label_set_text(p->status, tr("nd_working"));
+}
+static void pl_reorder_exit(pl_page_t *p, bool feedback) {
+	pl_drag_cancel(p);
+	p->reordering = false;
+	if (feedback && p->order_saved) toast_success("medialist_playlist_order_saved");
+	p->order_saved = false;
+	pl_reorder_rows(p);
+	pl_buttons(p);
+}
+static void pl_reorder_clicked(lv_event_t *event) {
+	(void)event;
+	pl_page_t *p = &pl_pages[1];
+	if (!pl_active(1) || pl_gesture() || p->loading || p->move_pending || p->selecting || p->download_pending) return;
+	if (p->reordering) { pl_reorder_exit(p, true); return; }
+	nd_library_t lib;
+	navidrome_library_snapshot(&lib);
+	if (!lib.writable || !*lib.path) { gui_notify_popup("nd_cache_readonly"); return; }
+	if (p->playlist.count < 2 || navidrome_playlists_busy()) return;
+	popover_close();
+	p->order_saved = false;
+	p->reordering = true;
+	pl_reorder_rows(p);
+	pl_buttons(p);
+}
+static void pl_grip(lv_event_t *event) {
+	pl_page_t *p = &pl_pages[1];
+	if (!p->reordering) return;
+	lv_event_code_t code = lv_event_get_code(event);
+	lv_event_stop_bubbling(event);
+	if (!pl_active(1) || pl_gesture() || code == LV_EVENT_PRESS_LOST || code == LV_EVENT_INDEV_RESET) { pl_drag_cancel(p); return; }
+	lv_indev_t *input = lv_indev_active();
+	if (!input) return;
+	lv_point_t point;
+	lv_indev_get_point(input, &point);
+	if (code == LV_EVENT_PRESSED) {
+		if (p->loading || p->move_pending || navidrome_playlists_busy()) return;
+		for (int i = 0; i < p->count; i++) if (p->menus[i] == lv_event_get_current_target(event)) {
+			p->drag = (nd_pl_request_t){.action = NDPL_MOVE, .id = p->playlist.id,
+				.revision = p->playlist.revision, .ordinal = p->first + i, .occurrence = p->entries[i].occurrence};
+			snprintf(p->drag.track, sizeof(p->drag.track), "%s", p->entries[i].track.id);
+			p->drag_to = p->drag.ordinal;
+			p->dragging = true;
+			pl_reorder_rows(p);
+			break;
+		}
+		return;
+	}
+	if (!p->dragging) return;
+	if (code == LV_EVENT_RELEASED) {
+		nd_pl_request_t q = p->drag;
+		q.first = p->drag_to;
+		pl_drag_cancel(p);
+		if (q.first != q.ordinal) {
+			unsigned serial = p->serial;
+			pl_action(1, &q);
+			p->move_pending = p->serial != serial && p->loading;
+		}
+		return;
+	}
+	if (code != LV_EVENT_PRESSING) return;
+	lv_area_t area;
+	lv_obj_get_coords(p->list, &area);
+	int scroll = lv_obj_get_scroll_y(p->list);
+	int step = point.y < area.y1 + ui_px(70) ? -ui_px(18) : point.y > area.y2 - ui_px(70) ? ui_px(18) : 0;
+	int limit = p->offset + p->total * p->pitch + ui_px(12) - lv_obj_get_height(p->list);
+	if (limit < 0) limit = 0;
+	int wanted = scroll + step;
+	if (wanted < 0) wanted = 0;
+	if (wanted > limit) wanted = limit;
+	if (step && wanted != scroll) lv_obj_scroll_to_y(p->list, wanted, LV_ANIM_OFF);
+	int target = (point.y - area.y1 + lv_obj_get_scroll_y(p->list) - p->offset) / p->pitch;
+	if (target < 0) target = 0;
+	if (target >= p->total) target = p->total - 1;
+	p->drag_to = target;
+	int before = target > p->drag.ordinal ? target + 1 : target;
+	int line_y = p->offset + before * p->pitch - ui_px(4);
+	lv_obj_set_pos(p->drop_line, 0, line_y < 0 ? 0 : line_y);
+	lv_obj_set_hidden(p->drop_line, false);
+	lv_obj_move_foreground(p->drop_line);
 }
 static void pl_load(int page) {
 	pl_page_t *p = &pl_pages[page];
@@ -560,7 +686,7 @@ static bool pl_menu_valid(void *user, nd_library_t *lib) {
 	pl_page_t *p = &pl_pages[page];
 	navidrome_library_snapshot(lib);
 	bool ok = (unsigned)(uintptr_t)user == pl_target.token && pl_target.token == pl_menu_token &&
-		pl_active(page) && p->serial == pl_target.serial && !p->loading && !p->selecting && !pl_gesture() &&
+		pl_active(page) && p->serial == pl_target.serial && !p->loading && !p->selecting && !p->reordering && !pl_gesture() &&
 		navidrome_playback_current(&pl_target.identity, false) && p->epoch == lib->epoch &&
 		p->card == lib->card_epoch && !strcmp(p->scope, lib->scope);
 	if (ok && page == 1) ok = p->playlist.id == pl_target.playlist.id && p->playlist.revision == pl_target.playlist.revision;
@@ -591,7 +717,7 @@ static void pl_reconcile(void *user) {
 }
 static void pl_play(lv_event_t *event) {
 	pl_page_t *p = &pl_pages[1];
-	if (!pl_active(1) || pl_gesture() || p->selecting || p->loading || !p->playlist.count || navidromeplay_preparing()) return;
+	if (!pl_active(1) || pl_gesture() || p->reordering || p->selecting || p->loading || !p->playlist.count || navidromeplay_preparing()) return;
 	nd_library_t lib;
 	navidrome_library_snapshot(&lib);
 	if (p->epoch != lib.epoch || p->card != lib.card_epoch || strcmp(p->scope, lib.scope)) { gui_notify_popup("nd_pl_stale"); return; }
@@ -622,7 +748,7 @@ static void pl_download_done(bool ok, const char *error, int added, int skipped,
 static void pl_download(lv_event_t *event) {
 	(void)event;
 	pl_page_t *p = &pl_pages[1];
-	if (!pl_active(1) || pl_gesture() || p->selecting || p->loading || p->download_pending || !p->playlist.count) return;
+	if (!pl_active(1) || pl_gesture() || p->reordering || p->selecting || p->loading || p->download_pending || !p->playlist.count) return;
 	nd_dl_request_t q = {.action = NDDL_CAPTURE, .playlist = p->playlist.id, .playlist_revision = p->playlist.revision};
 	navidrome_library_snapshot(&q.library);
 	if (p->epoch != q.library.epoch || p->card != q.library.card_epoch || strcmp(p->scope, q.library.scope)) {
@@ -653,7 +779,7 @@ static void pl_button(lv_event_t *event) {
 	uintptr_t key = (uintptr_t)lv_event_get_user_data(event);
 	int page = (int)(key / 3), slot = (int)(key % 3);
 	pl_page_t *p = &pl_pages[page];
-	if (p->loading)
+	if (p->loading || p->reordering)
 		return;
 	if (page == 0 || page == 2) {
 		if (slot == (page == 0 ? 1 : 0)) {
@@ -742,7 +868,7 @@ static void pl_row(lv_event_t *event) {
 	if (index < 0)
 		return;
 	pl_page_t *p = &pl_pages[page];
-	if (index >= p->count || p->loading)
+	if (index >= p->count || p->loading || p->reordering)
 		return;
 	if (page == 1) {
 		if (p->selecting)
@@ -787,7 +913,7 @@ static void pl_long(lv_event_t *event) {
 		}
 	if (index < 0)
 		return;
-	if (page != 1 || index >= pl_pages[1].count || pl_pages[1].loading || (pl_pages[1].selecting && pl_pages[1].entries[index].selected))
+	if (pl_pages[1].reordering || page != 1 || index >= pl_pages[1].count || pl_pages[1].loading || (pl_pages[1].selecting && pl_pages[1].entries[index].selected))
 		return;
 	lv_indev_t *indev = lv_indev_active();
 	if (indev)
@@ -809,7 +935,7 @@ static void pl_menu(lv_event_t *event) {
 	if (index < 0)
 		return;
 	pl_page_t *p = &pl_pages[page];
-	if (index >= p->count || p->loading)
+	if (index >= p->count || p->loading || p->reordering)
 		return;
 	if (page == 1) {
 		if (p->selecting) return;
@@ -856,6 +982,8 @@ static void pl_loaded(lv_event_t *event) {
 }
 static void pl_unloaded(lv_event_t *event) {
 	pl_page_t *p = lv_event_get_user_data(event);
+	pl_reorder_exit(p, false);
+	p->move_pending = false;
 	pl_menu_token++;
 	if (p == &pl_pages[2]) {
 		pl_direct_active = false;
@@ -873,10 +1001,14 @@ static void pl_unloaded(lv_event_t *event) {
 	confirm_close();
 	pl_name_hide();
 }
-static bool pl_back_peek(void) { return !lv_obj_is_hidden(pl_name_layer) || (pl_active(1) && pl_pages[1].selecting); }
+static bool pl_back_peek(void) { return !lv_obj_is_hidden(pl_name_layer) || (pl_active(1) && (pl_pages[1].selecting || pl_pages[1].reordering)); }
 static bool pl_back(void) {
 	if (!lv_obj_is_hidden(pl_name_layer)) {
 		pl_name_hide();
+		return true;
+	}
+	if (pl_active(1) && pl_pages[1].reordering) {
+		pl_reorder_exit(&pl_pages[1], true);
 		return true;
 	}
 	if (pl_active(1) && pl_pages[1].selecting) {
@@ -897,6 +1029,7 @@ void navidromeplaylists_refresh(void) {
 		if (!p->screen || !pl_active(i))
 			continue;
 		if (!state.unlocked || !*lib.path || (p->epoch && (strcmp(p->scope, lib.scope) || p->card != lib.card_epoch))) {
+			pl_reorder_exit(p, false);
 			p->serial++;
 			p->loading = p->reload = false;
 			pl_release_art(p);
@@ -908,6 +1041,7 @@ void navidromeplaylists_refresh(void) {
 			switch_screen_return_to(navidrome_screen);
 			return;
 		}
+		if (p->reordering && (!lib.writable || pl_gesture())) pl_reorder_exit(p, false);
 		if (i == 1) {
 			pl_buttons(p);
 			for (int row = 0; row < p->count; row++) {
@@ -918,6 +1052,7 @@ void navidromeplaylists_refresh(void) {
 		navidromeofflinebadge_tick(&p->offline);
 		pl_take_art(p);
 		if (p->epoch != lib.epoch && !navidrome_playlists_busy()) {
+			pl_drag_cancel(p);
 			pl_release_art(p);
 			p->serial++;
 			p->loading = false;
@@ -939,6 +1074,8 @@ static void pl_tick(lv_timer_t *timer) {
 				// Recover a dropped GUI post with a local read, never by replaying a mutation.
 				pl_pages[i].serial++;
 				pl_pages[i].loading = false;
+				pl_pages[i].move_pending = false;
+				pl_drag_cancel(&pl_pages[i]);
 				pl_load(i);
 			}
 		}
@@ -1187,6 +1324,30 @@ void navidromeplaylists_init(gui_config_t *cfg) {
 			switcher_attach_back_gesture(p->download);
 			player_sheet_attach_drag(p->download, true);
 		}
+		if (page == 1) {
+			p->reorder = lv_btn_create(p->play_actions);
+			lv_obj_set_size(p->reorder, ui_px(56), ui_px(56));
+			lv_obj_set_style_bg_opa(p->reorder, LV_OPA_TRANSP, 0);
+			lv_obj_set_style_border_width(p->reorder, 0, 0);
+			lv_obj_set_style_shadow_width(p->reorder, 0, 0);
+			lv_obj_set_style_pad_all(p->reorder, 0, 0);
+			lv_obj_t *glyph = lv_image_create(p->reorder);
+			lv_image_set_src(glyph, &icon_reorder);
+			lv_obj_set_size(glyph, ui_px(24), ui_px(24));
+			lv_image_set_inner_align(glyph, LV_IMAGE_ALIGN_CONTAIN);
+			lv_obj_add_style(glyph, &theme_style_icon, 0);
+			lv_obj_center(glyph);
+			lv_obj_add_event_cb(p->reorder, pl_reorder_clicked, LV_EVENT_CLICKED, NULL);
+			switcher_attach_back_gesture(p->reorder);
+			player_sheet_attach_drag(p->reorder, true);
+			p->drop_line = lv_obj_create(p->list);
+			lv_obj_remove_style_all(p->drop_line);
+			lv_obj_set_size(p->drop_line, cfg->screen_width - 2 * cfg->padding, ui_px(4));
+			lv_obj_set_clickable(p->drop_line, false);
+			lv_obj_set_scrollable(p->drop_line, false);
+			lv_obj_add_style(p->drop_line, &theme_style_accent_bg, 0);
+			lv_obj_set_hidden(p->drop_line, true);
+		}
 		for (int i = 0; i < ND_WINDOW; i++) {
 			uintptr_t key = (uintptr_t)(page * ND_WINDOW + i);
 			lv_obj_t *row = p->rows[i] = pl_card(p->list, ui_px(page == 1 ? 100 : 88));
@@ -1251,6 +1412,7 @@ void navidromeplaylists_init(gui_config_t *cfg) {
 			lv_obj_add_event_cb(row, pl_row, LV_EVENT_CLICKED, (void *)key);
 			lv_obj_add_event_cb(row, pl_long, LV_EVENT_LONG_PRESSED, (void *)key);
 			lv_obj_add_event_cb(p->menus[i], pl_menu, LV_EVENT_CLICKED, (void *)key);
+			if (page == 1) lv_obj_add_event_cb(p->menus[i], pl_grip, LV_EVENT_ALL, NULL);
 			switcher_attach_back_gesture(row);
 			player_sheet_attach_drag(row, true);
 			lv_obj_set_hidden(row, true);

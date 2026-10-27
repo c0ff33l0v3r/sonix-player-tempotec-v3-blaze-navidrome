@@ -44,6 +44,10 @@ bool nd_pl_play_entry(nd_playlist_store_t *s, int64_t id, int64_t revision, int 
 bool nd_pl_create(nd_playlist_store_t *s, const char *name, int64_t *id);
 bool nd_pl_edit(nd_playlist_store_t *s, int64_t id, int64_t revision, const char *name, bool remove);
 bool nd_pl_begin(nd_playlist_store_t *s, int64_t id, int64_t revision);
+// Starts a revision-bound transaction; caller commits through its scoped boundary.
+// from/to are dense offsets, occurrence/track identify the exact source.
+bool nd_pl_move(nd_playlist_store_t *s, int64_t id, int64_t revision,
+				int from, int to, int64_t occurrence, const char *track, bool *changed);
 bool nd_pl_finish(nd_playlist_store_t *s, int64_t id, bool changed);
 bool nd_pl_append(nd_playlist_store_t *s, int64_t id, const nd_row_t *row, bool dedupe, int *added, int *skipped);
 bool nd_pl_fingerprint(nd_playlist_store_t *s, int64_t id, char hash[ND_PL_HASH]);

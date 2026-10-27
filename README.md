@@ -465,6 +465,17 @@ Rename is in its menu; linked playlists also offer Save as local copy. Saving a
 copy asks for its name (the original name is allowed) before creating an unlinked
 copy. The collection's row menu can delete only the local copy.
 
+Inside a saved Navidrome playlist, the rearrange button beside Play and Shuffle
+turns the row menus into drag grips. Drag a grip to move that occurrence; hold
+near either list edge to scroll farther. Dragging elsewhere still scrolls.
+Each completed drop is saved locally; wait for it to finish before another move.
+Tap the button again or use Back to leave rearrange mode. Back or interrupted
+input cancels an unfinished drag while keeping earlier saved drops.
+Rearranging works offline without Library Sync on writable cards, including
+local copies of server-readonly playlists. It never publishes automatically or
+changes an already captured playback queue. Collection/picker name order and
+permanent download files are unchanged.
+
 For a locally created unlinked playlist, **Upload to Navidrome** is in its
 collection-row and detail three-dot menus, as well as the header sync icon.
 It sends the saved name and ordered track references, including empty playlists,
@@ -500,7 +511,7 @@ parser, and request-buffer budget. Unsupported sizes fail without truncating a
 local playlist. Upload requires the server's OpenSubsonic form-POST support.
 
 Audio upload, SD-card file matching, mixed-source playlists, automatic merge/sync,
-server deletion, and manual drag reordering remain outside this feature.
+and server deletion remain outside this feature.
 
 Use the header **Search** button to search Tracks, Albums, or Artists. Enter a
 query and press the keyboard's Search key. Connected searches query the server,

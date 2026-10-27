@@ -188,6 +188,33 @@ int main(int argc, char **argv) {
 	q = (nd_pl_request_t){.action = NDPL_ENTRIES, .id = local};
 	success(&q);
 	assert(result.count == 4 && !strcmp(result.entries[0].track.id, "B") && !strcmp(result.entries[1].track.id, "A") && !strcmp(result.entries[2].track.id, "C") && !strcmp(result.entries[3].track.id, "D"));
+	int64_t moving_occurrence = result.entries[0].occurrence;
+	int64_t original_revision = result.playlist.revision;
+	int original_calls = mutation_calls;
+	q = (nd_pl_request_t){.action = NDPL_MOVE, .id = local, .revision = original_revision,
+		.ordinal = 0, .first = 3, .occurrence = moving_occurrence};
+	strcpy(q.track, "B");
+	invalidate_commit = true;
+	execute(&q);
+	assert(result.error);
+	invalidate_commit = false;
+	library.writable = false;
+	execute(&q);
+	assert(result.error && !strcmp(result.error, "nd_cache_readonly"));
+	library.writable = true;
+	network_epoch++; // Move must remain local even with retired transport eligibility.
+	success(&q);
+	network_epoch--;
+	assert(result.added == 1 && result.playlist.revision == original_revision + 1);
+	execute(&q);
+	assert(result.error && !strcmp(result.error, "nd_pl_stale"));
+	q.revision++;
+	q.ordinal = 3; q.first = 0;
+	success(&q);
+	assert(mutation_calls == original_calls);
+	q = (nd_pl_request_t){.action = NDPL_ENTRIES, .id = local};
+	success(&q);
+	assert(result.entries[0].occurrence == moving_occurrence && !strcmp(result.entries[3].track.id, "D"));
 	int64_t rev = result.playlist.revision;
 	q = (nd_pl_request_t){.action = NDPL_SELECT_ONLY, .session = 123, .ordinal = 0, .kind = ND_ALBUMS, .generation = library.generation};
 	strcpy(q.track, "album1");

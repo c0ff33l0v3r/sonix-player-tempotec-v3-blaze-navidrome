@@ -10,7 +10,7 @@
 // Includes conservative old/new token arrays during realloc; bodies/forms are released between phases.
 _Static_assert(2 * (ND_PL_BYTES + 1) + ND_PL_TOKENS * sizeof(json_tok_t) * 3 / 2 + 8192 < 8 * 1024 * 1024, "playlist response/parser/form budget");
 
-static bool network_action(nd_pl_action_t a) { return a >= NDPL_CATALOGUE && a != NDPL_CATALOGUE_WINDOW && a != NDPL_PULL_ACCEPT; }
+static bool network_action(nd_pl_action_t a) { return a >= NDPL_CATALOGUE && a <= NDPL_RECREATE && a != NDPL_CATALOGUE_WINDOW && a != NDPL_PULL_ACCEPT; }
 static bool readonly_action(nd_pl_action_t a) { return a == NDPL_LIST || a == NDPL_ENTRIES || a == NDPL_CATALOGUE_WINDOW; }
 static bool commit(nd_playlist_store_t *s, const nd_context_t *c) {
 	if (navidrome_context_commit(c, s->db))
@@ -567,6 +567,15 @@ void nd_pl_execute(const nd_pl_request_t *q, const nd_context_t *c, const nd_lib
 		if (ok)
 			ok = nd_pl_get(&s, p.id, &out->playlist);
 		break;
+	case NDPL_MOVE: {
+		bool changed = false;
+		ok = nd_pl_move(&s, p.id, q->revision, q->ordinal, q->first, q->occurrence, q->track, &changed) && commit(&s, c);
+		if (ok) {
+			out->added = changed;
+			ok = nd_pl_get(&s, p.id, &out->playlist);
+		}
+		break;
+	}
 	case NDPL_REMOVE: {
 		ok = nd_pl_begin(&s, p.id, p.revision);
 		sqlite3_stmt *st = NULL;

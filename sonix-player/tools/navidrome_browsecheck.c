@@ -211,11 +211,11 @@ static struct {
 	void *data;
 } posts[64];
 static unsigned post_read, post_write;
-#if defined(NAVIDROME_COORDINATOR_TEST) || defined(NAVIDROME_STAR_UI)
+#if defined(NAVIDROME_COORDINATOR_TEST) || defined(NAVIDROME_STAR_UI) || defined(NAVIDROME_PLAYLIST_UI)
 static atomic_bool fixture_reject_posts;
 #endif
 bool gui_post(void (*cb)(void *), void *data) {
-#if defined(NAVIDROME_COORDINATOR_TEST) || defined(NAVIDROME_STAR_UI)
+#if defined(NAVIDROME_COORDINATOR_TEST) || defined(NAVIDROME_STAR_UI) || defined(NAVIDROME_PLAYLIST_UI)
 	if (atomic_load(&fixture_reject_posts))
 		return false;
 #endif

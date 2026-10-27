@@ -19,7 +19,7 @@ from pathlib import Path
 import sys
 text = Path('src/gui/shell/icons.c').read_text()
 parts = ['#include "src/gui/shell/icons.h"\n']
-for name in ['download', 'shuffle', 'play_small']:
+for name in ('download', 'reorder', 'grip', 'shuffle', 'play_small'):
     start = text.index(f'static const uint8_t icon_{name}_data[] = {{')
     end = text.index('\n};', text.index(f'const lv_image_dsc_t icon_{name} = {{', start)) + 3
     parts.append(text[start:end] + '\n')

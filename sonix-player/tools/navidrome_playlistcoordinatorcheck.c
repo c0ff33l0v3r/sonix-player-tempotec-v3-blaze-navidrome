@@ -141,6 +141,37 @@ static void saved_actions_check(nd_library_t *lib, lv_obj_t *origin) {
 	assert(atomic_load(&calls) == requests);
 	puts("saved actions coordinator: staged Play/finite-continuous Shuffle and failure mode rollback; atomic whole/entry repeats, both placements, silent offline metadata admission, rejected-post/replacement and finite-provider release: passed");
 }
+static void saved_rearrange_check(nd_library_t *lib, lv_obj_t *origin) {
+	int before = starts, requests = atomic_load(&calls);
+	playlist_set_mode(PLAYBACK_MODE_REPEAT_ONE);
+	assert(saved_start(lib, 2, origin)); wait_started(before + 1);
+	int preparations = atomic_load(&fetches);
+	char audible[sizeof(playback.current_file)];
+	snprintf(audible, sizeof(audible), "%s", playback.current_file);
+	audio_status_t status = playback.status;
+	char path[1200]; nd_playlist_store_t store;
+	assert(nd_pl_path(lib, path) && nd_pl_open(&store, path, lib->scope, true));
+	bool changed;
+	assert(nd_pl_move(&store, saved.id, saved.revision, 2, 0, saved_entries[2].occurrence,
+		saved_entries[2].track.id, &changed) && changed && nd_pl_sql(&store, "COMMIT"));
+	assert(nd_pl_get(&store, saved.id, &saved));
+	nd_pl_close(&store);
+	assert(starts == before + 1 && atomic_load(&fetches) == preparations && !strcmp(playback.current_file, audible));
+	assert(playback.status == status && playlist_get_mode() == PLAYBACK_MODE_REPEAT_ONE && playlist_current_entry() == 2);
+	saved_metadata(0, "Saved occurrence 0"); saved_metadata(2, "Saved occurrence 2");
+	assert(navidromeplay_playlist(lib, saved.id, saved.revision, 0, saved_entries[2].occurrence, saved_entries[2].track.id, origin));
+	wait_started(before + 2);
+	assert(playlist_current_entry() == 0 && !strcmp(playback.metadata.title, "Saved occurrence 2"));
+	saved_metadata(1, "Saved occurrence 0"); saved_metadata(2, "Saved occurrence 1");
+	// Restore the saved definition for the existing shared mode/action fixtures.
+	assert(nd_pl_open(&store, path, lib->scope, true));
+	assert(nd_pl_move(&store, saved.id, saved.revision, 0, 2, saved_entries[2].occurrence,
+		saved_entries[2].track.id, &changed) && nd_pl_sql(&store, "COMMIT") && nd_pl_get(&store, saved.id, &saved));
+	nd_pl_close(&store);
+	assert(atomic_load(&calls) == requests);
+	navidromeplay_stop(); album_coordinator_idle();
+	puts("saved rearrange coordinator: installed queue/audio/mode unchanged, new start uses exact moved occurrence and fresh order: passed");
+}
 int main(void) {
 	fixture_gui_thread = pthread_self();
 	alarm(90);
@@ -158,6 +189,7 @@ int main(void) {
 	navidromeplay_init();
 	atomic_store(&allow_ready, true);
 	saved_create(&lib, 3);
+	saved_rearrange_check(&lib, origin);
 	saved_actions_check(&lib, origin);
 	int requests = atomic_load(&calls);
 	for (int mode = PLAYBACK_MODE_NORMAL; mode <= PLAYBACK_MODE_SHUFFLE_REPEAT; mode++) {
