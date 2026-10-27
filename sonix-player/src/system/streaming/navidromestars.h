@@ -1,10 +1,12 @@
 #ifndef NAVIDROMESTARS_H
 #define NAVIDROMESTARS_H
 #include "navidrome.h"
+#include "navidromeowned.h"
 
 typedef enum { ND_STAR_UNKNOWN, ND_STAR_CLEAR, ND_STAR_SET, ND_STAR_PENDING, ND_STAR_UNCERTAIN } nd_star_state_t;
 typedef enum { ND_STAR_ADD, ND_STAR_REMOVE, ND_STAR_TOGGLE, ND_STAR_CHECK, ND_STAR_SELECTED, ND_STAR_RETRY } nd_star_action_t;
 typedef struct {
+	nd_owned_rows_t *captured; // Optional owned Search metadata; retained on submit.
 	nd_star_action_t action;
 	nd_kind_t kind;
 	char id[ND_ID_MAX];

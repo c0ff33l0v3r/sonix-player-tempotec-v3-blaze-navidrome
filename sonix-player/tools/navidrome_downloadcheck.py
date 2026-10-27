@@ -130,6 +130,7 @@ with tempfile.TemporaryDirectory(prefix="sonix-download-check-") as temporary:
     thread.start()
     try:
         fixtures = ("remote_album", "remote_album_wrong", "remote_album_readonly", "clear_history", "clear_active", "deleted_again", "deleted_history", "deleted_retry", "folders", "success", "same_title", "offline", "active_cache", "unknown", "collision", "error", "json", "html", "truncated", "oversize", "unsupported", "pause", "cancel", "preempt", "preempt_headers", "resume", "single_multi", "current", "current_remote", "recover", "after_rename", "readonly", "reject_post", "large", "chunk", "chunk_bad", "gzip", "unknown_limit", "auth", "write_fail", "flush_fail", "full", "favorites", "selection", "case_collision", "capture_refresh", "large_batch", "fallback", "modified", "partial_retry", "root", "playlist", "playlist_remote", "playlist_stale", "playlist_changed", "playlist_deleted", "playlist_large", "playlist_badmeta", "playlist_offline")
+        fixtures += ("search", "search_remote", "search_offline", "search_album_offline")
         selected = os.environ.get("NAVIDROME_DOWNLOAD_CASES")
         if selected:
             chosen = tuple(selected.split(","))
@@ -150,7 +151,7 @@ with tempfile.TemporaryDirectory(prefix="sonix-download-check-") as temporary:
                 assert request_ids == ["track/1?", "track/2?"]
             if fixture == "playlist_badmeta":
                 assert requests and all(path.endswith("getSong.view") for path in requests)
-            if fixture in ("offline", "active_cache", "fallback", "playlist_offline"):
+            if fixture in ("offline", "active_cache", "fallback", "playlist_offline", "search_offline", "search_album_offline"):
                 assert requests == ["/prefix/rest/stream.view"] * 2
             if fixture in ("partial_retry", "deleted_again", "deleted_history", "deleted_retry"):
                 assert request_ids == ["track/1?", "track/2?", "track/1?"]

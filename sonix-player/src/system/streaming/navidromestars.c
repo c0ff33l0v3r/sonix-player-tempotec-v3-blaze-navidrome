@@ -205,6 +205,20 @@ static const char *one(const nd_context_t *c, nd_kind_t kind, const char *id, nd
 // Read a fixed window of captured selections, then close all storage before HTTP.
 static const char *selection_window(const nd_star_request_t *q, const nd_context_t *c, int after, char ids[ND_WINDOW][ND_ID_MAX], int ordinals[ND_WINDOW], int *count, int *total) {
 	*count = *total = 0;
+	if (q->captured) {
+		nd_playrow_t rows[ND_WINDOW];
+		int first = after + 1;
+		int n = nd_owned_read(q->captured, first, rows, ND_WINDOW);
+		if (n < 0 || !request_current((void *)c))
+			return "nd_favorites_stale";
+		*count = n;
+		*total = q->captured->count;
+		for (int i = 0; i < n; i++) {
+			ordinals[i] = first + i;
+			memcpy(ids[i], rows[i].row.id, ND_ID_MAX);
+		}
+		return NULL;
+	}
 	if (!request_current((void *)c) || !navidrome_cache_begin(c->epoch, c->card_epoch))
 		return "nd_favorites_stale";
 	char path[1200];
@@ -477,7 +491,12 @@ void nd_star_execute(const nd_star_request_t *q, const nd_context_t *c, nd_star_
 		}
 		out->total = total;
 		for (int i = 0; i < count; i++) {
-			const char *error = execute_item(q, c, ids[i], ND_STAR_ADD, out);
+			nd_star_request_t item = *q;
+			if (q->captured && nd_owned_read(q->captured, ordinals[i], &item.metadata, 1) != 1) {
+				out->error = "nd_favorites_stale";
+				return;
+			}
+			const char *error = execute_item(&item, c, ids[i], ND_STAR_ADD, out);
 			last = ordinals[i];
 			if (error) {
 				out->error = error;
@@ -510,6 +529,8 @@ void navidrome_star_poll(void) {
 static void *run(void *data) {
 	job_t *job = data;
 	nd_star_execute(&job->request, &job->context, job->result);
+	nd_owned_release(job->request.captured);
+	job->request.captured = job->result->request.captured = NULL;
 	nd_wipe(&job->context, sizeof(job->context));
 	// Keep service admission until delivery is posted or fallback is retained.
 	if (!gui_post(delivered, job)) {
@@ -551,6 +572,7 @@ bool navidrome_star_submit(const nd_star_request_t *q, void (*done)(nd_star_resu
 		return false;
 	}
 	job->request = *q;
+	job->request.captured = nd_owned_retain(q->captured);
 	job->done = done;
 	job->user = user;
 	busy = true;
@@ -564,6 +586,7 @@ bool navidrome_star_submit(const nd_star_request_t *q, void (*done)(nd_star_resu
 		pthread_attr_destroy(&attr);
 	}
 	if (failed) {
+		nd_owned_release(job->request.captured);
 		busy = false;
 		navidrome_external_end();
 		pthread_mutex_unlock(&mutex);

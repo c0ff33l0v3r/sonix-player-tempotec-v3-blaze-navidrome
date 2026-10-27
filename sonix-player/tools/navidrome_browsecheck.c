@@ -33,8 +33,12 @@ static const uint8_t fixture_pixel[4] = {255, 255, 255, 255};
 const lv_image_dsc_t icon_sort_az = FIXTURE_ICON, icon_sort_za = FIXTURE_ICON, icon_sort_year_asc = FIXTURE_ICON, icon_sort_year_desc = FIXTURE_ICON;
 #endif
 __attribute__((weak)) const lv_image_dsc_t icon_play_small = FIXTURE_ICON;
+#ifdef NAVIDROME_NATIVE_ACTION_ICONS
+#include "navidrome_actionicons.inc"
+#else
 __attribute__((weak)) const lv_image_dsc_t icon_ellipsis_vertical = FIXTURE_ICON;
 const lv_image_dsc_t icon_download = FIXTURE_ICON, icon_album_big = FIXTURE_ICON, icon_shuffle = FIXTURE_ICON, icon_list_queue = FIXTURE_ICON, icon_star_plus = FIXTURE_ICON, icon_close = FIXTURE_ICON, icon_list_plus = FIXTURE_ICON, icon_check = FIXTURE_ICON;
+#endif
 #ifndef NAVIDROME_PLAYLIST_UI
 void navidromeplaylists_pick_source(int64_t session, int64_t generation, lv_obj_t *origin, bool favorites) {
 	(void)favorites;
@@ -109,7 +113,7 @@ bool navidromeplay_matches(const nd_library_t *library, nd_kind_t kind, const ch
         !strcmp(id,kind==ND_TRACKS?selected_track:kind==ND_ALBUMS?selected_album:"");
 }
 #endif
-#ifndef NAVIDROME_DOWNLOAD_UI
+#if !defined(NAVIDROME_DOWNLOAD_UI) && !defined(NAVIDROME_SEARCH_ACTION_UI)
 __attribute__((weak)) bool navidromedownloads_request(const nd_dl_request_t *request, nd_dl_captured_cb cb, void *user) {
     (void)request; (void)cb; (void)user; return false;
 }
@@ -218,11 +222,11 @@ static struct {
 	void *data;
 } posts[64];
 static unsigned post_read, post_write;
-#if defined(NAVIDROME_COORDINATOR_TEST) || defined(NAVIDROME_STAR_UI) || defined(NAVIDROME_PLAYLIST_UI)
+#if defined(NAVIDROME_COORDINATOR_TEST) || defined(NAVIDROME_STAR_UI) || defined(NAVIDROME_PLAYLIST_UI) || defined(NAVIDROME_SEARCH_ACTION_UI)
 static atomic_bool fixture_reject_posts;
 #endif
 bool gui_post(void (*cb)(void *), void *data) {
-#if defined(NAVIDROME_COORDINATOR_TEST) || defined(NAVIDROME_STAR_UI) || defined(NAVIDROME_PLAYLIST_UI)
+#if defined(NAVIDROME_COORDINATOR_TEST) || defined(NAVIDROME_STAR_UI) || defined(NAVIDROME_PLAYLIST_UI) || defined(NAVIDROME_SEARCH_ACTION_UI)
 	if (atomic_load(&fixture_reject_posts))
 		return false;
 #endif

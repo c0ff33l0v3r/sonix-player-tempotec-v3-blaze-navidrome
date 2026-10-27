@@ -40,6 +40,15 @@ bool navidromeplay_search(const nd_library_t *lib, const nd_context_t *c, const 
 	return false;
 }
 #include "src/gui/streaming/navidromesearch.c"
+unsigned playlist_identity(void) { return 1; }
+bool navidromeplay_enqueue_captured(nd_owned_rows_t *rows, unsigned identity, void *origin) {
+	(void)rows;
+	(void)identity;
+	(void)origin;
+	assert(!"status must not enqueue");
+	return false;
+}
+void navidromedownloads_poll(void) {}
 
 decode_format_t decode_detect_format(const char *path) {
 	(void)path;

@@ -1,6 +1,7 @@
 #ifndef NAVIDROMEPLAYLISTS_H
 #define NAVIDROMEPLAYLISTS_H
 #include "navidrome.h"
+#include "navidromeowned.h"
 #include "navidromeplayliststore.h"
 typedef enum { NDPL_LIST, NDPL_ENTRIES, NDPL_CREATE, NDPL_RENAME, NDPL_DELETE, NDPL_COPY, NDPL_SELECT, NDPL_SELECT_ONLY, NDPL_CLEAR, NDPL_ADD, NDPL_REMOVE, NDPL_CATALOGUE, NDPL_CATALOGUE_WINDOW, NDPL_IMPORT, NDPL_PULL, NDPL_PULL_ACCEPT, NDPL_UPLOAD, NDPL_PUBLISH, NDPL_VERIFY, NDPL_RECOVER, NDPL_RECREATE, NDPL_MOVE, NDPL_SORT } nd_pl_action_t;
 // Owned direct addition; independent of replaceable Library/Favorites generations.
@@ -11,6 +12,7 @@ typedef struct {
 	char scope[33];
 } nd_pl_track_t;
 typedef struct {
+	nd_owned_rows_t *captured; // Optional owned Search metadata; retained on submit.
 	nd_pl_action_t action;
 	int64_t id, revision, session, occurrence, candidate, generation;
 	int first, ordinal;
@@ -36,6 +38,7 @@ typedef struct {
 // Nonblocking one-operation boundary. Caller owns the returned result and frees it.
 bool navidrome_playlists_submit(const nd_pl_request_t *request, void (*done)(nd_pl_result_t *, void *), void *user);
 bool navidrome_playlists_busy(void);
+void navidrome_playlists_poll(void); // GUI delivery fallback; never repeats a write.
 // Blocking worker boundary for focused fixtures; caller supplies coherent captured context.
 void nd_pl_execute(const nd_pl_request_t *request, const nd_context_t *context, const nd_library_t *library, nd_pl_result_t *out);
 #endif

@@ -1,6 +1,7 @@
 // Actual download worker/store/API/HTTP, native WAV validation and filesystem
 // publication. Synthetic service lifetime and metadata; opens no audio device.
 #define _GNU_SOURCE
+#include "navidrome_owned_fixture.h"
 #include "src/system/decode/decode.h"
 #include "src/system/library/metadata.h"
 #include "src/system/streaming/navidromeaudio.h"
@@ -38,6 +39,11 @@ static char destination[256] = "Music/Navidrome";
 static char mode[40];
 static int64_t saved_playlist;
 static bool changed_saved;
+static fixture_owned_t *search_rows;
+static int search_album_multi(const nd_owned_rows_t *rows, const char *id) {
+	(void)rows;
+	return !strcmp(id, "album") ? 1 : -1;
+}
 bool __real_nd_pl_play_window(nd_playlist_store_t *, int64_t, int64_t, int, nd_playlist_entry_t[ND_WINDOW], int *, int *);
 bool __wrap_nd_pl_play_window(nd_playlist_store_t *s, int64_t id, int64_t revision, int first,
 		nd_playlist_entry_t out[ND_WINDOW], int *count, int *total) {
@@ -241,6 +247,8 @@ static void submit(nd_dl_action_t action) {
 		q.profile_epoch = context.profile_epoch;
 	}
 
+	if (action == NDDL_CAPTURE && search_rows)
+		q.captured = &search_rows->owned;
 	if (!strncmp(mode, "playlist", 8)) {
 		q.playlist = saved_playlist;
 		q.playlist_revision = 2;
@@ -438,7 +446,27 @@ int main(int argc, char **argv) {
 	}
 	if (!strcmp(mode, "readonly") || !strcmp(mode, "remote_album_readonly"))
 		library.writable = false;
-	if (!strcmp(mode, "offline") || !strcmp(mode, "active_cache") || !strcmp(mode, "fallback") || !strcmp(mode, "playlist_offline")) {
+	if (!strncmp(mode, "search", 6)) {
+		if (!strcmp(mode, "search_remote") || !strcmp(mode, "search_album_offline")) {
+			assert(!unlink(library.path));
+			library.ready = false;
+		}
+		search_rows = fixture_owned_new(&library, &context, 3);
+		search_rows->owned.local = library.ready;
+		for (int i = 0; i < 3; i++) {
+			memset(&search_rows->samples[i], 0, sizeof(search_rows->samples[i]));
+			snprintf(search_rows->samples[i].row.id, ND_ID_MAX, "track/%d?", i % 2 + 1);
+			snprintf(search_rows->samples[i].row.title, ND_TEXT_MAX, "Track %d", i % 2 + 1);
+			if (!strcmp(mode, "search_album_offline")) {
+				strcpy(search_rows->samples[i].album_id, "album");
+				strcpy(search_rows->samples[i].album, "Album");
+				strcpy(search_rows->samples[i].album_artist, "Various Artists");
+				search_rows->samples[i].row.disc = i % 2 + 1;
+				search_rows->owned.album_multi = search_album_multi;
+			}
+		}
+	}
+	if (!strcmp(mode, "offline") || !strcmp(mode, "active_cache") || !strcmp(mode, "fallback") || !strcmp(mode, "playlist_offline") || !strcmp(mode, "search_offline") || !strcmp(mode, "search_album_offline")) {
 		nd_playrow_t row = {0};
 		for (int i = 1; i <= 2; i++) {
 			snprintf(row.row.id, sizeof(row.row.id), "track/%d?", i);
@@ -501,6 +529,11 @@ int main(int argc, char **argv) {
 		return 0;
 	}
 	assert(capture_ok);
+	if (search_rows) {
+		assert(callback_skipped == 1);
+		nd_owned_release(&search_rows->owned);
+		search_rows = NULL;
+	}
 	if (!strncmp(mode, "playlist", 8)) assert(callback_skipped == (!strcmp(mode, "playlist_large") ? 4998 : 1));
 	if (!strcmp(mode, "large_batch"))
 		printf("bounded downloads: request=%zu bytes, view=%zu bytes, jobs=%zu bytes for a %d-row window; 17,000 captured jobs\n", sizeof(nd_dl_request_t), sizeof(nd_dl_view_t), sizeof(nd_dl_job_t) * ND_WINDOW, ND_WINDOW);
@@ -614,7 +647,7 @@ int main(int argc, char **argv) {
 		}
 		if (!strcmp(mode, "single_multi"))
 			assert(strstr(path, "/Disc 1/"));
-		if (!strcmp(mode, "playlist_remote")) {
+		if (!strcmp(mode, "playlist_remote") || !strcmp(mode, "search_remote") || !strcmp(mode, "search_album_offline")) {
 			assert(strstr(path, "/Disc 1/Track 1.wav"));
 			nd_dl_store_t store;
 			nd_dl_job_t saved;

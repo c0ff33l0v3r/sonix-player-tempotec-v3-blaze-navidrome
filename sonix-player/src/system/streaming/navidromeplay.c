@@ -33,6 +33,7 @@ typedef struct source {
 	char selected[ND_ID_MAX];
 	int64_t *handles;
 	nd_playcatalog_t *catalog;
+	nd_owned_rows_t *captured;
 	nd_playlist_capture_t saved;
 	unsigned playlist_origin_serial, addition_origin_serial;
 	bool capture, discovery;
@@ -149,9 +150,10 @@ static lv_timer_t *timer;
 static void retain(source_t *s) { __sync_add_and_fetch(&s->refs, 1); }
 static void release(source_t *s) {
 	if (s && __sync_sub_and_fetch(&s->refs, 1) == 0) {
-		if (s->capture)
+		if (s->capture) {
+			nd_owned_release(s->captured);
 			nd_playcatalog_free(s->catalog);
-		else
+		} else
 			nd_store_release_source(&s->library);
 		if (s->album_pinned) nd_store_release_source(&s->album_library);
 		free(s->handles);
@@ -279,7 +281,7 @@ static void protections(void) {
 static bool addition_feedback(source_t *s) {
 	if (s->discovery && (s->discovery_visit != discovery_visit || discovery_origin != s->origin))
 		return false;
-	return !s->saved.playlist || !s->origin ||
+	return (!s->saved.playlist && !s->captured) || !s->origin ||
 		(s->addition_origin_serial == addition_origin_serial &&
 		lv_obj_is_valid(s->origin) && lv_screen_active() == s->origin);
 }
@@ -523,7 +525,7 @@ static bool read_row(source_t *s, int entry, nd_playrow_t *row) {
 	if (!valid || !navidrome_playback_begin(&s->context)) return false;
 
 	nd_store_t store = {0};
-	bool ok = s->capture ? nd_playcatalog_read(s->catalog, entry + (s->album_action == 3 ? s->start : 0), row) : nd_store_open_source(&store, s->library.path, s->library.scope, false, false, s->library.favorites) && nd_store_play_row(&store, s->library.generation, handle, row);
+	bool ok = s->capture ? (s->captured ? nd_owned_read(s->captured, entry, row, 1) == 1 : nd_playcatalog_read(s->catalog, entry + (s->album_action == 3 ? s->start : 0), row)) : nd_store_open_source(&store, s->library.path, s->library.scope, false, false, s->library.favorites) && nd_store_play_row(&store, s->library.generation, handle, row);
 	nd_store_close(&store);
 	if (ok)
 		cached_favorite(s, row);
@@ -849,7 +851,11 @@ static void *metadata_work(void *unused) {
 			}
 			const char *error = NULL;
 			bool ok;
-			if (s->capture) {
+			if (s->captured) {
+				ok = nd_owned_current(s->captured);
+				s->count = s->captured->count;
+				s->start = 0;
+			} else if (s->capture) {
 				s->catalog = s->saved.playlist ? nd_playcatalog_playlist(&s->library, &s->context, &s->saved, current, &job, &error) :
 					nd_playcatalog_capture(&s->library, &s->context, &s->query, NULL, current, &job, &error);
 				ok = s->catalog != NULL;
@@ -1028,6 +1034,36 @@ bool navidromeplay_enqueuing(void) {
 	bool busy = adding;
 	pthread_mutex_unlock(&lock);
 	return busy;
+}
+bool navidromeplay_enqueue_captured(nd_owned_rows_t *rows, unsigned queue_identity, void *origin) {
+	if (!started || !nd_owned_current(rows) || rows->count <= 0 || !rows->library.path[0] || !navidrome_playback_scope(&rows->identity, &rows->library))
+		return false;
+	source_t *s = calloc(1, sizeof(*s));
+	if (!s)
+		return false;
+	s->refs = 1;
+	s->capture = true;
+	s->captured = nd_owned_retain(rows);
+	s->context = rows->identity;
+	s->library = rows->library;
+	s->origin = origin;
+	pthread_mutex_lock(&lock);
+	bool ok = !quitting && !adding && queue_identity == playlist_identity();
+	if (ok) {
+		s->token = ++next_token;
+		addition_origin = origin;
+		s->addition_origin_serial = ++addition_origin_serial;
+		adding = true;
+		addition_job = (job_t){.source = s, .serial = serial, .queue_identity = queue_identity, .enqueue = true};
+		retain(s);
+		addition_pending = true;
+		pthread_cond_signal(&meta_wake);
+	}
+	pthread_mutex_unlock(&lock);
+	release(s);
+	if (ok && timer)
+		lv_timer_resume(timer);
+	return ok;
 }
 bool navidromeplay_enqueue(const nd_library_t *lib, nd_kind_t kind, const char *id, int64_t session) {
 	if (!started || (!session && (!id || !*id || strlen(id) >= ND_ID_MAX)) || !navidrome_playback_pin_source(lib)) return false;

@@ -2,9 +2,11 @@
 #define NAVIDROMEDOWNLOADS_H
 #include "navidrome.h"
 #include "navidromedownloadstore.h"
+#include "navidromeowned.h"
 
 typedef enum { NDDL_VIEW, NDDL_CAPTURE, NDDL_PAUSE, NDDL_RESUME, NDDL_CANCEL, NDDL_RETRY, NDDL_FOLDERS, NDDL_MKDIR, NDDL_PREPARE_FOLDER, NDDL_CLEAR_HISTORY } nd_dl_action_t;
 typedef struct {
+	nd_owned_rows_t *captured; // Optional owned Search metadata; retained on submit.
 	nd_dl_action_t action;
 	nd_library_t library;
 	nd_kind_t kind;

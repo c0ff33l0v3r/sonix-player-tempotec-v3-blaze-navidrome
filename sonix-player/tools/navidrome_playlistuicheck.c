@@ -10,6 +10,7 @@
 extern const lv_image_dsc_t icon_download;
 lv_style_t theme_style_accent_bg;
 extern const lv_image_dsc_t icon_shuffle;
+#include "navidrome_owned_fixture.h"
 #include "src/gui/streaming/navidromeplaylists.c"
 #ifdef NAVIDROME_EDGE_BASELINE
 #define fixture_browse_slot(page, row) (row)
@@ -684,6 +685,80 @@ static void playlist_actions_ui(nd_library_t *lib) {
 	assert(!pl_direct_active && !pl_direct_album && atomic_load(&calls) == requests);
 	nd_wipe(&album_identity, sizeof(album_identity));
 	puts("playlist actions UI: real no-Sync picker/direct dedupe/New flow, retained target after skip, stale guards, Play/Shuffle geometry and whole/entry queue menus: passed");
+}
+static void search_picker_isolation_ui(nd_library_t *lib) {
+	nd_context_t identity;
+	assert(navidrome_context(&identity, false));
+	fixture_owned_t *rows = fixture_owned_new(lib, &identity, 3);
+	char path[1200];
+	nd_playlist_store_t store;
+	int64_t destination;
+	assert(nd_pl_path(lib, path) && nd_pl_open(&store, path, lib->scope, true));
+	assert(nd_pl_create(&store, "Road Trip", &destination));
+	nd_pl_close(&store);
+	const char *foreign[] = {"music-Road Trip.m3u", "other-service-Road Trip.m3u"};
+	for (int i = 0; i < 2; i++) {
+		FILE *file = fopen(foreign[i], "w");
+		assert(file);
+		assert(fputs("/fixture/untouched.flac\n", file) >= 0 && !fclose(file));
+	}
+	lv_obj_t *origin = lv_obj_create(NULL);
+	switch_screen(origin);
+	int requests = atomic_load(&calls);
+	assert(navidromeplaylists_pick_captured(&rows->owned, origin));
+	pl_wait(2);
+	assert(pl_captured == &rows->owned && pl_pages[2].count < ND_WINDOW);
+	int index = -1;
+	assert(nd_pl_open(&store, path, lib->scope, false));
+	for (int i = 0; i < pl_pages[2].count; i++) {
+		nd_playlist_t target;
+		assert(nd_pl_get(&store, pl_pages[2].playlists[i].id, &target));
+		if (!strcmp(target.name, "Road Trip")) {
+			assert(target.id == destination);
+			index = i;
+		}
+	}
+	nd_pl_close(&store);
+	assert(index >= 0);
+	atomic_store(&fixture_reject_posts, true);
+	lv_obj_send_event(pl_pages[2].rows[index], LV_EVENT_CLICKED, NULL);
+	for (int i = 0; navidrome_playlists_busy(); i++) {
+		assert(i < 10000);
+		usleep(1000);
+	}
+	atomic_store(&fixture_reject_posts, false);
+	navidrome_playlists_poll();
+	drain();
+	assert(lv_screen_active() == origin && !pl_captured);
+	nd_playlist_t target;
+	nd_playlist_entry_t entries[ND_WINDOW];
+	int count;
+	assert(nd_pl_open(&store, path, lib->scope, false) && nd_pl_get(&store, destination, &target));
+	assert(target.count == 2 && nd_pl_entries(&store, destination, 0, 0, entries, &count) && count == 2);
+	assert(!strcmp(entries[0].track.id, "captured-A") && !strcmp(entries[1].track.id, "captured-B"));
+	nd_pl_close(&store);
+	assert(navidromeplaylists_pick_captured(&rows->owned, origin));
+	pl_wait(2);
+	lv_obj_send_event(pl_pages[2].new_row, LV_EVENT_CLICKED, NULL);
+	lv_textarea_set_text(pl_name_field, "Search destination");
+	pl_name_accept(NULL);
+	pl_wait(2);
+	assert(lv_screen_active() == origin && !pl_captured);
+	assert(navidromeplaylists_pick_captured(&rows->owned, origin));
+	pl_wait(2);
+	switch_screen(origin);
+	drain();
+	assert(!pl_captured);
+	for (int i = 0; i < 2; i++) {
+		char text[80];
+		FILE *file = fopen(foreign[i], "r");
+		assert(file && fgets(text, sizeof(text), file) && !fclose(file));
+		assert(!strcmp(text, "/fixture/untouched.flac\n") && !unlink(foreign[i]));
+	}
+	assert(atomic_load(&calls) == requests);
+	nd_owned_release(&rows->owned);
+	nd_wipe(&identity, sizeof(identity));
+	puts("Search playlist picker: scoped Navidrome-only existing/New destinations, same-name foreign sentinels untouched, duplicate filtering, cancel and rejected-post completion without HTTP: passed");
 }
 static void playlist_upload_ui(nd_library_t *lib) {
 	atomic_store(&mode, 0); assert(navidrome_reconnect()); wait_idle();
@@ -1395,6 +1470,7 @@ int main(int argc, char **argv) {
 	saved_playlist_taps(&lib);
 	playlist_actions_ui(&lib);
 	playlist_sort_ui(&lib);
+	search_picker_isolation_ui(&lib);
 	playlist_upload_ui(&lib);
 	navidrome_lock();
 	navidromeplaylists_refresh();

@@ -336,8 +336,8 @@ Detect changes when enabled and initialized, deferring while scanning is busy.
 Your selected scan folders and tags still control indexing; include the download
 folder in Scan Music if needed. Downloads do not enable detection or run a full
 scan. Failed tracks are reported separately from saved files; retry never
-replaces successful downloads. Search list download actions remain outside this
-feature's scope.
+replaces successful downloads. Search menus and selection use these same download
+jobs, destinations and file-publication rules.
 
 Navidrome settings → **Alternative album view** is on by default and is
 independent of Music's setting. Albums open with a large cover, cover-derived
@@ -593,6 +593,26 @@ matching synced item. Large unpaged children keep the existing response limits;
 without writable card storage, only small bounded child lists are available.
 Searching and browsing do not publish a library sync or start audio downloads.
 Server and synced search share the same interface without source/date sections.
+
+Use a row's three-dot menu to add a track or complete album to a playlist or the
+queue, add/remove its favorite, or download its originals. Artist menus offer
+the artist's independent favorite action; open an artist to act on its albums
+and tracks. These actions also work for server results absent from Library Sync.
+**Add to playlist offers only this profile/card's Navidrome playlists**, including
+Navidrome's New playlist flow. Music/file playlists and other services are excluded.
+Linked playlists receive local edits until you explicitly Publish them.
+
+Long press a track or album to select it, then tap more rows across the list.
+The toolbar offers playlist, queue, Add to favorites and Download actions;
+batch favorites always add. Back or Cancel exits selection on the same list.
+Changing the query/category retires selection. Actions retain exact IDs in
+displayed order; album actions capture complete disc/track membership before
+admission. A single track never requires capturing the whole search. At most
+64 rich rows stay in memory; larger selections need writable selected-card
+staging with a finite 32 MiB capture limit. Failed capture leaves atomic
+playlist/queue/download additions unchanged. Already admitted downloads keep
+their jobs after leaving Search; favorite errors preserve confirmed outcomes
+and require deliberate recovery for uncertain writes.
 
 Tap a found track to play it through Now Playing. As in Music search, the queue
 contains all matching track results and starts at the tapped track. Selecting a

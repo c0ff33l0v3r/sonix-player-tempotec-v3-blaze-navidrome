@@ -189,7 +189,7 @@ static bool open_write(nd_playcatalog_t *c, sqlite3 **db) {
 			return false;
 	return true;
 }
-static bool import_page(nd_playcatalog_t *c, const nd_document_t *doc, int array, const char *album_id, const char *album_name, bool (*current)(void *), void *user, const char **error) {
+static bool import_page(nd_playcatalog_t *c, const nd_document_t *doc, int array, const char *album_id, const char *album_name, const char *album_artist, bool (*current)(void *), void *user, const char **error) {
 	int count = json_len(&doc->doc, array);
 	if (count > INT_MAX - c->count) {
 		*error = "nd_search_child_limit";
@@ -208,6 +208,8 @@ static bool import_page(nd_playcatalog_t *c, const nd_document_t *doc, int array
 		}
 		if (!*row.album && album_name)
 			snprintf(row.album, sizeof(row.album), "%s", album_name);
+		if (!*row.album_artist && album_artist)
+			snprintf(row.album_artist, sizeof(row.album_artist), "%s", album_artist);
 		if (disk) {
 			ok = put(db, c->count, &row);
 			if (!ok && sqlite3_errcode(db) == SQLITE_CONSTRAINT)
@@ -448,7 +450,7 @@ nd_playcatalog_t *nd_playcatalog_capture(const nd_library_t *lib, const nd_conte
 		int obj = json_get(&doc.doc, doc.response, c->album ? "album" : "searchResult3");
 		int array = json_get(&doc.doc, obj, "song");
 		int n = json_len(&doc.doc, array);
-		char parent[ND_ID_MAX] = "", title[ND_TEXT_MAX] = "";
+		char parent[ND_ID_MAX] = "", title[ND_TEXT_MAX] = "", credit[ND_TEXT_MAX] = "";
 		if (!nd_api_field_unique(&doc.doc, doc.response, c->album ? "album" : "searchResult3", true) || !nd_api_field_unique(&doc.doc, obj, "song", false) || obj < 0 || doc.doc.toks[obj].type != JSON_OBJECT || (array >= 0 && doc.doc.toks[array].type != JSON_ARRAY) || (!c->album && n > amount))
 			*error = "nd_response_error";
 		if (c->album) {
@@ -458,10 +460,16 @@ nd_playcatalog_t *nd_playcatalog_capture(const nd_library_t *lib, const nd_conte
 			else {
 				snprintf(parent, sizeof(parent), "%s", album.row.id);
 				snprintf(title, sizeof(title), "%s", album.row.title);
+				snprintf(credit, sizeof(credit), "%s", album.album_artist);
 			}
 		}
+		if (!*error && c->album) {
+			int expected = json_get(&doc.doc, obj, "songCount");
+			if (!nd_api_field_unique(&doc.doc, obj, "songCount", false) || (expected >= 0 && (doc.doc.toks[expected].type != JSON_NUMBER || json_long(&doc.doc, expected, -1) != n)))
+				*error = "nd_response_error";
+		}
 		if (!*error)
-			import_page(c, &doc, array, c->album ? parent : NULL, c->album ? title : NULL, current, user, error);
+			import_page(c, &doc, array, c->album ? parent : NULL, c->album ? title : NULL, c->album ? credit : NULL, current, user, error);
 		nd_api_free(&doc);
 		if (*error || c->album || n < amount)
 			break;

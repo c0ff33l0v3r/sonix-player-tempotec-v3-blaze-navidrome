@@ -1,6 +1,7 @@
 #ifndef NAVIDROMEPLAY_H
 #define NAVIDROMEPLAY_H
 #include "navidromeaudio.h"
+#include "navidromeowned.h"
 #include "navidromeplaycatalog.h"
 #include "src/system/library/metadata.h"
 
@@ -10,6 +11,7 @@ bool navidromeplay_album(const nd_library_t *library, const nd_query_t *query, i
 bool navidromeplay_chain(bool forward); // Compatible manual-boundary entry.
 bool navidromeplay_chain_boundary(bool forward, bool automatic);
 bool navidromeplay_enqueuing(void);
+bool navidromeplay_enqueue_captured(nd_owned_rows_t *rows, unsigned queue_identity, void *origin);
 bool navidromeplay_enqueue(const nd_library_t *library, nd_kind_t kind, const char *id, int64_t session);
 bool navidromeplay_occurrence_matches(const nd_library_t *library, int64_t playlist, int64_t occurrence, const char *track);
 bool navidromeplay_matches(const nd_library_t *library, nd_kind_t kind, const char *id);

@@ -4,6 +4,7 @@
 #define config_get_bool ordinary_config_get_bool
 #include "navidrome_coordinatorcheck.c"
 #undef config_get_bool
+#include "navidrome_owned_fixture.h"
 static pthread_t fixture_gui_thread;
 static atomic_bool fail_worker_allocation;
 void *__real_calloc(size_t count, size_t size);
@@ -227,6 +228,68 @@ static void saved_sort_check(nd_library_t *lib, lv_obj_t *origin) {
 	puts("sorted coordinator: descending repeated tap and occurrence markers, ascending Play/Shuffle, preserved tap mode, sealed-order independence and no HTTP: passed");
 }
 
+static void captured_search_enqueue_check(nd_library_t *lib, lv_obj_t *origin) {
+	int begin = starts, fetched = atomic_load(&fetches), requests = atomic_load(&calls);
+	nd_context_t identity;
+	assert(navidrome_context(&identity, false));
+	const char *paths[] = {"/fixture/local-one.flac", "/fixture/local-two.flac"};
+	for (int at_end = 0; at_end < 2; at_end++) {
+		navidromeplay_stop();
+		album_coordinator_idle();
+		playlist_clear();
+		playlist_load_paths(paths, 2, 0);
+		navidromeplay_other(paths[0]);
+		strcpy(playback.current_file, paths[0]);
+		playback.status = AUDIO_STATUS_PLAYING;
+		playlist_set_mode(PLAYBACK_MODE_REPEAT_ONE);
+		playlist_set_enqueue_at_end(at_end);
+		fixture_owned_t *rows = fixture_owned_new(lib, &identity, 3);
+		assert(navidromeplay_enqueue_captured(&rows->owned, playlist_identity(), origin));
+		saved_add_idle();
+		assert(playlist_count() == 5 && playlist_current_entry() == 0);
+		assert(playlist_get_mode() == PLAYBACK_MODE_REPEAT_ONE);
+		int first = at_end ? 2 : 1;
+		saved_metadata(first, "Captured occurrence 0");
+		saved_metadata(first + 2, "Captured occurrence 2");
+		assert(navidromeplay_enqueue_captured(&rows->owned, playlist_identity(), origin));
+		saved_add_idle();
+		assert(playlist_count() == 8);
+		nd_owned_release(&rows->owned);
+	}
+	navidromeplay_stop();
+	album_coordinator_idle();
+	playlist_clear();
+	fixture_owned_t *rows = fixture_owned_new(lib, &identity, 17000);
+	assert(navidromeplay_enqueue_captured(&rows->owned, playlist_identity(), origin));
+	saved_add_idle();
+	assert(playlist_count() == 17000 && playback.status == AUDIO_STATUS_STOPPED);
+	saved_metadata(16999, "Captured occurrence 1");
+	nd_owned_release(&rows->owned);
+	playlist_clear();
+	album_coordinator_idle();
+	playlist_load_paths(paths, 2, 0);
+	rows = fixture_owned_new(lib, &identity, 1);
+	rows->fail_read = true;
+	assert(navidromeplay_enqueue_captured(&rows->owned, playlist_identity(), origin));
+	saved_add_idle();
+	assert(playlist_count() == 2);
+	nd_owned_release(&rows->owned);
+	rows = fixture_owned_new(lib, &identity, 1);
+	assert(!navidromeplay_enqueue_captured(&rows->owned, playlist_identity() + 1, origin));
+	atomic_store(&fixture_reject_posts, true);
+	assert(navidromeplay_enqueue_captured(&rows->owned, playlist_identity(), origin));
+	saved_add_idle();
+	atomic_store(&fixture_reject_posts, false);
+	assert(playlist_count() == 3);
+	nd_owned_release(&rows->owned);
+	playlist_clear();
+	album_coordinator_idle();
+	assert(starts == begin && atomic_load(&fetches) == fetched && atomic_load(&calls) == requests);
+	assert(fixture_owned_destroyed == 5);
+	nd_wipe(&identity, sizeof(identity));
+	puts("Search enqueue: owned duplicate occurrences, next/end/repeated placement, 17,000 stopped entries, failed provider/stale queue/rejected post and no audio/HTTP: passed");
+}
+
 int main(void) {
 	fixture_gui_thread = pthread_self();
 	alarm(90);
@@ -247,6 +310,7 @@ int main(void) {
 	saved_rearrange_check(&lib, origin);
 	saved_actions_check(&lib, origin);
 	saved_sort_check(&lib, origin);
+	captured_search_enqueue_check(&lib, origin);
 	int requests = atomic_load(&calls);
 	for (int mode = PLAYBACK_MODE_NORMAL; mode <= PLAYBACK_MODE_SHUFFLE_REPEAT; mode++) {
 		int begin = starts;

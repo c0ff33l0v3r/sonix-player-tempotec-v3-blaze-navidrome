@@ -2,6 +2,7 @@
 #define ND_SEARCH_H
 
 #include "navidrome.h"
+#include "navidromeowned.h"
 
 #define ND_SEARCH_QUERY 256
 #define ND_SEARCH_CHILD_ROWS 64
@@ -25,6 +26,8 @@ typedef struct nd_search nd_search_t;
 // a cancellation predicate; no GUI or callbacks are invoked by this module.
 nd_search_t *nd_search_create(const char *query);
 void nd_search_destroy(nd_search_t *search);
+// Worker-only optional ownership of an already-loaded complete remote album.
+nd_owned_rows_t *nd_search_child_retain(nd_search_t *search, int level);
 void nd_search_cancel_check(nd_search_t *search, bool (*current)(void *), void *user);
 bool nd_search_valid(nd_search_t *search);
 void nd_search_read(nd_search_t *search, nd_kind_t kind, int first, nd_search_result_t *out);

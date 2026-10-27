@@ -118,6 +118,27 @@ static bool add_selected(nd_playlist_store_t *s, const nd_pl_request_t *q, const
 		}
 		return ok && nd_pl_finish(s, q->id, out->added > 0) && commit(s, c);
 	}
+	if (q->captured) {
+		if (!nd_owned_current(q->captured) || q->captured->identity.profile_epoch != c->profile_epoch || q->captured->identity.card_epoch != c->card_epoch || strcmp(q->captured->library.scope, lib->scope)) {
+			s->error = "nd_pl_stale";
+			return false;
+		}
+		bool ok = nd_pl_begin(s, q->id, q->revision);
+		for (int first = 0; ok && first < q->captured->count;) {
+			nd_playrow_t rows[ND_WINDOW];
+			int count = nd_owned_read(q->captured, first, rows, ND_WINDOW);
+			ok = count > 0 && navidrome_context_current(c, false);
+			for (int i = 0; ok && i < count; i++) {
+				int before = out->added;
+				ok = nd_pl_append(s, q->id, &rows[i].row, true, &out->added, &out->skipped);
+				if (ok && out->added > before)
+					ok = nd_pl_sort_info(s, sqlite3_last_insert_rowid(s->db), &rows[i]);
+			}
+			if (count > 0)
+				first += count;
+		}
+		return ok && nd_pl_finish(s, q->id, out->added > 0) && commit(s, c);
+	}
 	if (q->direct) {
 		if (q->source.profile != c->profile_epoch || q->source.card != c->card_epoch || !memchr(q->source.scope, 0, sizeof(q->source.scope)) || strcmp(q->source.scope, lib->scope) || !q->source.row.id[0] || !memchr(q->source.row.id, 0, sizeof(q->source.row.id)) || !memchr(q->source.row.title, 0, sizeof(q->source.row.title)) || !memchr(q->source.row.artist, 0, sizeof(q->source.row.artist)) || !memchr(q->source.row.cover, 0, sizeof(q->source.row.cover)) || !memchr(q->source.album_id, 0, sizeof(q->source.album_id)) || !memchr(q->source.album, 0, sizeof(q->source.album)) || !memchr(q->source.album_artist, 0, sizeof(q->source.album_artist))) {
 			s->error = "nd_pl_stale";
@@ -813,6 +834,7 @@ typedef struct {
 } job_t;
 static pthread_mutex_t jobs_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool busy;
+static job_t *deferred;
 bool navidrome_playlists_busy(void) {
 	pthread_mutex_lock(&jobs_lock);
 	bool b = busy;
@@ -830,23 +852,33 @@ static void delivered(void *data) {
 		free(result);
 	free(job);
 }
+void navidrome_playlists_poll(void) {
+	pthread_mutex_lock(&jobs_lock);
+	job_t *job = deferred;
+	deferred = NULL;
+	pthread_mutex_unlock(&jobs_lock);
+	if (job)
+		delivered(job);
+}
 static void *run_job(void *data) {
 	job_t *job = data;
 	nd_pl_execute(&job->q, &job->c, &job->lib, job->result);
+	nd_owned_release(job->q.captured);
+	job->q.captured = job->result->request.captured = NULL;
 	nd_wipe(&job->c, sizeof(job->c));
 	navidrome_external_end();
+	bool posted = gui_post(delivered, job);
 	pthread_mutex_lock(&jobs_lock);
+	if (!posted)
+		deferred = job;
 	busy = false;
 	pthread_mutex_unlock(&jobs_lock);
-	if (!gui_post(delivered, job)) {
-		free(job->result);
-		free(job);
-	}
 	return NULL;
 }
 bool navidrome_playlists_submit(const nd_pl_request_t *q, void (*done)(nd_pl_result_t *, void *), void *user) {
+	navidrome_playlists_poll();
 	pthread_mutex_lock(&jobs_lock);
-	if (busy) {
+	if (busy || deferred) {
 		pthread_mutex_unlock(&jobs_lock);
 		return false;
 	}
@@ -874,11 +906,13 @@ bool navidrome_playlists_submit(const nd_pl_request_t *q, void (*done)(nd_pl_res
 		return false;
 	}
 	job->q = *q;
+	job->q.captured = nd_owned_retain(q->captured);
 	job->done = done;
 	job->user = user;
 	busy = true;
 	pthread_t thread;
 	if (pthread_create(&thread, NULL, run_job, job)) {
+		nd_owned_release(job->q.captured);
 		busy = false;
 		navidrome_external_end();
 		nd_wipe(&job->c, sizeof(job->c));

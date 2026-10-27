@@ -1,12 +1,14 @@
 #include "navidromesearch.h"
 #include "navidromealbumreader.h"
 #include "navidromedebug.h"
+#include "src/system/core/utils.h"
 #include "src/system/library/library.h"
 #include "src/system/net/http.h"
 #include <ctype.h>
 #include <dirent.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +23,7 @@ typedef struct {
 	int offsets[4], recent;
 } search_window_t;
 typedef struct {
+	nd_owned_rows_t *owner;
 	nd_search_source_t source;
 	nd_kind_t kind;
 	nd_query_t query;
@@ -55,7 +58,13 @@ void nd_search_cancel_check(nd_search_t *s, bool (*cb)(void *), void *user) {
 }
 bool nd_search_valid(nd_search_t *s) { return s && current(s); }
 
+#include "navidromesearchowned.inc"
 static void child_close(child_t *c) {
+	if (c->owner) {
+		nd_owned_release(c->owner);
+		memset(c, 0, sizeof(*c));
+		return;
+	}
 	if (c->db)
 		sqlite3_close(c->db);
 	if (*c->path && navidrome_cache_begin(c->library.epoch, c->library.card_epoch)) {
@@ -92,7 +101,7 @@ static void cleanup_children(const nd_library_t *lib) {
 			char file[1500];
 			struct stat st;
 			snprintf(file, sizeof(file), "%s/%s", path, entry->d_name);
-			if (!lstat(file, &st) && S_ISREG(st.st_mode))
+			if (!child_owned_file(file) && !lstat(file, &st) && S_ISREG(st.st_mode))
 				unlink(file);
 		}
 		if (dir)

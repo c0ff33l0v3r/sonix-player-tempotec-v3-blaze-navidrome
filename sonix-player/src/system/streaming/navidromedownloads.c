@@ -67,7 +67,7 @@ typedef struct {
 } run_t;
 static void reconcile(run_t *r);
 static bool capture_pin(const nd_dl_request_t *q) {
-	return q->action == NDDL_CAPTURE && !q->direct && !q->remote_album && (!q->playlist || q->library.ready);
+	return q->action == NDDL_CAPTURE && !q->captured && !q->direct && !q->remote_album && (!q->playlist || q->library.ready);
 }
 
 static bool current(void *data) {
@@ -376,7 +376,7 @@ static bool capture_rows(run_t *r, const nd_dl_request_t *q, nd_playcatalog_t *r
 	close(dir);
 	nd_store_t source = {0};
 	bool opened = nd_store_open_source(&source, q->library.path, q->library.scope, false, false, q->library.favorites);
-	bool ok = (opened || q->direct || q->playlist || remote) && nd_dl_sql(&dest, "BEGIN IMMEDIATE");
+	bool ok = (opened || q->direct || q->playlist || remote || q->captured) && nd_dl_sql(&dest, "BEGIN IMMEDIATE");
 	sqlite3_stmt *st = NULL;
 	if (ok)
 		ok = nd_dl_prepare(&dest, &st, "INSERT INTO batch(destination,created) VALUES(?,strftime('%s','now'))");
@@ -387,7 +387,33 @@ static bool capture_rows(run_t *r, const nd_dl_request_t *q, nd_playcatalog_t *r
 	sqlite3_finalize(st);
 	st = NULL;
 	int64_t batch = sqlite3_last_insert_rowid(dest.db);
-	if (ok && remote) {
+	if (ok && q->captured) {
+		ok = nd_owned_current(q->captured) && q->captured->identity.profile_epoch == r->context.profile_epoch && q->captured->identity.card_epoch == r->context.card_epoch && !strcmp(q->captured->library.scope, q->library.scope);
+		for (int first = 0; ok && first < q->captured->count;) {
+			nd_playrow_t rows[ND_WINDOW];
+			int count = nd_owned_read(q->captured, first, rows, ND_WINDOW);
+			ok = count > 0;
+			for (int i = 0; ok && i < count; i++) {
+				if (q->captured->local && opened)
+					ok = context_current(r) && append_track(&dest, &source, &q->library, rows[i].row.id, batch, q->destination, added, skipped, r);
+				else {
+					int multi = q->captured->album_multi ? q->captured->album_multi(q->captured, rows[i].album_id) : -1;
+					int before = *added;
+					ok = context_current(r) && validate_completions(&dest, rows[i].row.id, r) && nd_dl_insert(&dest, batch, q->destination, &rows[i], multi, added, skipped);
+					if (ok && *added > before && multi >= 0) {
+						nd_dl_job_t job;
+						ok = nd_dl_get(&dest, sqlite3_last_insert_rowid(dest.db), &job);
+						if (ok) {
+							snprintf(job.album_artist, sizeof(job.album_artist), "%s", rows[i].album_artist);
+							ok = nd_dl_update(&dest, &job);
+						}
+					}
+				}
+			}
+			if (count > 0)
+				first += count;
+		}
+	} else if (ok && remote) {
 		int total = nd_playcatalog_count(remote);
 		ok = total > 0;
 		for (int i = 0; ok && i < total; i++) {
@@ -550,6 +576,7 @@ static void *manage(void *unused) {
 			break;
 		}
 		nd_dl_request_t q = command;
+		command.captured = NULL;
 		nd_context_t owned_context = command_context;
 		nd_wipe(&command_context, sizeof(command_context));
 		nd_dl_captured_cb callback = command_callback;
@@ -637,6 +664,8 @@ static void *manage(void *unused) {
 		}
 		if (capture_pin(&q))
 			nd_store_release_source(&q.library);
+		nd_owned_release(q.captured);
+		q.captured = NULL;
 		pthread_mutex_lock(&mutex);
 		view.busy = false;
 		if (!error && (q.action == NDDL_CAPTURE || q.action == NDDL_RESUME || q.action == NDDL_RETRY)) {
@@ -1411,6 +1440,7 @@ bool navidromedownloads_request(const nd_dl_request_t *q, nd_dl_captured_cb call
 			armed = network_wanted = false;
 		}
 		command = *q;
+		command.captured = nd_owned_retain(q->captured);
 		command_context = context;
 		command_callback = callback;
 		command_user = user;
@@ -1428,13 +1458,16 @@ void navidromedownloads_shutdown(void) {
 	navidromedownloads_cancel();
 	pthread_mutex_lock(&mutex);
 	bool join = started;
+	nd_owned_rows_t *captured = pending ? command.captured : NULL;
 	bool release_pin = pending && capture_pin(&command);
+	command.captured = NULL;
 	nd_library_t pinned = command.library;
 	pending = false;
 	started = false;
 	stopping = true;
 	pthread_cond_broadcast(&changed);
 	pthread_mutex_unlock(&mutex);
+	nd_owned_release(captured);
 	if (release_pin)
 		nd_store_release_source(&pinned);
 	if (join) {

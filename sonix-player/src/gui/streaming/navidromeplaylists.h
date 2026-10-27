@@ -1,8 +1,10 @@
 #ifndef NAVIDROMEPLAYLISTPAGE_H
 #define NAVIDROMEPLAYLISTPAGE_H
 #include "src/gui/shell/gui.h"
+#include "src/system/streaming/navidromeowned.h"
 #include <stdint.h>
 #include "src/system/streaming/navidrome.h"
+bool navidromeplaylists_pick_captured(nd_owned_rows_t *rows, lv_obj_t *origin);
 void navidromeplaylists_init(gui_config_t *cfg);
 void navidromeplaylists_open(void);
 void navidromeplaylists_refresh(void);

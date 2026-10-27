@@ -69,6 +69,11 @@ static nd_playlist_t pl_menu_playlist;
 static int64_t pl_session, pl_generation, pl_recovery_id;
 static bool pl_source_favorites;
 static bool pl_direct_active, pl_current_bound, pl_direct_album;
+static nd_owned_rows_t *pl_captured;
+static void pl_capture_clear(void) {
+	nd_owned_release(pl_captured);
+	pl_captured = NULL;
+}
 static nd_pl_track_t pl_direct, pl_current_track;
 static char pl_current_ref[512];
 static lv_obj_t *pl_current_origin;
@@ -99,6 +104,7 @@ static nd_pl_request_t pl_add_request(int64_t id, int64_t revision) {
 		.session = pl_session, .generation = pl_generation, .favorites = pl_source_favorites,
 		.direct = pl_direct_active && !pl_direct_album, .remote_album = pl_direct_active && pl_direct_album};
 	if (q.direct || q.remote_album) { q.source = pl_direct; q.favorites = false; }
+	q.captured = pl_captured;
 	return q;
 }
 static bool pl_gesture(void) { return player_sheet_drag_active() || switcher_back_drag_active() || coverflow_drag_active(); }
@@ -482,6 +488,14 @@ static void pl_action(int page, nd_pl_request_t *q) {
 	pl_page_t *p = &pl_pages[page];
 	nd_library_t current;
 	navidrome_library_snapshot(&current);
+	if (page == 2 && pl_captured) {
+		if (!nd_owned_current(pl_captured) || pl_captured->identity.card_epoch != current.card_epoch || strcmp(pl_captured->library.scope, current.scope)) {
+			pl_capture_clear();
+			gui_notify_popup("nd_pl_stale");
+			return;
+		}
+		p->epoch = current.epoch;
+	}
 	if (page == 2 && pl_direct_active) {
 		if (!pl_direct_current(&pl_direct, &current)) {
 			pl_direct_active = false;
@@ -1051,6 +1065,7 @@ static void pl_unloaded(lv_event_t *event) {
 	p->move_pending = false;
 	pl_menu_token++;
 	if (p == &pl_pages[2]) {
+		pl_capture_clear();
 		pl_direct_active = false;
 		pl_direct_album = false;
 		memset(&pl_direct, 0, sizeof(pl_direct));
@@ -1086,6 +1101,7 @@ static bool pl_back(void) {
 	return false;
 }
 void navidromeplaylists_refresh(void) {
+	navidrome_playlists_poll();
 	nd_library_t lib;
 	navidrome_library_snapshot(&lib);
 	navidrome_snapshot_t state;
@@ -1171,7 +1187,24 @@ void navidromeplaylists_open(void) {
 		switch_screen(pl_pages[0].screen);
 }
 void navidromeplaylists_pick(int64_t session, int64_t generation, lv_obj_t *origin) { navidromeplaylists_pick_source(session, generation, origin, false); }
+bool navidromeplaylists_pick_captured(nd_owned_rows_t *rows, lv_obj_t *origin) {
+	if (!nd_owned_current(rows) || !rows->count || !rows->library.writable)
+		return false;
+	pl_capture_clear();
+	pl_captured = nd_owned_retain(rows);
+	pl_direct_active = pl_direct_album = false;
+	pl_fixed = false;
+	pl_source_favorites = false;
+	pl_session = pl_generation = 0;
+	pl_origin = origin;
+	pl_pages[2].serial++;
+	pl_pages[2].loading = false;
+	lv_obj_scroll_to_y(pl_pages[2].list, 0, LV_ANIM_OFF);
+	switch_screen(pl_pages[2].screen);
+	return true;
+}
 void navidromeplaylists_pick_source(int64_t session, int64_t generation, lv_obj_t *origin, bool favorites) {
+	pl_capture_clear();
 	pl_direct_active = false;
 	pl_direct_album = false;
 	memset(&pl_direct, 0, sizeof(pl_direct));
@@ -1198,6 +1231,7 @@ bool navidromeplaylists_pick_album(const nd_row_t *album, const nd_library_t *li
 	if (!album || !album->id[0] || !lib || !identity || !navidrome_playback_current(identity, false) || identity->card_epoch != lib->card_epoch)
 		return false;
 	if (!lib->writable) { gui_notify_popup("nd_cache_readonly"); return true; }
+	pl_capture_clear();
 	pl_direct = (nd_pl_track_t){.row = *album, .profile = identity->profile_epoch, .card = identity->card_epoch};
 	snprintf(pl_direct.scope, sizeof(pl_direct.scope), "%s", lib->scope);
 	pl_direct_active = pl_direct_album = true;
@@ -1243,6 +1277,7 @@ bool navidromeplaylists_add_current(void) {
 		!playlist_current_path(ref, sizeof(ref)) || strcmp(ref, pl_current_ref) ||
 		strcmp(row.row.id, pl_current_track.row.id) || !pl_direct_current(&pl_current_track, &lib)) return false;
 	if (!lib.writable) { gui_notify_popup("nd_cache_readonly"); return true; }
+	pl_capture_clear();
 	pl_direct = pl_current_track;
 	pl_current_bound = false;
 	pl_direct_active = true;
