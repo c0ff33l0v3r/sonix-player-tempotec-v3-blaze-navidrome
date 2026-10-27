@@ -44,6 +44,7 @@
 #include "src/gui/streaming/navidromebrowse.h"
 #include "src/system/streaming/navidromeplay.h"
 #include "src/gui/streaming/navidromedownloadmenu.h"
+#include "src/gui/streaming/navidromeplaylists.h"
 
 lv_obj_t *queue_screen;
 lv_obj_t *details_screen;
@@ -1783,12 +1784,13 @@ static void open_details_cb(void *user) {
 
 // "Add to playlist" for the track the player has loaded: the same picker the
 // library lists open, on the playing file.
+static bool playlist_menu_navidrome;
 static void add_to_playlist_cb(void *user) {
 	(void)user;
 	device_state_t source_state;
 	device_state_get(&source_state);
-	if (nd_audio_source(source_state.current_file)) {
-		gui_notify_popup("nd_audio_unavailable");
+	if (playlist_menu_navidrome || nd_audio_source(source_state.current_file)) {
+		if (!navidromeplaylists_add_current()) gui_notify_popup("nd_audio_unavailable");
 		return;
 	}
 	device_state_t state;
@@ -1988,6 +1990,8 @@ void trackmenu_open(lv_obj_t *anchor) {
 	device_state_t state;
 	device_state_get(&state);
 	bool podcast = state.current_file[0] && podcastcache_is_episode(state.current_file);
+	playlist_menu_navidrome = nd_audio_source(state.current_file);
+	navidromeplaylists_bind_current(state.current_file);
 	if (navidromedownloadmenu_bind(state.current_file)) {
 		popover_show(anchor, ITEMS_NAVIDROME, sizeof(ITEMS_NAVIDROME) / sizeof(ITEMS_NAVIDROME[0]));
 		return;

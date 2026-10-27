@@ -67,6 +67,20 @@ static bool toggle(nd_playlist_store_t *s, const nd_pl_request_t *q) {
 	return ok;
 }
 static bool add_selected(nd_playlist_store_t *s, const nd_pl_request_t *q, const nd_context_t *c, const nd_library_t *lib, nd_pl_result_t *out) {
+	if (q->direct) {
+		if (q->source.profile != c->profile_epoch || q->source.card != c->card_epoch ||
+			!memchr(q->source.scope, 0, sizeof(q->source.scope)) || strcmp(q->source.scope, lib->scope) || !q->source.row.id[0] ||
+			!memchr(q->source.row.id, 0, sizeof(q->source.row.id)) ||
+			!memchr(q->source.row.title, 0, sizeof(q->source.row.title)) ||
+			!memchr(q->source.row.artist, 0, sizeof(q->source.row.artist)) ||
+			!memchr(q->source.row.cover, 0, sizeof(q->source.row.cover))) {
+			s->error = "nd_pl_stale";
+			return false;
+		}
+		return nd_pl_begin(s, q->id, q->revision) &&
+			nd_pl_append(s, q->id, &q->source.row, true, &out->added, &out->skipped) &&
+			nd_pl_finish(s, q->id, out->added > 0) && commit(s, c);
+	}
 	if (!lib->ready || q->generation != lib->generation) {
 		s->error = "nd_pl_stale";
 		return false;
@@ -634,6 +648,13 @@ void nd_pl_execute(const nd_pl_request_t *q, const nd_context_t *c, const nd_lib
 		break;
 	}
 	case NDPL_UPLOAD:
+		if (p.remote[0] || p.pending) {
+			s.error = p.pending ? "nd_pl_verify_needed" : "nd_pl_stale";
+			ok = false;
+			break;
+		}
+		ok = publish(&s, c, q, &p, out);
+		break;
 	case NDPL_PUBLISH:
 	case NDPL_RECREATE:
 		if (q->action == NDPL_RECREATE && (!q->confirmed || *p.remote || p.pending != 1)) {

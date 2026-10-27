@@ -413,8 +413,36 @@ Navidrome → **Playlists** stores playlists of Navidrome track references on th
 selected card. Like Music’s Playlists page, it starts with a **New playlist** row
 and shows playlist icons and track counts; **Import from Navidrome** is in the header.
 Local copies open and can be renamed or edited offline with available credentials. They
-remain available without a library snapshot; adding tracks uses a complete
-matching library or Favorites snapshot. Read-only cards permit browsing but cannot save edits.
+remain available without a library snapshot; adding tracks from browsing uses a
+complete matching library or Favorites snapshot. Now Playing's **Add to playlist**
+uses the represented Navidrome track's exact ID and saved metadata, including
+Search or saved-playlist tracks absent from Library Sync. The destination picker
+retains that track if playback advances while choosing a playlist. Read-only cards
+permit browsing but cannot save edits.
+
+Tap a track in an opened playlist to play the complete saved sequence from that
+occurrence, preserving repeated tracks and the current repeat/shuffle mode.
+Open player on tap controls whether Now Playing opens. Editing, pulling or
+deleting the saved playlist later leaves its captured session queue unchanged;
+queue edits do not change the saved copy. Playback needs no Library Sync and
+uses saved metadata, complete cached audio or an eligible existing connection.
+Read-only cards can play captured playlists of up to 64 entries when complete
+audio is available; larger lists need writable card storage for a private queue
+copy, capped at 32 MiB. Storage limits report failure without shortening the queue.
+
+The detail page's **Play** shortcut starts the complete saved sequence at its
+first occurrence in Normal mode. **Shuffle** chooses from the complete sequence
+and honors Continuous shuffle. These shortcuts commit their mode with a successful
+start; ordinary track taps keep the current mode.
+
+Choose **Add to queue** from a playlist's collection-row or detail menu to queue
+its complete saved sequence, or from an entry's menu to queue just that occurrence.
+Insertion follows Play next/Add at end, preserves repeated tracks and does not
+start audio, change the current mode or edit the saved playlist. No Library Sync
+or audio download is needed to queue saved references. Whole-playlist capture has
+the same 64-entry read-only limit; one entry from a larger readable playlist needs
+no whole-playlist copy. Queue additions keep their captured contents after saved
+edits, Pull or deletion.
 
 Use the header download icon or **⋯ → Download playlist** to save all tracks
 through the existing download manager. Repeated tracks and pending/verified
@@ -437,8 +465,12 @@ Rename is in its menu; linked playlists also offer Save as local copy. Saving a
 copy asks for its name (the original name is allowed) before creating an unlinked
 copy. The collection's row menu can delete only the local copy.
 
-**Upload to Navidrome** creates a server playlist and links the existing local
-copy. An imported or uploaded playlist has a header sync icon with **Pull from
+For a locally created unlinked playlist, **Upload to Navidrome** is in its
+collection-row and detail three-dot menus, as well as the header sync icon.
+It sends the saved name and ordered track references, including empty playlists,
+and links the same local copy after verification. It transfers no audio and needs
+an existing connection and writable card storage, with no Library Sync required.
+An imported or uploaded playlist has a header sync icon with **Pull from
 Navidrome** (replace the local name and entries) and **Publish to Navidrome**
 (replace the linked server name and entries). Local edits never publish
 automatically, and Sync Library does not synchronize playlists. Pull confirms
@@ -467,9 +499,8 @@ encoded mutation forms are limited to 2 MiB, with an 8 MiB explicit response,
 parser, and request-buffer budget. Unsupported sizes fail without truncating a
 local playlist. Upload requires the server's OpenSubsonic form-POST support.
 
-Playback from saved playlists, audio upload, SD-card file matching, mixed-source
-playlists, automatic merge/sync, server deletion, and manual drag reordering remain
-outside this feature.
+Audio upload, SD-card file matching, mixed-source playlists, automatic merge/sync,
+server deletion, and manual drag reordering remain outside this feature.
 
 Use the header **Search** button to search Tracks, Albums, or Artists. Enter a
 query and press the keyboard's Search key. Connected searches query the server,

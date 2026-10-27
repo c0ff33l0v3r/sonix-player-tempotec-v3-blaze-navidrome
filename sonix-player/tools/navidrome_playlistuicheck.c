@@ -1,11 +1,14 @@
 #define NAVIDROME_PLAYLIST_UI
 #define NAVIDROME_DOWNLOAD_UI
 #define icon_download fixture_download_stub
+#define icon_shuffle fixture_shuffle_stub
 #define __wrap_http_request fixture_ping_request
 #include "navidrome_browsecheck.c"
 #undef __wrap_http_request
 #undef icon_download
+#undef icon_shuffle
 extern const lv_image_dsc_t icon_download;
+extern const lv_image_dsc_t icon_shuffle;
 #include "src/gui/streaming/navidromeplaylists.c"
 #ifdef NAVIDROME_EDGE_BASELINE
 #define fixture_browse_slot(page, row) (row)
@@ -23,6 +26,63 @@ bool navidromedownloads_request(const nd_dl_request_t *request, nd_dl_captured_c
 	download_submissions++;
 	return true;
 }
+static unsigned saved_taps, saved_leaves;
+static int64_t saved_playlist, saved_revision, saved_occurrence;
+static int saved_ordinal;
+static char saved_track[ND_ID_MAX];
+static unsigned saved_shortcuts, saved_additions;
+static bool saved_shuffle;
+static nd_playlist_capture_t saved_addition;
+bool navidromeplay_playlist_shortcut(const nd_library_t *library, int64_t playlist,
+		int64_t revision, int count, bool shuffle, void *origin) {
+	assert(library->scope[0] && count > 0 && origin == lv_screen_active());
+	saved_shortcuts++; saved_playlist = playlist; saved_revision = revision; saved_shuffle = shuffle;
+	return true;
+}
+bool navidromeplay_playlist_enqueue(const nd_library_t *library, const nd_playlist_capture_t *request, void *origin) {
+	assert(library->scope[0] && origin == lv_screen_active()); saved_addition = *request; saved_additions++; return true;
+}
+static device_state_t fixture_playing;
+static nd_row_t fixture_track;
+static nd_library_t fixture_play_library;
+static char fixture_play_ref[512] = "ndq:fixture:0";
+static bool fail_direct_step;
+int __real_sqlite3_step(sqlite3_stmt *statement);
+int __wrap_sqlite3_step(sqlite3_stmt *statement) {
+	const char *sql = sqlite3_sql(statement);
+	if (fail_direct_step && sql && !strncmp(sql, "INSERT INTO entry", 17)) { fail_direct_step = false; return SQLITE_FULL; }
+	return __real_sqlite3_step(statement);
+}
+lv_obj_t *player_screen;
+void device_state_get(device_state_t *out) { *out = fixture_playing; }
+#ifndef NAVIDROME_OFFLINE_UI
+bool nd_audio_source(const char *path) { return path && (!strncmp(path, "ndq:", 4) || !strcmp(path, "/fixture/permanent.flac")); }
+#endif
+bool navidromeplay_track(const char *path, nd_playrow_t *track, nd_library_t *library) {
+	if (!nd_audio_source(path)) return false;
+	if (track) { memset(track, 0, sizeof(*track)); track->row = fixture_track; }
+	if (library) *library = fixture_play_library;
+	return true;
+}
+bool playlist_current_path(char *path, size_t cap) { snprintf(path, cap, "%s", fixture_play_ref); return true; }
+void player_sheet_close(bool animated) { (void)animated; }
+void switcher_set_player_return(lv_obj_t *screen) { (void)screen; }
+static int menu_index(const char *label) {
+	for (int i = 0; i < fixture_menu_count; i++) if (!strcmp(fixture_menu[i].label, label)) return i;
+	return -1;
+}
+static void menu_activate(const char *label) {
+	int i = menu_index(label); assert(i >= 0); fixture_menu[i].action(fixture_menu[i].user);
+}
+bool navidromeplay_playlist(const nd_library_t *library, int64_t playlist, int64_t revision,
+		int ordinal, int64_t occurrence, const char *track, void *origin) {
+	assert(*library->scope && *library->path && origin == lv_screen_active());
+	saved_taps++;
+	saved_playlist = playlist; saved_revision = revision; saved_occurrence = occurrence; saved_ordinal = ordinal;
+	snprintf(saved_track, sizeof(saved_track), "%s", track);
+	return true;
+}
+void navidromeplay_playlist_leave(void *origin) { if (origin == pl_pages[1].screen) saved_leaves++; }
 lv_font_t font_ui_16, font_ui_24;
 const lv_image_dsc_t icon_list_music = FIXTURE_ICON;
 const lv_image_dsc_t icon_plus = FIXTURE_ICON, icon_import = FIXTURE_ICON, icon_refresh = FIXTURE_ICON, icon_trash = FIXTURE_ICON;
@@ -78,7 +138,31 @@ static void assert_cover_rendered(lv_obj_t *image) {
 	assert(lv_image_get_scale_x(image) == LV_SCALE_NONE);
 }
 static atomic_bool fixture_delay_import, fixture_import_entered, fixture_finish_import;
+static char fixture_upload_name[128];
+static int fixture_upload_count, fixture_upload_creates;
+static bool fixture_upload_lost, fixture_upload_bad_verify;
 bool __wrap_http_request(const char *url, const http_req_t *req, char **out, size_t *size, size_t limit, int timeout, int *status) {
+	if (fixture_upload_name[0] && (strstr(url, "/getOpenSubsonicExtensions.") ||
+		strstr(url, "/createPlaylist.") || strstr(url, "id=ui-created-"))) {
+		char response[4096];
+		assert(req->sensitive_url && limit == ND_PL_BYTES + 1);
+		atomic_fetch_add(&calls, 1);
+		if (strstr(url, "/getOpenSubsonicExtensions."))
+			snprintf(response, sizeof(response), "{\"subsonic-response\":{\"status\":\"ok\",\"openSubsonicExtensions\":[{\"name\":\"formPost\",\"versions\":[1]}]}}");
+		else if (strstr(url, "/createPlaylist.")) {
+			assert(req->method && !strcmp(req->method, "POST") && req->body && strstr(req->body, "name="));
+			int songs = 0; for (const char *p = req->body; (p = strstr(p, "songId=")); p += 7) songs++;
+			assert(songs == fixture_upload_count);
+			fixture_upload_creates++;
+			if (fixture_upload_lost) snprintf(response, sizeof(response), "{\"subsonic-response\":{\"status\":\"ok\",\"playlist\":{}}}");
+			else snprintf(response, sizeof(response), "{\"subsonic-response\":{\"status\":\"ok\",\"playlist\":{\"id\":\"ui-created-%d\"}}}", fixture_upload_creates);
+		} else {
+			int used = snprintf(response, sizeof(response), "{\"subsonic-response\":{\"status\":\"ok\",\"playlist\":{\"id\":\"ui-created-%d\",\"name\":\"%s\",\"songCount\":%d,\"entry\":[", fixture_upload_creates, fixture_upload_bad_verify ? "Changed remotely" : fixture_upload_name, fixture_upload_count);
+			for (int i = 0; i < fixture_upload_count; i++) used += snprintf(response + used, sizeof(response) - (size_t)used, "%s{\"id\":\"song-%05d\",\"title\":\"Track\"}", i ? "," : "", i % 2);
+			snprintf(response + used, sizeof(response) - (size_t)used, "]}}}");
+		}
+		*out = strdup(response); *size = strlen(response); *status = 200; return true;
+	}
 	if (!strstr(url, "/getPlaylist"))
 		return fixture_ping_request(url, req, out, size, limit, timeout, status);
 	assert(limit == ND_PL_BYTES + 1 && req->sensitive_url && !req->method);
@@ -180,7 +264,148 @@ static int remote_index(const char *id) {
 	assert(!"remote catalogue ID missing");
 	return -1;
 }
-static void repeated_playlist_marks(const nd_library_t *lib) {
+static void playlist_actions_ui(nd_library_t *lib) {
+	char path[1200]; nd_playlist_store_t store;
+	assert(nd_pl_path(lib, path) && nd_pl_open(&store, path, lib->scope, true));
+	int64_t destination;
+	assert(nd_pl_create(&store, "! Action destination", &destination));
+	nd_playlist_t target;
+	assert(nd_pl_get(&store, destination, &target)); nd_pl_close(&store);
+	fixture_play_library = *lib;
+	player_screen = lv_obj_create(NULL); switch_screen(player_screen);
+	strcpy(fixture_playing.current_file, "/fixture/permanent.flac");
+	strcpy(fixture_track.id, "unsynced-A"); strcpy(fixture_track.title, "Captured A");
+	strcpy(fixture_track.artist, "Saved fallback"); fixture_track.duration = 123;
+	assert(!lib->ready && navidromeplaylists_bind_current(fixture_playing.current_file));
+	strcpy(fixture_track.id, "unsynced-B");
+	assert(!navidromeplaylists_add_current()); // Reject the stale menu before picker entry.
+	strcpy(fixture_track.id, "unsynced-A");
+	int requests = atomic_load(&calls);
+	assert(navidromeplaylists_bind_current(fixture_playing.current_file) && navidromeplaylists_add_current());
+	pl_wait(2);
+	strcpy(fixture_track.id, "unsynced-B"); strcpy(fixture_play_ref, "ndq:fixture:1");
+	int index = -1;
+	for (int i = 0; i < pl_pages[2].count; i++) if (pl_pages[2].playlists[i].id == destination) index = i;
+	assert(index >= 0);
+	lv_obj_send_event(pl_pages[2].rows[index], LV_EVENT_CLICKED, NULL); pl_wait(2);
+	assert(!pl_direct_active && lv_screen_active() == player_screen);
+	assert(nd_pl_open(&store, path, lib->scope, false) && nd_pl_get(&store, destination, &target));
+	nd_playlist_entry_t entries[ND_WINDOW]; int n;
+	assert(target.count == 1 && nd_pl_entries(&store, destination, 0, 0, entries, &n) && n == 1);
+	assert(!strcmp(entries[0].track.id, "unsynced-A") && !strcmp(entries[0].track.title, "Captured A"));
+	nd_pl_close(&store);
+	// Same ID is a no-op despite changed metadata; direct writes need no source DB.
+	nd_context_t context; assert(navidrome_context(&context, false));
+	nd_pl_request_t q = {.action = NDPL_ADD, .id = destination, .revision = target.revision, .direct = true};
+	q.source = (nd_pl_track_t){.row = entries[0].track, .profile = context.profile_epoch, .card = context.card_epoch};
+	strcpy(q.source.scope, lib->scope);
+	strcpy(q.source.row.title, "Changed metadata");
+	nd_pl_result_t *result = calloc(1, sizeof(*result)); assert(result);
+	nd_pl_execute(&q, &context, lib, result);
+	assert(!result->error && result->added == 0 && result->skipped == 1 && result->playlist.revision == target.revision);
+	q.source.profile++; nd_pl_execute(&q, &context, lib, result); assert(result->error); q.source.profile--;
+	q.revision--; nd_pl_execute(&q, &context, lib, result); assert(result->error); q.revision++;
+	nd_library_t readonly = *lib; readonly.writable = false;
+	nd_pl_execute(&q, &context, &readonly, result); assert(result->error);
+	strcpy(q.source.row.id, "unsynced-C"); fail_direct_step = true;
+	nd_pl_execute(&q, &context, lib, result); assert(result->error && !fail_direct_step);
+	assert(nd_pl_open(&store, path, lib->scope, false));
+	nd_playlist_t unchanged; assert(nd_pl_get(&store, destination, &unchanged));
+	assert(unchanged.count == 1 && unchanged.revision == target.revision); nd_pl_close(&store);
+	free(result); nd_wipe(&context, sizeof(context));
+	// New destination creation carries the same direct target; cancellation does not add.
+	assert(navidromeplaylists_bind_current(fixture_playing.current_file) && navidromeplaylists_add_current());
+	pl_wait(2); lv_obj_send_event(pl_pages[2].new_row, LV_EVENT_CLICKED, NULL);
+	assert(pl_back());
+	lv_obj_send_event(pl_pages[2].new_row, LV_EVENT_CLICKED, NULL);
+	lv_textarea_set_text(pl_name_field, "Action new destination"); pl_name_accept(NULL); pl_wait(2);
+	assert(lv_screen_active() == player_screen && !pl_direct_active);
+	assert(atomic_load(&calls) == requests);
+	// Real controls and menus bind whole/entry identity independently of the visible band.
+	pl_open_detail(&target); pl_wait(1);
+	lv_obj_update_layout(pl_pages[1].screen);
+	lv_area_t actions, list;
+	lv_obj_get_coords(pl_pages[1].play_actions, &actions); lv_obj_get_coords(pl_pages[1].list, &list);
+	assert(actions.y2 < list.y1 && actions.x1 >= 0 && actions.x2 < ui_panel_width);
+	lv_obj_t *shuffle_glyph = lv_obj_get_child(pl_pages[1].play_buttons[1], 0);
+	assert(icon_shuffle.header.w > 1 && lv_image_get_src(shuffle_glyph) == &icon_shuffle);
+	lv_area_t glyph, button; lv_obj_get_coords(shuffle_glyph, &glyph); lv_obj_get_coords(pl_pages[1].play_buttons[1], &button);
+	assert(glyph.x1 >= button.x1 && glyph.x2 <= button.x2 && glyph.y1 >= button.y1 && glyph.y2 <= button.y2);
+	unsigned shortcuts = saved_shortcuts;
+	lv_obj_send_event(pl_pages[1].play_buttons[0], LV_EVENT_CLICKED, NULL);
+	assert(saved_shortcuts == shortcuts + 1 && !saved_shuffle && saved_playlist == destination);
+	lv_obj_send_event(pl_pages[1].play_buttons[1], LV_EVENT_CLICKED, NULL);
+	assert(saved_shortcuts == shortcuts + 2 && saved_shuffle);
+	lv_obj_send_event(pl_pages[1].menus[0], LV_EVENT_CLICKED, NULL);
+	unsigned queued = saved_additions;
+	menu_activate("add_to_queue"); assert(saved_additions == queued + 1 && saved_addition.single && !saved_addition.whole);
+	assert(saved_addition.occurrence == pl_pages[1].entries[0].occurrence && !strcmp(saved_addition.track, "unsynced-A"));
+	lv_obj_send_event(pl_pages[1].buttons[0], LV_EVENT_CLICKED, NULL);
+	menu_activate("add_to_queue"); assert(saved_additions == queued + 2 && saved_addition.whole);
+	int queue_item = menu_index("add_to_queue"); popover_item_t stale = fixture_menu[queue_item];
+	pl_pages[1].serial++; stale.action(stale.user); assert(saved_additions == queued + 2);
+	unsigned starts_before_gesture = saved_shortcuts;
+	dragging = true; lv_obj_send_event(pl_pages[1].play_buttons[0], LV_EVENT_CLICKED, NULL); dragging = false;
+	assert(saved_shortcuts == starts_before_gesture);
+	pl_pages[1].selecting = true; pl_buttons(&pl_pages[1]); assert(lv_obj_is_hidden(pl_pages[1].play_actions));
+	pl_pages[1].selecting = false; pl_buttons(&pl_pages[1]); assert(!lv_obj_is_hidden(pl_pages[1].play_actions));
+	assert(atomic_load(&calls) == requests);
+	puts("playlist actions UI: real no-Sync picker/direct dedupe/New flow, retained target after skip, stale guards, Play/Shuffle geometry and whole/entry queue menus: passed");
+}
+static void playlist_upload_ui(nd_library_t *lib) {
+	atomic_store(&mode, 0); assert(navidrome_reconnect()); wait_idle();
+	navidrome_library_snapshot(lib); assert(!lib->ready);
+	for (int phase = 0; phase < 4; phase++) {
+		char path[1200]; nd_playlist_store_t store; int64_t id;
+		snprintf(fixture_upload_name, sizeof(fixture_upload_name), "Upload fixture %d", phase);
+		fixture_upload_count = phase == 1 ? 3 : 0;
+		fixture_upload_lost = phase == 2; fixture_upload_bad_verify = phase == 3;
+		assert(nd_pl_path(lib, path) && nd_pl_open(&store, path, lib->scope, true));
+		assert(nd_pl_create(&store, fixture_upload_name, &id));
+		if (fixture_upload_count) {
+			assert(nd_pl_begin(&store, id, 1)); int added = 0, skipped = 0;
+			for (int i = 0; i < 3; i++) { nd_row_t row = {.title = "Track"}; snprintf(row.id, sizeof(row.id), "song-%05d", i % 2); assert(nd_pl_append(&store, id, &row, false, &added, &skipped)); }
+			assert(nd_pl_finish(&store, id, true) && nd_pl_sql(&store, "COMMIT"));
+		}
+		nd_playlist_t target; assert(nd_pl_get(&store, id, &target)); nd_pl_close(&store);
+		int creates = fixture_upload_creates;
+		if (phase == 1 || phase == 3) {
+			pl_open_detail(&target); pl_wait(1);
+			lv_obj_send_event(pl_pages[1].buttons[0], LV_EVENT_CLICKED, NULL);
+		} else {
+			navidromeplaylists_open(); pl_wait(0); int index = -1;
+			for (int i = 0; i < pl_pages[0].count; i++) if (pl_pages[0].playlists[i].id == id) index = i;
+			assert(index >= 0); lv_obj_send_event(pl_pages[0].menus[index], LV_EVENT_CLICKED, NULL);
+		}
+		int page = phase == 1 || phase == 3 ? 1 : 0;
+		assert(menu_index("nd_pl_upload") >= 0);
+		int upload = menu_index("nd_pl_upload"); popover_item_t old_upload = fixture_menu[upload];
+		menu_activate("nd_pl_upload"); pl_wait(page);
+		assert(fixture_upload_creates == creates + 1 && pl_active(page));
+		assert(nd_pl_open(&store, path, lib->scope, false) && nd_pl_get(&store, id, &target)); nd_pl_close(&store);
+		if (phase < 2) assert(target.remote[0] && !target.pending && target.id == id && !target.dirty);
+		else {
+			assert(target.pending && (phase == 2 ? !target.remote[0] : target.remote[0] != 0));
+			nd_context_t context; assert(navidrome_context(&context, false));
+			nd_pl_request_t q = {.action = NDPL_UPLOAD, .id = id, .revision = target.revision};
+			nd_pl_result_t *result = calloc(1, sizeof(*result)); assert(result);
+			int calls_before = atomic_load(&calls); nd_pl_execute(&q, &context, lib, result);
+			assert(result->error && atomic_load(&calls) == calls_before);
+			free(result); nd_wipe(&context, sizeof(context));
+		}
+		old_upload.action(old_upload.user); assert(fixture_upload_creates == creates + 1);
+		if (page == 1) lv_obj_send_event(pl_pages[1].buttons[0], LV_EVENT_CLICKED, NULL);
+		else {
+			int index = -1; for (int i = 0; i < pl_pages[0].count; i++) if (pl_pages[0].playlists[i].id == id) index = i;
+			assert(index >= 0); lv_obj_send_event(pl_pages[0].menus[index], LV_EVENT_CLICKED, NULL);
+		}
+		assert(menu_index("nd_pl_upload") < 0);
+		if (phase >= 2) assert(menu_index(phase == 2 ? "nd_pl_reconcile" : "nd_pl_verify") >= 0);
+	}
+	fixture_upload_name[0] = 0; fixture_upload_lost = fixture_upload_bad_verify = false;
+	puts("playlist Upload UI/service: exact collection and detail targets, empty/repeated/no-Sync definitions, verified links, stale callbacks and unknown/known-ID recovery without blind creation: passed");
+}
+static void saved_playlist_taps(const nd_library_t *lib) {
 	char path[1200];
 	nd_playlist_store_t store;
 	assert(nd_pl_path(lib, path) && nd_pl_open(&store, path, lib->scope, true));
@@ -246,8 +471,8 @@ static void repeated_playlist_marks(const nd_library_t *lib) {
 	captured_download_cb(true, NULL, 2, 38, captured_download_user);
 	assert(!pl_pages[1].download_pending);
 	lv_obj_send_event(pl_pages[1].buttons[0], LV_EVENT_CLICKED, NULL);
-	assert(fixture_menu_count == 2 && !strcmp(fixture_menu[1].label, "nd_pl_download"));
-	fixture_menu[1].action(fixture_menu[1].user);
+	assert(menu_index("nd_pl_download") >= 0 && menu_index("add_to_queue") >= 0 && menu_index("nd_pl_upload") >= 0);
+	menu_activate("nd_pl_download");
 	assert(download_submissions == submitted + 2 && pl_pages[1].download_pending);
 	captured_download_cb(true, NULL, 2, 38, captured_download_user);
 	submitted++;
@@ -256,30 +481,45 @@ static void repeated_playlist_marks(const nd_library_t *lib) {
 	for(int row=0;row<pl_pages[1].count;row++) assert(lv_obj_is_hidden(pl_pages[1].playmarks[row])==!!strcmp(pl_pages[1].entries[row].track.id,selected_track));
 	selected_track[0]=0; navidromeplaylists_refresh();
 	for(int row=0;row<pl_pages[1].count;row++) assert(lv_obj_is_hidden(pl_pages[1].playmarks[row]));
+	unsigned before = saved_taps;
+	lv_obj_send_event(pl_pages[1].rows[2], LV_EVENT_CLICKED, NULL);
+	assert(saved_taps == before + 1 && saved_playlist == id && saved_revision == p.revision && saved_ordinal == 2);
+	assert(saved_occurrence == pl_pages[1].entries[2].occurrence && !strcmp(saved_track, "song-00000"));
 	dragging = true;
 	lv_obj_send_event(pl_pages[1].download, LV_EVENT_CLICKED, NULL);
 	assert(download_submissions == submitted + 1);
-	dragging = false;
-	lv_obj_send_event(pl_pages[1].rows[0], LV_EVENT_LONG_PRESSED, NULL);
 	lv_obj_send_event(pl_pages[1].rows[0], LV_EVENT_CLICKED, NULL);
+	dragging = false;
+	assert(saved_taps == before + 1);
+	lv_obj_send_event(pl_pages[1].rows[0], LV_EVENT_LONG_PRESSED, NULL);
+	lv_obj_send_event(pl_pages[1].rows[0], LV_EVENT_CLICKED, NULL); // delayed long-press release
 	pl_wait(1);
-	assert(pl_pages[1].selecting && lv_obj_is_hidden(pl_pages[1].download));
+	assert(pl_pages[1].selecting && saved_taps == before + 1);
+	assert(lv_obj_is_hidden(pl_pages[1].download));
 	lv_obj_send_event(pl_pages[1].download, LV_EVENT_CLICKED, NULL);
 	assert(download_submissions == submitted + 1);
 	lv_obj_send_event(pl_pages[1].rows[1], LV_EVENT_CLICKED, NULL); pl_wait(1);
-	assert(pl_pages[1].selected == 2);
+	assert(saved_taps == before + 1 && pl_pages[1].selected == 2);
 	lv_obj_send_event(pl_pages[1].buttons[0], LV_EVENT_CLICKED, NULL); pl_wait(1);
 	assert(!pl_pages[1].selecting);
+	lv_obj_scroll_to_y(pl_pages[1].list, pl_pages[1].offset + 34 * pl_pages[1].pitch, LV_ANIM_OFF);
+	pl_load(1); pl_wait(1);
+	int tapped_ordinal = pl_pages[1].first + 2;
+	assert(tapped_ordinal > ND_WINDOW);
+	lv_obj_send_event(pl_pages[1].rows[2], LV_EVENT_CLICKED, NULL);
+	assert(saved_taps == before + 2 && saved_ordinal == tapped_ordinal && saved_occurrence == pl_pages[1].entries[2].occurrence);
 	pl_pages[1].card++;
-	lv_obj_send_event(pl_pages[1].download, LV_EVENT_CLICKED, NULL);
+	lv_obj_send_event(pl_pages[1].rows[2], LV_EVENT_CLICKED, NULL);
 	pl_pages[1].card--;
-	assert(download_submissions == submitted + 1);
+	assert(saved_taps == before + 2);
 	lv_obj_send_event(pl_pages[1].download, LV_EVENT_CLICKED, NULL);
 	assert(pl_pages[1].download_pending);
+	unsigned leaves = saved_leaves;
 	navidromeplaylists_open(); pl_wait(0);
 	captured_download_cb(false, "nd_dl_capture_error", 0, 0, captured_download_user);
 	assert(!pl_pages[1].download_pending && pl_active(0));
-	puts("playlist LVGL header/menu downloads, real glyph bounds, selection/gesture/stale guards and repeated exact-ID markers: passed");
+	assert(saved_leaves > leaves);
+	puts("playlist LVGL ordinary/repeated/off-window occurrence taps, long-press/selection/Cancel, gestures, stale card and origin leave: passed");
 }
 
 #ifndef NAVIDROME_OFFLINE_UI
@@ -392,6 +632,8 @@ int main(int argc, char **argv) {
 	pl_wait(1);
 	assert(pl_active(1) && pl_pages[1].playlist.count == 0 && !strcmp(pl_pages[1].playlist.name, "Road playlist"));
 	assert(!strcmp(lv_label_get_text(pl_pages[1].empty), "No tracks yet."));
+	lv_obj_send_event(pl_pages[1].rows[0], LV_EVENT_CLICKED, NULL);
+	assert(saved_taps == 0);
 	// The detail Add tracks flow selects an album and returns to this exact playlist.
 	lv_obj_send_event(pl_pages[1].buttons[2], LV_EVENT_CLICKED, NULL);
 	assert(fixture_menu_count == 2);
@@ -432,7 +674,7 @@ int main(int argc, char **argv) {
 	// No local edit sent HTTP.
 	assert(atomic_load(&calls) == requests);
 	lv_obj_send_event(pl_pages[1].buttons[0], LV_EVENT_CLICKED, NULL);
-	assert(fixture_menu_count == 2 && !strcmp(fixture_menu[0].label, "rename") && !strcmp(fixture_menu[1].label, "nd_pl_download"));
+	assert(menu_index("rename") >= 0 && menu_index("nd_pl_download") >= 0 && menu_index("nd_pl_upload") >= 0);
 	fixture_menu[0].action(NULL);
 	lv_textarea_set_text(pl_name_field, "Renamed locally");
 	pl_name_accept(NULL);
@@ -453,7 +695,7 @@ int main(int argc, char **argv) {
 	lv_obj_get_coords(pl_pages[0].menus[0], &menu_area);
 	assert(name_area.x1 < name_area.x2 && name_area.x2 < menu_area.x1);
 	lv_obj_send_event(pl_pages[0].menus[0], LV_EVENT_CLICKED, NULL);
-	assert(fixture_menu_count == 2 && !strcmp(fixture_menu[0].label, "rename") && !strcmp(fixture_menu[1].label, "nd_pl_delete_local"));
+	assert(menu_index("rename") >= 0 && menu_index("nd_pl_delete_local") >= 0 && menu_index("nd_pl_upload") >= 0);
 	lv_obj_send_event(pl_pages[0].rows[0], LV_EVENT_CLICKED, NULL);
 	pl_wait(1);
 	navidromeplaylists_pick(9000, lib.generation, pl_pages[1].screen);
@@ -678,7 +920,7 @@ int main(int argc, char **argv) {
 		if (pl_pages[0].playlists[i].id == linked.id) linked_index = i;
 	assert(linked_index >= 0);
 	lv_obj_send_event(pl_pages[0].menus[linked_index], LV_EVENT_CLICKED, NULL);
-	assert(fixture_menu_count == 3 && !strcmp(fixture_menu[2].label, "nd_pl_save_copy"));
+	assert(menu_index("nd_pl_save_copy") >= 0);
 	lv_obj_send_event(pl_pages[0].rows[linked_index], LV_EVENT_CLICKED, NULL);
 	pl_wait(1);
 	assert(fixture_art_requests && !strcmp(fixture_art[pl_pages[1].art_slots[0]].id, "remote-cover"));
@@ -715,8 +957,8 @@ int main(int argc, char **argv) {
 	// Copy asks first; Cancel creates nothing. Accepting the unchanged name
 	// makes a distinct unlinked copy, while a chosen name is saved atomically.
 	lv_obj_send_event(pl_pages[1].buttons[0], LV_EVENT_CLICKED, NULL);
-	assert(fixture_menu_count == 3 && !strcmp(fixture_menu[2].label, "nd_pl_save_copy"));
-	fixture_menu[2].action(NULL);
+	assert(menu_index("nd_pl_save_copy") >= 0);
+	menu_activate("nd_pl_save_copy");
 	assert(!lv_obj_is_hidden(pl_name_layer) && pl_copying);
 	assert(lv_obj_get_parent(pl_name_layer) == pl_pages[1].screen);
 	assert(!strcmp(lv_textarea_get_text(pl_name_field), linked.name));
@@ -727,7 +969,7 @@ int main(int argc, char **argv) {
 	assert(nd_pl_list(&store, 0, list_rows, &listed, &total_before_copy) && total_before_copy == 3);
 	nd_pl_close(&store);
 	lv_obj_send_event(pl_pages[1].buttons[0], LV_EVENT_CLICKED, NULL);
-	fixture_menu[2].action(NULL);
+	menu_activate("nd_pl_save_copy");
 	pl_name_accept(NULL);
 	pl_wait(1);
 	assert(pl_pages[1].playlist.id != linked.id && !*pl_pages[1].playlist.remote);
@@ -735,7 +977,7 @@ int main(int argc, char **argv) {
 	pl_open_detail(&linked);
 	pl_wait(1);
 	lv_obj_send_event(pl_pages[1].buttons[0], LV_EVENT_CLICKED, NULL);
-	fixture_menu[2].action(NULL);
+	menu_activate("nd_pl_save_copy");
 	lv_textarea_set_text(pl_name_field, "Named local copy");
 	pl_name_accept(NULL);
 	pl_wait(1);
@@ -807,7 +1049,9 @@ int main(int argc, char **argv) {
 	assert(chmod(dir, 0700) == 0);
 	navidrome_set_root(dir);
 	library_wait(&lib);
-	repeated_playlist_marks(&lib);
+	saved_playlist_taps(&lib);
+	playlist_actions_ui(&lib);
+	playlist_upload_ui(&lib);
 	navidrome_lock();
 	navidromeplaylists_refresh();
 	assert(lv_screen_active() == navidrome_screen);

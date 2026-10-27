@@ -31,7 +31,11 @@ typedef struct source {
 	char selected[ND_ID_MAX];
 	int64_t *handles;
 	nd_playcatalog_t *catalog;
+	nd_playlist_capture_t saved;
+	unsigned playlist_origin_serial, addition_origin_serial;
 	bool capture;
+	bool saved_shortcut, saved_shuffle;
+	unsigned saved_random;
 	int album_action; // 1 shuffle, 2 ordered play, 3 random single-track enqueue.
 	unsigned album_intent, album_random;
 	bool album_committed;
@@ -86,12 +90,17 @@ static job_t next_job, addition_job;
 static bool addition_pending;
 static sqlite3 *addition_db; // Only sqlite3_interrupt() may touch this from another thread.
 static result_t *fallback_result, *addition_fallback;
+static source_t *addition_failed;
 #define SOURCE_CONTEXTS 8
 static source_t *queue_source, *album_owner, *sources[SOURCE_CONTEXTS];
 static unsigned album_queue_identity;
 static char album_first_ref[80];
 static source_t *meta_sources[SOURCE_CONTEXTS + 1];
 static unsigned next_token;
+static unsigned playlist_origin_serial;
+static void *playlist_origin;
+static unsigned addition_origin_serial;
+static void *addition_origin;
 static int meta_count;
 static bool installed(source_t *s) {
 	for (int i = 0; i < SOURCE_CONTEXTS; i++)
@@ -262,6 +271,14 @@ static void protections(void) {
 	const char *paths[3] = {current_path, ahead_paths[0], ahead_paths[1]};
 	nd_audio_protect(paths);
 }
+static bool addition_feedback(source_t *s) {
+	return !s->saved.playlist || !s->origin ||
+		(s->addition_origin_serial == addition_origin_serial &&
+		lv_obj_is_valid(s->origin) && lv_screen_active() == s->origin);
+}
+static void addition_error(source_t *s, const char *error) {
+	if (addition_feedback(s)) gui_notify_popup(error);
+}
 static void result_done(void *user) {
 	result_t *r = user;
 	job_t *job = &r->job;
@@ -294,13 +311,13 @@ static void result_done(void *user) {
 		goto done;
 	}
 	if (job->enqueue) {
-		if (job->queue_identity != playlist_identity()) { gui_notify_popup("nd_queue_changed"); goto done; }
-		if (r->error) { gui_notify_popup(r->error); goto done; }
+		if (job->queue_identity != playlist_identity()) { addition_error(s, "nd_queue_changed"); goto done; }
+		if (r->error) { addition_error(s, r->error); goto done; }
 		source_t *owner = s;
 		int first = 0;
 		for (int i = 0; i < SOURCE_CONTEXTS; i++) {
 			source_t *candidate = sources[i];
-			if (candidate && !candidate->capture && candidate->library.generation == s->library.generation &&
+			if (!s->capture && candidate && !candidate->capture && candidate->library.generation == s->library.generation &&
 				candidate->library.card_epoch == s->library.card_epoch && candidate->library.favorites == s->library.favorites &&
 				!strcmp(candidate->library.path, s->library.path) && !strcmp(candidate->library.scope, s->library.scope)) {
 				owner = candidate; break;
@@ -308,9 +325,9 @@ static void result_done(void *user) {
 		}
 		if (owner != s) {
 			first = owner->count;
-			if (s->count > INT_MAX - first || (size_t)(first + s->count) > SIZE_MAX / sizeof(*s->handles)) { gui_notify_popup("nd_queue_limit"); goto done; }
+			if (s->count > INT_MAX - first || (size_t)(first + s->count) > SIZE_MAX / sizeof(*s->handles)) { addition_error(s, "nd_queue_limit"); goto done; }
 			int64_t *grown = malloc((size_t)(first + s->count) * sizeof(*grown));
-			if (!grown) { gui_notify_popup("nd_worker_error"); goto done; }
+			if (!grown) { addition_error(s, "nd_worker_error"); goto done; }
 			pthread_mutex_lock(&lock);
 			memcpy(grown, owner->handles, (size_t)first * sizeof(*grown));
 			memcpy(grown + first, s->handles, (size_t)s->count * sizeof(*grown));
@@ -319,14 +336,14 @@ static void result_done(void *user) {
 			owner->count += s->count;
 			pthread_mutex_unlock(&lock);
 		}
-		if (!install(owner)) { gui_notify_popup("nd_queue_limit"); goto done; }
+		if (!install(owner)) { addition_error(s, "nd_queue_limit"); goto done; }
 		bool empty = playlist_count() == 0;
 		playlist_source_t provider = {.user = owner, .first = (size_t)first, .count = s->count, .path = source_path, .metadata = source_metadata, .close = source_close};
 		retain(owner); owner->queue_owners++;
 		if (!playlist_enqueue_source(&provider)) {
 			if (owner != s) { pthread_mutex_lock(&lock); owner->count = first; pthread_mutex_unlock(&lock); }
 			source_close(owner);
-			gui_notify_popup("nd_queue_limit");
+			addition_error(s, "nd_queue_limit");
 			goto done;
 		}
 		s->album_committed = true;
@@ -340,7 +357,7 @@ static void result_done(void *user) {
 			device_state_represent_source(current_ref, &meta, r->row.row.duration);
 			player_refresh_now_playing();
 		}
-		toast_success(s->album_action == 3 ? "medialist_random_track_queued" : s->count == 1 ? "added_to_the_queue" : "queue_tracks_added");
+		if (addition_feedback(s)) toast_success(s->album_action == 3 ? "medialist_random_track_queued" : s->count == 1 ? "added_to_the_queue" : "queue_tracks_added");
 		goto done;
 	}
 	if (!job->initial && (!installed(s) || (job->foreground && queue_source != s)))
@@ -393,7 +410,7 @@ static void result_done(void *user) {
 	if (job->initial) {
 		playlist_source_t source = {.user = s, .count = s->count, .path = source_path, .metadata = source_metadata, .close = source_close};
 		retain(s); s->queue_owners++;
-		if (!(s->album_action ? playlist_load_source_mode(&source, s->start, s->album_mode) : playlist_load_source(&source, s->start))) {
+		if (!((s->album_action || s->saved_shortcut) ? playlist_load_source_mode(&source, s->start, s->album_mode) : playlist_load_source(&source, s->start))) {
 			source_close(s);
 			navidromeplay_stop();
 			gui_notify_popup("nd_worker_error");
@@ -427,7 +444,8 @@ static void result_done(void *user) {
 	device_state_play_prepared(r->path, &meta, paused, r->row.row.duration);
 	nd_reports_start(&s->context, &s->library, r->row.row.id, r->path, r->row.row.duration);
 	player_refresh_now_playing();
-	if (job->initial && config_get_bool("player", "open_player_on_tap", true) && lv_obj_is_valid(s->origin) && lv_screen_active() == s->origin)
+	if (job->initial && (!s->saved.playlist || s->playlist_origin_serial == playlist_origin_serial) &&
+		config_get_bool("player", "open_player_on_tap", true) && lv_obj_is_valid(s->origin) && lv_screen_active() == s->origin)
 		player_sheet_open(true);
 done:
 	if (job->enqueue) { pthread_mutex_lock(&lock); adding = false; pthread_mutex_unlock(&lock); }
@@ -668,10 +686,14 @@ static void *work(void *unused) {
 		}
 		if (job.initial) {
 			if (s->capture) {
-				s->catalog = nd_playcatalog_capture(&s->library, &s->context, &s->query, s->selected, current, &job, &error);
+				s->catalog = s->saved.playlist ?
+					nd_playcatalog_playlist(&s->library, &s->context, &s->saved, current, &job, &error) :
+					nd_playcatalog_capture(&s->library, &s->context, &s->query, s->selected, current, &job, &error);
 				if (s->catalog) {
 					s->count = nd_playcatalog_count(s->catalog);
 					s->start = nd_playcatalog_start(s->catalog);
+					if (s->saved_shortcut && s->saved_shuffle && s->count > 0)
+						s->start = (int)(s->saved_random % (unsigned)s->count);
 				}
 			} else if (!navidrome_playback_begin(&s->context))
 				error = "nd_audio_cancelled";
@@ -813,13 +835,22 @@ static void *metadata_work(void *unused) {
 			pthread_mutex_unlock(&lock);
 			source_t *s = job.source;
 			result_t *r = calloc(1,sizeof(*r));
-			bool ok = build_addition(s);
-			if (r) {
-				r->job = job;
-				retain(s);
-				if (!ok || !read_row(s,0,&r->row)) r->error="nd_audio_unavailable";
-				deliver_result(r);
-			} else { pthread_mutex_lock(&lock); adding=false; pthread_mutex_unlock(&lock); }
+			if (!r) {
+				// Transfer the worker reference to a fixed GUI error slot.
+				pthread_mutex_lock(&lock); addition_failed = s; pthread_mutex_unlock(&lock);
+				continue;
+			}
+			const char *error = NULL;
+			bool ok;
+			if (s->capture) {
+				s->catalog = nd_playcatalog_playlist(&s->library, &s->context, &s->saved, current, &job, &error);
+				ok = s->catalog != NULL;
+				if (ok) { s->count = nd_playcatalog_count(s->catalog); s->start = 0; }
+			} else ok = build_addition(s);
+			r->job = job;
+			retain(s);
+			if (!ok || !read_row(s,0,&r->row)) r->error = error ? error : "nd_audio_unavailable";
+			deliver_result(r);
 			release(s);
 			continue;
 		}
@@ -1075,6 +1106,87 @@ bool navidromeplay_select(const nd_library_t *lib, const nd_query_t *query, cons
 	release(s);
 	return ok;
 }
+void navidromeplay_playlist_leave(void *origin) {
+	if (addition_origin == origin) {
+		addition_origin_serial++;
+		addition_origin = NULL;
+	}
+	if (playlist_origin == origin) {
+		playlist_origin_serial++;
+		playlist_origin = NULL;
+	}
+}
+bool navidromeplay_playlist(const nd_library_t *lib, int64_t playlist, int64_t revision,
+		int ordinal, int64_t occurrence, const char *track, void *origin) {
+	if (!started || playlist <= 0 || revision <= 0 || ordinal < 0 || occurrence <= 0 ||
+		!track || !*track || strlen(track) >= ND_ID_MAX || !*lib->path || !*lib->scope)
+		return false;
+	source_t *s = calloc(1, sizeof(*s));
+	if (!s) return false;
+	s->refs = 1;
+	s->capture = true;
+	s->library = *lib;
+	s->saved = (nd_playlist_capture_t){.playlist = playlist, .revision = revision, .ordinal = ordinal, .occurrence = occurrence};
+	snprintf(s->saved.track, sizeof(s->saved.track), "%s", track);
+	s->origin = origin;
+	playlist_origin = origin;
+	s->playlist_origin_serial = ++playlist_origin_serial;
+	bool ok = navidrome_context(&s->context, false) && s->context.card_epoch == lib->card_epoch && s->context.epoch == lib->epoch;
+	pthread_mutex_lock(&lock);
+	s->token = ++next_token;
+	pthread_mutex_unlock(&lock);
+	if (ok) ok = submit(s, 0, true, true, NULL, NULL);
+	release(s);
+	return ok;
+}
+static source_t *saved_source(const nd_library_t *lib, const nd_playlist_capture_t *request) {
+	if (!started || !lib || !request || request->playlist <= 0 || request->revision <= 0 ||
+		request->count <= 0 || !lib->path[0] || !lib->scope[0] ||
+		(request->whole == request->single) || (request->single &&
+		(request->ordinal < 0 || request->occurrence <= 0 || !request->track[0] ||
+		strnlen(request->track, ND_ID_MAX) == ND_ID_MAX))) return NULL;
+	source_t *s = calloc(1, sizeof(*s));
+	if (!s) return NULL;
+	s->refs = 1; s->capture = true; s->library = *lib; s->saved = *request;
+	bool ok = navidrome_context(&s->context, false) && s->context.card_epoch == lib->card_epoch && s->context.epoch == lib->epoch;
+	if (!ok) { release(s); return NULL; }
+	pthread_mutex_lock(&lock); s->token = ++next_token; pthread_mutex_unlock(&lock);
+	return s;
+}
+bool navidromeplay_playlist_shortcut(const nd_library_t *lib, int64_t playlist,
+		int64_t revision, int count, bool shuffle, void *origin) {
+	nd_playlist_capture_t request = {.playlist = playlist, .revision = revision, .count = count, .whole = true};
+	source_t *s = saved_source(lib, &request);
+	if (!s) return false;
+	s->saved_shortcut = true; s->saved_shuffle = shuffle;
+	s->saved_random = lv_rand(0, 0x7fffffff);
+	s->album_mode = shuffle ? (config_get_bool("player", "endless_shuffle", false) ?
+		PLAYBACK_MODE_SHUFFLE_REPEAT : PLAYBACK_MODE_SHUFFLE) : PLAYBACK_MODE_NORMAL;
+	s->origin = origin;
+	playlist_origin = origin;
+	s->playlist_origin_serial = ++playlist_origin_serial;
+	bool ok = submit(s, 0, true, true, NULL, NULL);
+	release(s);
+	return ok;
+}
+bool navidromeplay_playlist_enqueue(const nd_library_t *lib, const nd_playlist_capture_t *request, void *origin) {
+	source_t *s = saved_source(lib, request);
+	if (!s) return false;
+	pthread_mutex_lock(&lock);
+	bool ok = !quitting && !adding;
+	if (ok) {
+		s->origin = origin;
+		addition_origin = origin;
+		s->addition_origin_serial = ++addition_origin_serial;
+		adding = true;
+		addition_job = (job_t){.source = s, .serial = serial, .queue_identity = playlist_identity(), .enqueue = true};
+		retain(s); addition_pending = true; pthread_cond_signal(&meta_wake);
+	}
+	pthread_mutex_unlock(&lock);
+	release(s);
+	if (ok && timer) lv_timer_resume(timer);
+	return ok;
+}
 bool navidromeplay_search(const nd_library_t *lib, const nd_context_t *identity, const nd_query_t *query, const char *id, void *origin) {
 	if (!started || !id || !*id || strlen(id) >= ND_ID_MAX || query->kind != ND_TRACKS || !*lib->path || !*lib->scope)
 		return false;
@@ -1191,11 +1303,18 @@ void navidromeplay_tick(void) {
 	fallback_result = NULL;
 	result_t *addition = addition_fallback;
 	addition_fallback = NULL;
+	source_t *failed_addition = addition_failed;
+	addition_failed = NULL;
+	if (failed_addition) adding = false;
 	metadata_result_t *titles = metadata_fallback;
 	metadata_fallback = NULL;
 	annotation_t *annotation = annotation_fallback;
 	annotation_fallback = NULL;
 	pthread_mutex_unlock(&lock);
+	if (failed_addition) {
+		if (navidrome_playback_current(&failed_addition->context, false)) addition_error(failed_addition, "nd_worker_error");
+		release(failed_addition);
+	}
 	while (titles) {
 		metadata_result_t *next = titles->next;
 		metadata_done(titles);
@@ -1366,6 +1485,7 @@ void navidromeplay_shutdown(void) {
 	meta_count = 0;
 	if (addition_pending) { release(addition_job.source); addition_pending=false; }
 	if (addition_fallback) { release(addition_fallback->job.source); free(addition_fallback); addition_fallback=NULL; }
+	if (addition_failed) { release(addition_failed); addition_failed = NULL; }
 	adding=false;
 	if (annotation_pending) {
 		release(annotation_pending->source);

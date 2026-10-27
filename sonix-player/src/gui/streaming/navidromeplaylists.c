@@ -20,6 +20,8 @@
 #include "src/gui/shell/uiscale.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/config.h"
+#include "src/system/playback/device_state.h"
+#include "src/system/playback/playlist.h"
 #include "src/system/streaming/navidromedownloads.h"
 #include "src/system/streaming/navidromeplaylists.h"
 #include <stdio.h>
@@ -30,6 +32,8 @@
 typedef struct {
 	lv_obj_t *screen, *list, *extent, *title, *status, *buttons[3];
 	lv_obj_t *download;
+	lv_obj_t *play_actions, *play_buttons[2];
+	int content_top;
 	unsigned download_token;
 	bool download_pending;
 	int64_t download_playlist, download_revision;
@@ -61,6 +65,10 @@ static bool pl_copying, pl_renaming, pl_fixed, pl_recovering, pl_skip_load;
 static nd_playlist_t pl_menu_playlist;
 static int64_t pl_session, pl_generation, pl_recovery_id;
 static bool pl_source_favorites;
+static bool pl_direct_active, pl_current_bound;
+static nd_pl_track_t pl_direct, pl_current_track;
+static char pl_current_ref[512];
+static lv_obj_t *pl_current_origin;
 static char pl_recovery_name[ND_PL_NAME];
 static lv_obj_t *pl_origin;
 static nd_pl_request_t pl_confirm_request, pl_removal;
@@ -68,8 +76,28 @@ static int64_t pl_menu_occurrence;
 static int pl_confirm_page;
 static unsigned pl_download_token;
 static unsigned pl_download_menu_token;
+static unsigned pl_menu_token;
+static struct {
+	int page;
+	unsigned serial, token;
+	nd_context_t identity;
+	nd_playlist_t playlist;
+	nd_playlist_capture_t capture;
+} pl_target;
 static void pl_load(int page);
 static void pl_action(int page, nd_pl_request_t *q);
+static bool pl_direct_current(const nd_pl_track_t *track, const nd_library_t *lib) {
+	nd_context_t identity = {.profile_epoch = track->profile, .card_epoch = track->card};
+	return navidrome_playback_current(&identity, false) && track->card == lib->card_epoch &&
+		!strcmp(track->scope, lib->scope);
+}
+static nd_pl_request_t pl_add_request(int64_t id, int64_t revision) {
+	nd_pl_request_t q = {.action = NDPL_ADD, .id = id, .revision = revision,
+		.session = pl_session, .generation = pl_generation, .favorites = pl_source_favorites,
+		.direct = pl_direct_active};
+	if (q.direct) { q.source = pl_direct; q.favorites = false; }
+	return q;
+}
 static bool pl_gesture(void) { return player_sheet_drag_active() || switcher_back_drag_active() || coverflow_drag_active(); }
 static bool pl_active(int page) { return lv_screen_active() == pl_pages[page].screen; }
 static void pl_buttons(pl_page_t *p) {
@@ -77,6 +105,17 @@ static void pl_buttons(pl_page_t *p) {
 	for (int i = 0; i < 3; i++)
 		lv_obj_set_hidden(p->buttons[i], page == 1 ? false : (page == 2 || i > (page == 3 && pl_recovering ? 1 : 0)));
 	if (page == 1) {
+		if (p->play_actions) {
+			lv_obj_set_hidden(p->play_actions, p->selecting);
+			int top = p->content_top + (p->selecting ? 0 : ui_px(68));
+			lv_obj_set_y(p->list, top);
+			lv_obj_set_height(p->list, pl_cfg->screen_height - top);
+			for (int i = 0; i < 2; i++) {
+				bool enabled = !p->loading && !p->selecting && p->playlist.count > 0 && !navidromeplay_preparing();
+				if (enabled) lv_obj_remove_state(p->play_buttons[i], LV_STATE_DISABLED);
+				else lv_obj_add_state(p->play_buttons[i], LV_STATE_DISABLED);
+			}
+		}
 		if (p->download) {
 			nd_library_t lib;
 			navidrome_library_snapshot(&lib);
@@ -231,6 +270,8 @@ static void pl_done(nd_pl_result_t *r, void *value) {
 	if (r->error) {
 		lv_label_set_text(p->status, tr(r->error));
 		gui_notify_popup(r->error);
+		pl_buttons(p);
+		if (r->request.action == NDPL_UPLOAD || r->request.action == NDPL_VERIFY) pl_load(page);
 		free(r);
 		return;
 	}
@@ -255,7 +296,7 @@ static void pl_done(nd_pl_result_t *r, void *value) {
 		return;
 	}
 	if (action == NDPL_CREATE && page == 2) {
-		nd_pl_request_t q = {.action = NDPL_ADD, .id = r->playlist.id, .revision = r->playlist.revision, .session = pl_session, .generation = pl_generation, .favorites = pl_source_favorites};
+		nd_pl_request_t q = pl_add_request(r->playlist.id, r->playlist.revision);
 		pl_action(page, &q);
 		free(r);
 		return;
@@ -268,6 +309,8 @@ static void pl_done(nd_pl_result_t *r, void *value) {
 			lv_snprintf(message, sizeof(message), tr("nd_pl_added_skipped"), r->added, r->skipped);
 		gui_notify_popup(message);
 		pl_fixed = false;
+		pl_direct_active = false;
+		memset(&pl_direct, 0, sizeof(pl_direct));
 		// Navigate only while the initiating picker remains current.
 		if (pl_origin && page == 2)
 			switch_screen_return_to(pl_origin);
@@ -368,6 +411,16 @@ static void pl_action(int page, nd_pl_request_t *q) {
 	pl_page_t *p = &pl_pages[page];
 	nd_library_t current;
 	navidrome_library_snapshot(&current);
+	if (page == 2 && pl_direct_active) {
+		if (!pl_direct_current(&pl_direct, &current)) {
+			pl_direct_active = false;
+			memset(&pl_direct, 0, sizeof(pl_direct));
+			gui_notify_popup("nd_pl_stale");
+			return;
+		}
+		// Snapshot publication alone does not retire the owned playing track.
+		p->epoch = current.epoch;
+	}
 	if (p->epoch && (p->epoch != current.epoch || p->card != current.card_epoch || strcmp(p->scope, current.scope))) {
 		gui_notify_popup("nd_pl_stale");
 		return;
@@ -473,11 +526,10 @@ static void pl_recreate(void *unused) {
 	nd_pl_request_t q = {.action = NDPL_RECREATE, .id = pl_recovery_id, .confirmed = true};
 	pl_action(3, &q);
 }
-static void pl_recovery(void *unused) {
-	(void)unused;
+static void pl_recovery_open(const nd_playlist_t *playlist) {
 	pl_recovering = true;
-	pl_recovery_id = pl_pages[1].playlist.id;
-	snprintf(pl_recovery_name, sizeof(pl_recovery_name), "%s", *pl_pages[1].playlist.intent_name ? pl_pages[1].playlist.intent_name : pl_pages[1].playlist.name);
+	pl_recovery_id = playlist->id;
+	snprintf(pl_recovery_name, sizeof(pl_recovery_name), "%s", *playlist->intent_name ? playlist->intent_name : playlist->name);
 	pl_pages[3].first = 0;
 	lv_obj_scroll_to_y(pl_pages[3].list, 0, LV_ANIM_OFF);
 	pl_skip_load = true;
@@ -485,6 +537,68 @@ static void pl_recovery(void *unused) {
 	pl_skip_load = false;
 	nd_pl_request_t q = {.action = NDPL_CATALOGUE};
 	pl_action(3, &q);
+}
+static void *pl_bind_menu(int page, const nd_playlist_t *playlist, const nd_playlist_entry_t *entry, int ordinal) {
+	memset(&pl_target, 0, sizeof(pl_target));
+	pl_target.page = page; pl_target.serial = pl_pages[page].serial;
+	pl_target.token = ++pl_menu_token; pl_target.playlist = *playlist;
+	pl_target.capture = (nd_playlist_capture_t){.playlist = playlist->id, .revision = playlist->revision,
+		.count = playlist->count, .whole = entry == NULL, .single = entry != NULL, .ordinal = ordinal};
+	if (entry) {
+		pl_target.capture.occurrence = entry->occurrence;
+		snprintf(pl_target.capture.track, sizeof(pl_target.capture.track), "%s", entry->track.id);
+	}
+	if (navidrome_context(&pl_target.identity, false)) {
+		nd_wipe(pl_target.identity.host, sizeof(pl_target.identity.host));
+		nd_wipe(pl_target.identity.user, sizeof(pl_target.identity.user));
+		nd_wipe(pl_target.identity.password, sizeof(pl_target.identity.password));
+	}
+	return (void *)(uintptr_t)pl_target.token;
+}
+static bool pl_menu_valid(void *user, nd_library_t *lib) {
+	int page = pl_target.page;
+	pl_page_t *p = &pl_pages[page];
+	navidrome_library_snapshot(lib);
+	bool ok = (unsigned)(uintptr_t)user == pl_target.token && pl_target.token == pl_menu_token &&
+		pl_active(page) && p->serial == pl_target.serial && !p->loading && !p->selecting && !pl_gesture() &&
+		navidrome_playback_current(&pl_target.identity, false) && p->epoch == lib->epoch &&
+		p->card == lib->card_epoch && !strcmp(p->scope, lib->scope);
+	if (ok && page == 1) ok = p->playlist.id == pl_target.playlist.id && p->playlist.revision == pl_target.playlist.revision;
+	if (!ok) gui_notify_popup("nd_pl_stale");
+	return ok;
+}
+static void pl_queue(void *user) {
+	nd_library_t lib;
+	if (!pl_menu_valid(user, &lib) || !pl_target.playlist.count) return;
+	if (!navidromeplay_playlist_enqueue(&lib, &pl_target.capture, pl_pages[pl_target.page].screen)) gui_notify_popup("nd_working");
+}
+static void pl_upload(void *user) {
+	nd_library_t lib;
+	if (!pl_menu_valid(user, &lib)) return;
+	if (pl_target.playlist.remote[0] || pl_target.playlist.pending) { gui_notify_popup("nd_pl_verify_needed"); return; }
+	nd_pl_request_t q = {.action = NDPL_UPLOAD, .id = pl_target.playlist.id, .revision = pl_target.playlist.revision};
+	pl_action(pl_target.page, &q);
+}
+static void pl_verify(void *user) {
+	nd_library_t lib;
+	if (!pl_menu_valid(user, &lib)) return;
+	nd_pl_request_t q = {.action = NDPL_VERIFY, .id = pl_target.playlist.id, .revision = pl_target.playlist.revision};
+	pl_action(pl_target.page, &q);
+}
+static void pl_reconcile(void *user) {
+	nd_library_t lib;
+	if (pl_menu_valid(user, &lib)) pl_recovery_open(&pl_target.playlist);
+}
+static void pl_play(lv_event_t *event) {
+	pl_page_t *p = &pl_pages[1];
+	if (!pl_active(1) || pl_gesture() || p->selecting || p->loading || !p->playlist.count || navidromeplay_preparing()) return;
+	nd_library_t lib;
+	navidrome_library_snapshot(&lib);
+	if (p->epoch != lib.epoch || p->card != lib.card_epoch || strcmp(p->scope, lib.scope)) { gui_notify_popup("nd_pl_stale"); return; }
+	bool shuffle = lv_event_get_current_target(event) == p->play_buttons[1];
+	if (!navidromeplay_playlist_shortcut(&lib, p->playlist.id, p->playlist.revision, p->playlist.count, shuffle, p->screen))
+		gui_notify_popup("nd_audio_unavailable");
+	pl_buttons(p);
 }
 static void pl_add_kind(void *value) {
 	pl_fixed = true;
@@ -576,20 +690,25 @@ static void pl_button(lv_event_t *event) {
 		return;
 	}
 	pl_menu_playlist = p->playlist;
+	void *menu = pl_bind_menu(1, &p->playlist, NULL, 0);
 	if (slot == 0) {
-		popover_item_t items[] = {{"rename", pl_rename, NULL, false},
-			{"nd_pl_download", pl_download_menu, (void *)(uintptr_t)++pl_download_menu_token, false},
-			{"nd_pl_save_copy", pl_copy, NULL, false}};
-		popover_show(lv_event_get_current_target(event), items, *p->playlist.remote ? 3 : 2);
+		popover_item_t items[6]; int n = 0;
+		items[n++] = (popover_item_t){"rename", pl_rename, NULL, false};
+		if (p->playlist.count) items[n++] = (popover_item_t){"add_to_queue", pl_queue, menu, false};
+		items[n++] = (popover_item_t){"nd_pl_download", pl_download_menu, (void *)(uintptr_t)++pl_download_menu_token, false};
+		if (p->playlist.pending) items[n++] = (popover_item_t){p->playlist.remote[0] ? "nd_pl_verify" : "nd_pl_reconcile", p->playlist.remote[0] ? pl_verify : pl_reconcile, menu, false};
+		else if (!p->playlist.remote[0]) items[n++] = (popover_item_t){"nd_pl_upload", pl_upload, menu, false};
+		if (p->playlist.remote[0]) items[n++] = (popover_item_t){"nd_pl_save_copy", pl_copy, NULL, false};
+		popover_show(lv_event_get_current_target(event), items, n);
 	} else if (slot == 1) {
 		if (p->playlist.pending && !*p->playlist.remote) {
-			popover_item_t items[] = {{"nd_pl_reconcile", pl_recovery, NULL, false}};
+			popover_item_t items[] = {{"nd_pl_reconcile", pl_reconcile, menu, false}};
 			popover_show(lv_event_get_current_target(event), items, 1);
 		} else if (*p->playlist.remote) {
 			popover_item_t items[] = {{"nd_pl_pull", pl_remote_action, (void *)(intptr_t)NDPL_PULL, false}, {"nd_pl_publish", pl_remote_action, (void *)(intptr_t)NDPL_PUBLISH, false}, {"nd_pl_verify", pl_remote_action, (void *)(intptr_t)NDPL_VERIFY, false}};
 			popover_show(lv_event_get_current_target(event), items, p->playlist.pending ? 3 : 2);
 		} else {
-			popover_item_t items[] = {{"nd_pl_upload", pl_remote_action, (void *)(intptr_t)NDPL_UPLOAD, false}};
+			popover_item_t items[] = {{"nd_pl_upload", pl_upload, menu, false}};
 			popover_show(lv_event_get_current_target(event), items, 1);
 		}
 	} else {
@@ -628,7 +747,17 @@ static void pl_row(lv_event_t *event) {
 	if (page == 1) {
 		if (p->selecting)
 			pl_toggle_row(index);
-
+		else {
+			nd_library_t lib;
+			navidrome_library_snapshot(&lib);
+			if (p->card != lib.card_epoch || p->epoch != lib.epoch || strcmp(p->scope, lib.scope)) {
+				gui_notify_popup("nd_pl_stale");
+				return;
+			}
+			if (!navidromeplay_playlist(&lib, p->playlist.id, p->playlist.revision,
+					p->first + index, p->entries[index].occurrence, p->entries[index].track.id, p->screen))
+				gui_notify_popup("nd_audio_unavailable");
+		}
 		return;
 	}
 	if (page == 0) {
@@ -637,7 +766,7 @@ static void pl_row(lv_event_t *event) {
 		return;
 	}
 	if (page == 2) {
-		nd_pl_request_t q = {.action = NDPL_ADD, .id = p->playlists[index].id, .revision = p->playlists[index].revision, .session = pl_session, .generation = pl_generation, .favorites = pl_source_favorites};
+		nd_pl_request_t q = pl_add_request(p->playlists[index].id, p->playlists[index].revision);
 		pl_action(2, &q);
 		return;
 	}
@@ -683,13 +812,23 @@ static void pl_menu(lv_event_t *event) {
 	if (index >= p->count || p->loading)
 		return;
 	if (page == 1) {
+		if (p->selecting) return;
 		pl_menu_occurrence = p->entries[index].occurrence;
-		popover_item_t items[] = {{"medialist_remove_from_playlist", pl_remove, (void *)1, false}};
-		popover_show(lv_event_get_current_target(event), items, 1);
+		void *menu = pl_bind_menu(1, &p->playlist, &p->entries[index], p->first + index);
+		popover_item_t items[] = {{"add_to_queue", pl_queue, menu, false},
+			{"medialist_remove_from_playlist", pl_remove, (void *)1, false}};
+		popover_show(lv_event_get_current_target(event), items, 2);
 	} else if (page == 0) {
 		pl_menu_playlist = p->playlists[index];
-		popover_item_t items[] = {{"rename", pl_rename, NULL, false}, {"nd_pl_delete_local", pl_delete, NULL, false}, {"nd_pl_save_copy", pl_copy, NULL, false}};
-		popover_show(lv_event_get_current_target(event), items, *pl_menu_playlist.remote ? 3 : 2);
+		void *menu = pl_bind_menu(0, &p->playlists[index], NULL, 0);
+		popover_item_t items[6]; int n = 0;
+		items[n++] = (popover_item_t){"rename", pl_rename, NULL, false};
+		if (pl_menu_playlist.count) items[n++] = (popover_item_t){"add_to_queue", pl_queue, menu, false};
+		if (pl_menu_playlist.pending) items[n++] = (popover_item_t){pl_menu_playlist.remote[0] ? "nd_pl_verify" : "nd_pl_reconcile", pl_menu_playlist.remote[0] ? pl_verify : pl_reconcile, menu, false};
+		else if (!pl_menu_playlist.remote[0]) items[n++] = (popover_item_t){"nd_pl_upload", pl_upload, menu, false};
+		items[n++] = (popover_item_t){"nd_pl_delete_local", pl_delete, NULL, false};
+		if (pl_menu_playlist.remote[0]) items[n++] = (popover_item_t){"nd_pl_save_copy", pl_copy, NULL, false};
+		popover_show(lv_event_get_current_target(event), items, n);
 	}
 }
 static void pl_scroll(lv_event_t *event) {
@@ -717,10 +856,16 @@ static void pl_loaded(lv_event_t *event) {
 }
 static void pl_unloaded(lv_event_t *event) {
 	pl_page_t *p = lv_event_get_user_data(event);
+	pl_menu_token++;
+	if (p == &pl_pages[2]) {
+		pl_direct_active = false;
+		memset(&pl_direct, 0, sizeof(pl_direct));
+	}
 	navidromeofflinebadge_release(&p->offline);
 	p->download_token = ++pl_download_token;
 	pl_download_menu_token++;
 	p->download_pending = false;
+	navidromeplay_playlist_leave(p->screen);
 	p->serial++;
 	p->loading = p->reload = false;
 	pl_release_art(p);
@@ -763,9 +908,12 @@ void navidromeplaylists_refresh(void) {
 			switch_screen_return_to(navidrome_screen);
 			return;
 		}
-		if (i == 1) for (int row = 0; row < p->count; row++) {
-			bool marked = navidromeplay_matches(&lib, ND_TRACKS, p->entries[row].track.id);
-			playmark_show(p->playmarks[row], marked);
+		if (i == 1) {
+			pl_buttons(p);
+			for (int row = 0; row < p->count; row++) {
+				bool marked = navidromeplay_matches(&lib, ND_TRACKS, p->entries[row].track.id);
+				playmark_show(p->playmarks[row], marked);
+			}
 		}
 		navidromeofflinebadge_tick(&p->offline);
 		pl_take_art(p);
@@ -821,6 +969,8 @@ void navidromeplaylists_open(void) {
 }
 void navidromeplaylists_pick(int64_t session, int64_t generation, lv_obj_t *origin) { navidromeplaylists_pick_source(session, generation, origin, false); }
 void navidromeplaylists_pick_source(int64_t session, int64_t generation, lv_obj_t *origin, bool favorites) {
+	pl_direct_active = false;
+	memset(&pl_direct, 0, sizeof(pl_direct));
 	pl_source_favorites = favorites;
 	pl_session = session;
 	pl_generation = generation;
@@ -839,6 +989,50 @@ void navidromeplaylists_pick_source(int64_t session, int64_t generation, lv_obj_
 	pl_fixed = false;
 	lv_obj_scroll_to_y(pl_pages[2].list, 0, LV_ANIM_OFF);
 	switch_screen(pl_pages[2].screen);
+}
+bool navidromeplaylists_bind_current(const char *path) {
+	pl_current_bound = false;
+	memset(&pl_current_track, 0, sizeof(pl_current_track));
+	pl_current_ref[0] = 0;
+	pl_current_origin = lv_screen_active();
+	nd_playrow_t row;
+	nd_library_t lib;
+	nd_context_t identity = {0};
+	bool ok = nd_audio_source(path) && navidromeplay_track(path, &row, &lib) &&
+		playlist_current_path(pl_current_ref, sizeof(pl_current_ref)) && navidrome_context(&identity, false);
+	if (ok) {
+		pl_current_track.row = row.row;
+		pl_current_track.profile = identity.profile_epoch;
+		pl_current_track.card = identity.card_epoch;
+		snprintf(pl_current_track.scope, sizeof(pl_current_track.scope), "%s", lib.scope);
+		pl_current_bound = pl_direct_current(&pl_current_track, &lib);
+	}
+	nd_wipe(&identity, sizeof(identity));
+	return pl_current_bound;
+}
+bool navidromeplaylists_add_current(void) {
+	device_state_t state;
+	nd_playrow_t row;
+	nd_library_t lib;
+	char ref[512];
+	device_state_get(&state);
+	if (!pl_current_bound || lv_screen_active() != pl_current_origin || pl_gesture() || !nd_audio_source(state.current_file) ||
+		!navidromeplay_track(state.current_file, &row, &lib) ||
+		!playlist_current_path(ref, sizeof(ref)) || strcmp(ref, pl_current_ref) ||
+		strcmp(row.row.id, pl_current_track.row.id) || !pl_direct_current(&pl_current_track, &lib)) return false;
+	if (!lib.writable) { gui_notify_popup("nd_cache_readonly"); return true; }
+	pl_direct = pl_current_track;
+	pl_current_bound = false;
+	pl_direct_active = true;
+	pl_fixed = false; pl_source_favorites = false; pl_session = pl_generation = 0;
+	pl_origin = player_screen;
+	pl_pages[2].serial++;
+	pl_pages[2].loading = false;
+	lv_obj_scroll_to_y(pl_pages[2].list, 0, LV_ANIM_OFF);
+	player_sheet_close(false);
+	switch_screen(pl_pages[2].screen);
+	switcher_set_player_return(pl_pages[2].screen);
+	return true;
 }
 static void pl_repaint(void) {
 	for (int page = 0; page < 4; page++) {
@@ -889,6 +1083,39 @@ void navidromeplaylists_init(gui_config_t *cfg) {
 		lv_obj_set_height(p->status, ui_px(40));
 		lv_obj_set_hidden(p->status, page == 0 || page == 2);
 		int content_top = settingsrow_content_top(cfg) + (p->offset ? 0 : ui_px(44));
+		p->content_top = content_top;
+		if (page == 1) {
+			p->play_actions = lv_obj_create(p->screen);
+			lv_obj_remove_style_all(p->play_actions);
+			lv_obj_set_pos(p->play_actions, cfg->padding, content_top);
+			lv_obj_set_size(p->play_actions, cfg->screen_width - 2 * cfg->padding, ui_px(56));
+			lv_obj_set_flex_flow(p->play_actions, LV_FLEX_FLOW_ROW);
+			lv_obj_set_flex_align(p->play_actions, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+			lv_obj_set_style_pad_column(p->play_actions, ui_px(20), 0);
+			lv_obj_set_scrollable(p->play_actions, false);
+			lv_obj_set_event_bubble(p->play_actions, true);
+			for (int i = 0; i < 2; i++) {
+				lv_obj_t *button = p->play_buttons[i] = lv_btn_create(p->play_actions);
+				lv_obj_set_size(button, ui_px(56), ui_px(56));
+				lv_obj_set_style_border_width(button, 0, 0);
+				lv_obj_set_style_shadow_width(button, 0, 0);
+				lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
+				lv_obj_set_style_radius(button, LV_RADIUS_CIRCLE, 0);
+				lv_obj_set_style_pad_all(button, 0, 0);
+				lv_obj_set_style_opa(button, LV_OPA_50, LV_STATE_PRESSED);
+				lv_obj_set_style_opa(button, LV_OPA_40, LV_STATE_DISABLED);
+				lv_obj_t *glyph = lv_image_create(button);
+				lv_image_set_src(glyph, i ? &icon_shuffle : &icon_play_small);
+				lv_obj_add_style(glyph, &theme_style_icon, 0);
+				lv_obj_center(glyph);
+				lv_obj_add_event_cb(button, pl_play, LV_EVENT_CLICKED, NULL);
+				switcher_attach_back_gesture(button);
+				player_sheet_attach_drag(button, true);
+			}
+			switcher_attach_back_gesture(p->play_actions);
+			player_sheet_attach_drag(p->play_actions, true);
+			content_top += ui_px(68);
+		}
 		p->list = lv_obj_create(p->screen);
 		lv_obj_remove_style_all(p->list);
 		lv_obj_set_pos(p->list, 0, content_top);

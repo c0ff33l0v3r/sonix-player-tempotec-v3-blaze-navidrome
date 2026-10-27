@@ -250,6 +250,7 @@ int main(int argc, char **argv) {
 			assert(delivered_bytes == st.st_size);
 		connected = false;
 		lib.writable = false;
+		lib.ready = false; // A captured saved playlist needs no synced snapshot.
 		strcpy(ctx.password, "replacement synthetic password");
 		assert(!nd_audio_fetch(&lib, &ctx, &track, true, current, ready, argv[3]) && deliveries == 2 && !leases);
 		assert(!growfile_is_growing(delivered_path));

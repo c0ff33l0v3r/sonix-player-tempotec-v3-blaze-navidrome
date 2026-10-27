@@ -39,6 +39,8 @@ bool nd_pl_entries(nd_playlist_store_t *s, int64_t id, int offset, int64_t sessi
 // One coherent read window of an expected revision; first is a dense list offset.
 bool nd_pl_play_window(nd_playlist_store_t *s, int64_t id, int64_t revision, int first,
 					   nd_playlist_entry_t out[ND_WINDOW], int *count, int *total);
+bool nd_pl_play_entry(nd_playlist_store_t *s, int64_t id, int64_t revision, int ordinal,
+		int64_t occurrence, const char *track, nd_playlist_entry_t *out, int *total);
 bool nd_pl_create(nd_playlist_store_t *s, const char *name, int64_t *id);
 bool nd_pl_edit(nd_playlist_store_t *s, int64_t id, int64_t revision, const char *name, bool remove);
 bool nd_pl_begin(nd_playlist_store_t *s, int64_t id, int64_t revision);

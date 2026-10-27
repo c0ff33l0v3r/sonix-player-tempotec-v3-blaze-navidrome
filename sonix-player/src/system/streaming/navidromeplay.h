@@ -1,6 +1,7 @@
 #ifndef NAVIDROMEPLAY_H
 #define NAVIDROMEPLAY_H
 #include "navidromeaudio.h"
+#include "navidromeplaycatalog.h"
 #include "src/system/library/metadata.h"
 
 // action: 0 shuffle, 1 play in order, 2 enqueue one random track. GUI thread.
@@ -16,6 +17,13 @@ bool navidromeplay_lookup(const char *reference, nd_playrow_t *track, nd_library
 void navidromeplay_init(void); // GUI thread, after LVGL initialization
 void navidromeplay_shutdown(void);
 bool navidromeplay_select(const nd_library_t *library, const nd_query_t *query, const char *id, void *origin);
+// GUI admission: capture the complete saved revision and the exact tapped occurrence.
+bool navidromeplay_playlist(const nd_library_t *library, int64_t playlist, int64_t revision,
+		int ordinal, int64_t occurrence, const char *track, void *origin);
+bool navidromeplay_playlist_shortcut(const nd_library_t *library, int64_t playlist,
+		int64_t revision, int count, bool shuffle, void *origin);
+bool navidromeplay_playlist_enqueue(const nd_library_t *library, const nd_playlist_capture_t *request, void *origin);
+void navidromeplay_playlist_leave(void *origin); // suppress late navigation and queue feedback
 bool navidromeplay_search(const nd_library_t *library, const nd_context_t *identity, const nd_query_t *query, const char *id, void *origin);
 bool navidromeplay_prepare(const char *reference); // true for non-Navidrome references
 void navidromeplay_other(const char *path);

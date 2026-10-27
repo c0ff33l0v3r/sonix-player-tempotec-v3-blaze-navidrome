@@ -18,9 +18,12 @@ python3 - "$check_dir/download-icon.c" <<'PY'
 from pathlib import Path
 import sys
 text = Path('src/gui/shell/icons.c').read_text()
-start = text.index('static const uint8_t icon_download_data[] = {')
-end = text.index('\n};', text.index('const lv_image_dsc_t icon_download = {', start)) + 3
-Path(sys.argv[1]).write_text('#include "src/gui/shell/icons.h"\n' + text[start:end] + '\n')
+parts = ['#include "src/gui/shell/icons.h"\n']
+for name in ['download', 'shuffle', 'play_small']:
+    start = text.index(f'static const uint8_t icon_{name}_data[] = {{')
+    end = text.index('\n};', text.index(f'const lv_image_dsc_t icon_{name} = {{', start)) + 3
+    parts.append(text[start:end] + '\n')
+Path(sys.argv[1]).write_text(''.join(parts))
 PY
 ${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -Wno-unused-function -O1 -g \
     -ffunction-sections -fdata-sections ${NAVIDROME_CHECK_FLAGS:-} \

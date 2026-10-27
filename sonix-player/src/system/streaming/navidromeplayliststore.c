@@ -220,8 +220,8 @@ bool nd_pl_entries(nd_playlist_store_t *s, int64_t id, int offset, int64_t sessi
 	sqlite3_finalize(st);
 	return rc == SQLITE_DONE;
 }
-bool nd_pl_play_window(nd_playlist_store_t *s, int64_t id, int64_t revision, int first,
-					   nd_playlist_entry_t out[ND_WINDOW], int *count, int *total) {
+static bool play_rows(nd_playlist_store_t *s, int64_t id, int64_t revision, int first,
+		nd_playlist_entry_t *out, int limit, int *count, int *total) {
 	*count = *total = 0;
 	if (id <= 0 || revision <= 0 || first < 0 || !nd_pl_sql(s, "BEGIN"))
 		return false;
@@ -240,10 +240,11 @@ bool nd_pl_play_window(nd_playlist_store_t *s, int64_t id, int64_t revision, int
 	}
 	sqlite3_finalize(st);
 	st = NULL;
-	if (ok) ok = nd_pl_prepare(s, &st, "SELECT id,track,title,artist,cover,duration FROM entry WHERE p=? ORDER BY ordinal LIMIT 16 OFFSET ?");
+	if (ok) ok = nd_pl_prepare(s, &st, "SELECT id,track,title,artist,cover,duration FROM entry WHERE p=? ORDER BY ordinal LIMIT ? OFFSET ?");
 	if (ok) {
 		sqlite3_bind_int64(st, 1, id);
-		sqlite3_bind_int(st, 2, first);
+		sqlite3_bind_int(st, 2, limit);
+		sqlite3_bind_int(st, 3, first);
 		int rc;
 		while ((rc = sqlite3_step(st)) == SQLITE_ROW && ok) {
 			nd_playlist_entry_t *e = &out[(*count)++];
@@ -259,12 +260,26 @@ bool nd_pl_play_window(nd_playlist_store_t *s, int64_t id, int64_t revision, int
 			text(st, 4, e->track.cover, sizeof(e->track.cover));
 			e->track.duration = sqlite3_column_int(st, 5);
 		}
-		ok = ok && rc == SQLITE_DONE && *count == (*total - first < ND_WINDOW ? *total - first : ND_WINDOW);
+		ok = ok && rc == SQLITE_DONE && *count == (*total - first < limit ? *total - first : limit);
 	}
 	sqlite3_finalize(st);
 	if (ok) ok = nd_pl_sql(s, "COMMIT");
 	if (!ok) sqlite3_exec(s->db, "ROLLBACK", NULL, NULL, NULL);
 	if (!ok && !s->error) s->error = "nd_pl_storage_error";
+	return ok;
+}
+
+bool nd_pl_play_window(nd_playlist_store_t *s, int64_t id, int64_t revision, int first,
+		nd_playlist_entry_t out[ND_WINDOW], int *count, int *total) {
+	return play_rows(s, id, revision, first, out, ND_WINDOW, count, total);
+}
+bool nd_pl_play_entry(nd_playlist_store_t *s, int64_t id, int64_t revision, int ordinal,
+		int64_t occurrence, const char *track, nd_playlist_entry_t *out, int *total) {
+	int count;
+	bool ok = track && *track && occurrence > 0 &&
+		play_rows(s, id, revision, ordinal, out, 1, &count, total) && count == 1 &&
+		out->occurrence == occurrence && !strcmp(out->track.id, track);
+	if (!ok && !s->error) s->error = "nd_pl_stale";
 	return ok;
 }
 

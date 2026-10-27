@@ -1,4 +1,5 @@
 #include "navidromeplaycatalog.h"
+#include "navidromeplayliststore.h"
 #include "src/system/core/utils.h"
 #include "src/system/library/library.h"
 #include "src/system/net/http.h"
@@ -20,7 +21,8 @@ struct nd_playcatalog {
 	nd_library_t library;
 	nd_playrow_t *rows;
 	int count, start;
-	bool album;
+	bool album, playlist;
+	int64_t occurrences[MEMORY_ROWS];
 	char path[1200];
 	dev_t device;
 	ino_t inode;
@@ -143,9 +145,9 @@ static bool create_file(nd_playcatalog_t *c) {
 	return ok;
 }
 static const char *columns = "id,title,artist,cover,duration,disc,track,album_id,album,artist_id,favorite,known";
-static bool put(sqlite3 *db, int pos, const nd_playrow_t *row) {
+static bool put_occurrence(sqlite3 *db, int pos, const nd_playrow_t *row, int64_t occurrence) {
 	sqlite3_stmt *st = NULL;
-	bool ok = sqlite3_prepare_v2(db, "INSERT INTO track VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", -1, &st, NULL) == SQLITE_OK;
+	bool ok = sqlite3_prepare_v2(db, "INSERT INTO track VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", -1, &st, NULL) == SQLITE_OK;
 	if (ok) {
 		sqlite3_bind_int(st, 1, pos);
 		const char *values[] = {row->row.id, row->row.title, row->row.artist, row->row.cover};
@@ -162,24 +164,31 @@ static bool put(sqlite3 *db, int pos, const nd_playrow_t *row) {
 		char key[LIBRARY_SORT_KEY_MAX];
 		library_sort_key_ex(row->row.title, key, sizeof(key), true);
 		sqlite3_bind_text(st, 14, key, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_int64(st, 15, occurrence);
 		ok = sqlite3_step(st) == SQLITE_DONE;
 	}
 	sqlite3_finalize(st);
 	return ok;
 }
-
+static bool put(sqlite3 *db, int pos, const nd_playrow_t *row) { return put_occurrence(db, pos, row, 0); }
 static bool open_write(nd_playcatalog_t *c, sqlite3 **db) {
 	bool fresh = !*c->path;
 	if (fresh && !create_file(c))
 		return false;
 	if (!file_current(c) || sqlite3_open_v2(c->path, db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK)
 		return false;
-	char sql[600];
-	snprintf(sql, sizeof(sql), "PRAGMA page_size=4096; PRAGMA max_page_count=%d; PRAGMA cache_size=-64; PRAGMA journal_mode=MEMORY;%s BEGIN;", ND_PLAYCATALOG_PAGES, fresh ? "CREATE TABLE track(pos INTEGER PRIMARY KEY,id TEXT UNIQUE,title TEXT,artist TEXT,cover TEXT,duration INT,disc INT,track INT,album_id TEXT,album TEXT,artist_id TEXT,favorite INT,known INT,key TEXT);CREATE INDEX ordered ON track(disc,track,key,id);" : "");
+	char sql[800];
+	// Playlist staging is private and discarded on any failure: no rollback
+	// journal is needed. Fixed-window appends keep its pager working set bounded.
+	snprintf(sql, sizeof(sql), "PRAGMA page_size=4096; PRAGMA max_page_count=%d; PRAGMA cache_size=-64; PRAGMA journal_mode=%s;%s%s%s BEGIN;",
+		ND_PLAYCATALOG_PAGES, c->playlist ? "OFF" : "MEMORY",
+		fresh ? "CREATE TABLE track(pos INTEGER PRIMARY KEY,id TEXT " : "",
+		fresh ? (c->playlist ? "" : "UNIQUE") : "",
+		fresh ? ",title TEXT,artist TEXT,cover TEXT,duration INT,disc INT,track INT,album_id TEXT,album TEXT,artist_id TEXT,favorite INT,known INT,key TEXT,occurrence INTEGER);CREATE INDEX ordered ON track(disc,track,key,id);" : "");
 	if (sqlite3_exec(*db, sql, NULL, NULL, NULL) != SQLITE_OK)
 		return false;
 	for (int i = 0; fresh && i < c->count; i++)
-		if (!put(*db, i, &c->rows[i]))
+		if (!put_occurrence(*db, i, &c->rows[i], c->occurrences[i]))
 			return false;
 	return true;
 }
@@ -285,7 +294,104 @@ bool nd_playcatalog_read(const nd_playcatalog_t *c, int index, nd_playrow_t *row
 }
 int nd_playcatalog_count(const nd_playcatalog_t *c) { return c->count; }
 int nd_playcatalog_start(const nd_playcatalog_t *c) { return c->start; }
-
+nd_playcatalog_t *nd_playcatalog_playlist(const nd_library_t *lib, const nd_context_t *identity,
+		const nd_playlist_capture_t *request, bool (*current)(void *), void *user, const char **error) {
+	*error = NULL;
+	if (request->playlist <= 0 || request->revision <= 0 || request->count < 0 ||
+		(request->whole && request->single) || (!request->whole &&
+		(request->occurrence <= 0 || request->ordinal < 0 || !*request->track))) {
+		*error = "nd_pl_stale";
+		return NULL;
+	}
+	nd_playcatalog_t *c = calloc(1, sizeof(*c));
+	if (!c) { *error = "nd_json_memory"; return NULL; }
+	c->identity = *identity;
+	nd_wipe(c->identity.password, sizeof(c->identity.password));
+	c->library = *lib;
+	c->playlist = true;
+	c->start = request->whole ? 0 : -1;
+	c->rows = calloc(request->single ? 1 : MEMORY_ROWS, sizeof(*c->rows));
+	if (!c->rows) *error = "nd_json_memory";
+	char path[1200];
+	if (!*error && !nd_pl_path(lib, path)) *error = "nd_pl_storage_error";
+	if (!*error && request->single) {
+		if (!current(user) || !navidrome_playback_begin(identity)) *error = "nd_audio_cancelled";
+		else {
+			nd_playlist_store_t store = {0};
+			nd_playlist_entry_t entry;
+			int total = 0;
+			bool ok = nd_pl_open(&store, path, lib->scope, false) &&
+				nd_pl_play_entry(&store, request->playlist, request->revision, request->ordinal,
+					request->occurrence, request->track, &entry, &total);
+			if (ok && request->count && total != request->count) { ok = false; store.error = "nd_pl_stale"; }
+			if (ok) {
+				c->rows[0].row = entry.track;
+				c->occurrences[0] = entry.occurrence;
+				c->count = 1; c->start = 0;
+			} else *error = store.error ? store.error : "nd_pl_storage_error";
+			nd_pl_close(&store);
+			navidrome_cache_end();
+		}
+		if (!*error && !current(user)) *error = "nd_audio_cancelled";
+		if (*error) { nd_playcatalog_free(c); return NULL; }
+		return c;
+	}
+	int expected = -1;
+	while (!*error) {
+		if (!current(user) || !navidrome_playback_begin(identity)) {
+			*error = "nd_audio_cancelled";
+			break;
+		}
+		nd_playlist_store_t store = {0};
+		nd_playlist_entry_t entries[ND_WINDOW];
+		int count = 0, total = 0;
+		bool ok = nd_pl_open(&store, path, lib->scope, false) &&
+			nd_pl_play_window(&store, request->playlist, request->revision, c->count, entries, &count, &total);
+		if (!ok) *error = store.error ? store.error : "nd_pl_storage_error";
+		nd_pl_close(&store);
+		if (ok && (total == 0 || (!request->whole && request->ordinal >= total) ||
+			(request->count && total != request->count) || (expected >= 0 && total != expected))) {
+			*error = "nd_pl_stale";
+			ok = false;
+		}
+		expected = total;
+		bool disk = *c->path || count > MEMORY_ROWS - c->count;
+		sqlite3 *db = NULL;
+		if (ok && disk && !lib->writable) { *error = "nd_cache_readonly"; ok = false; }
+		if (ok && disk) ok = open_write(c, &db);
+		for (int i = 0; ok && i < count; i++) {
+			if (!current(user)) { *error = "nd_audio_cancelled"; ok = false; break; }
+			nd_playlist_entry_t *entry = &entries[i];
+			if (!request->whole && c->count == request->ordinal) {
+				ok = entry->occurrence == request->occurrence && !strcmp(entry->track.id, request->track);
+				if (!ok) { *error = "nd_pl_stale"; break; }
+				c->start = c->count;
+			}
+			nd_playrow_t row = {.row = entry->track};
+			if (disk)
+				ok = put_occurrence(db, c->count, &row, entry->occurrence);
+			else {
+				c->rows[c->count] = row;
+				c->occurrences[c->count] = entry->occurrence;
+			}
+			if (ok) c->count++;
+		}
+		if (db) {
+			if (!ok && !*error && sqlite3_errcode(db) == SQLITE_FULL) *error = "nd_pl_play_limit";
+			ok = sqlite3_exec(db, ok ? "COMMIT" : "ROLLBACK", NULL, NULL, NULL) == SQLITE_OK && ok;
+			if (!ok && !*error && sqlite3_errcode(db) == SQLITE_FULL) *error = "nd_pl_play_limit";
+			sqlite3_close(db);
+		}
+		if (ok && disk) { free(c->rows); c->rows = NULL; }
+		navidrome_cache_end();
+		if (!ok && !*error) *error = "nd_pl_storage_error";
+		// An extra zero-row window rechecks the revision after the final copy.
+		if (!count || *error) break;
+	}
+	if (!*error && (!current(user) || c->start < 0)) *error = "nd_audio_cancelled";
+	if (*error) { nd_playcatalog_free(c); return NULL; }
+	return c;
+}
 nd_playcatalog_t *nd_playcatalog_capture(const nd_library_t *lib, const nd_context_t *identity, const nd_query_t *q, const char *selected, bool (*current)(void *), void *user, const char **error) {
 	*error = NULL;
 	nd_playcatalog_t *c = calloc(1, sizeof(*c));
