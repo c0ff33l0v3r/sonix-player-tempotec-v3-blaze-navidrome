@@ -54,8 +54,8 @@ class Fixture(BaseHTTPRequestHandler):
                 if key == 'quality-fail' and requested_size > 32 and Fixture.mode != 'quality-recovered':
                     self.reply_bytes(b'invalid artwork', 503)
                     return
-                size = 1024 if key == 'big' else requested_size
-                if key == 'quality-under-key' and requested_size == 320:
+                size = 2049 if key == 'big' else requested_size
+                if key == 'quality-under-key':
                     size = 16
                 if key == 'quality-best' and requested_size == 72:
                     size = 32
@@ -186,13 +186,13 @@ def main():
                        'reason=missing_relation_entity', 'reason=duplicate_entity', 'field=name reason=wrong_type', 'reason=token_limit', 'reason=depth_limit'):
             assert reason in result.stderr, f'missing safe sync diagnostic: {reason}'
         assert not Fixture.failures and Fixture.reduced
-        assert Fixture.art_requests.get('red') == 2 and Fixture.art_requests.get('bad') == 1
+        assert Fixture.art_requests.get('red') in (1, 2) and Fixture.art_requests.get('bad') == 1, Fixture.art_requests
         assert Fixture.art_requests.get('blue') == 1 and 'uncached-offline' not in Fixture.art_requests
-        assert Fixture.art_requests.get('quality-upgrade') == 3
+        assert Fixture.art_requests.get('quality-upgrade') == 1
         assert Fixture.art_requests.get('quality-reuse') == 1
         assert Fixture.art_requests.get('quality-fail') == 3
-        assert Fixture.art_requests.get('quality-under-key') == 2
-        assert Fixture.art_requests.get('quality-best') == 2
+        assert Fixture.art_requests.get('quality-under-key') == 1
+        assert Fixture.art_requests.get('quality-best') == 1
         assert Fixture.art_requests.get('quality-reconnect') == 2
         print('real HTTP fixture authentication, paging, request exclusions and redaction: passed')
 

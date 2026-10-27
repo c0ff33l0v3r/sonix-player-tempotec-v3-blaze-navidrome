@@ -98,3 +98,6 @@ __attribute__((weak)) bool nd_offline_busy(unsigned token) { (void)token; return
 __attribute__((weak)) void nd_offline_poll(void) {}
 __attribute__((weak)) unsigned nd_dl_availability_revision(void) { return 1; }
 __attribute__((weak)) bool navidromeplay_preparing(void) { return false; }
+
+// Fixtures without the production transfer worker have no audio demand.
+__attribute__((weak)) unsigned streamturn_observe(bool *idle) { *idle = true; return 0; }

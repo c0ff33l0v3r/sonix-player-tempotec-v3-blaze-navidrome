@@ -3503,8 +3503,8 @@ static void refresh_cover(const char *filepath) {
 		cover_id_state = COVER_ID_IDLE;
 		cover_shown_id = cover_incoming_id = 0;
 		snprintf(cover_shown_path, sizeof(cover_shown_path), "%s", filepath);
-		if (same)
-			return; // Settled pixels or this same in-flight request already belong here.
+		if (same && (current_cover.pixels || cover_request_outstanding || !track.row.cover[0]))
+			return; // Keep valid pixels/pending work, but reconsider a settled miss.
 		navidromeart_release(ND_ART_PLAYER_SLOT);
 		navidrome_cover_key.bound = true;
 		navidrome_cover_key.epoch = library.epoch;

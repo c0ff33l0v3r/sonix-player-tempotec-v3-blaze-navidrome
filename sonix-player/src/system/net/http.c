@@ -1386,7 +1386,7 @@ struct http_session {
 	const char *error;
 	bool chunked, closing, complete, chunk_crlf;
 	bool binary;
-	bool no_redirect;
+	bool no_redirect, artwork;
 	size_t wire_limit, decoded_limit, declared;
 	int deadline_ms;
 	char content_type[64];
@@ -1434,14 +1434,14 @@ static bool finite_wait(void *arg, bool write) {
 	return false;
 }
 // Resolver jobs own only a hostname and result, never credentials or request URLs.
-// At most two unresolved jobs may exist, even when libc name resolution stalls.
+// Two general jobs plus independent single reporting/artwork jobs bound stalled DNS.
 static pthread_mutex_t resolve_lock = PTHREAD_MUTEX_INITIALIZER;
 static unsigned resolve_jobs;
-static unsigned report_resolve_jobs;
+static unsigned report_resolve_jobs, artwork_resolve_jobs;
 typedef struct {
 	pthread_mutex_t lock;
 	bool done, abandoned;
-	bool report;
+	bool report, artwork;
 	char host[256], port[16];
 	struct addrinfo *result;
 } finite_resolve_t;
@@ -1457,7 +1457,8 @@ static void *finite_resolver(void *arg) {
 	dns_follow_resolv_conf();
 	getaddrinfo(r->host, r->port, &hints, &r->result);
 	pthread_mutex_lock(&resolve_lock);
-	if (r->report) report_resolve_jobs--;
+	if (r->artwork) artwork_resolve_jobs--;
+	else if (r->report) report_resolve_jobs--;
 	else resolve_jobs--;
 	pthread_mutex_unlock(&resolve_lock);
 	pthread_mutex_lock(&r->lock);
@@ -1481,11 +1482,12 @@ static struct addrinfo *finite_resolve(http_session_t *s, const url_t *u) {
 	}
 	snprintf(r->host, sizeof(r->host), "%s", u->host);
 	snprintf(r->port, sizeof(r->port), "%d", u->port);
-	r->report = s->no_redirect;
+	r->artwork = s->artwork;
+	r->report = s->no_redirect && !s->artwork;
 	pthread_mutex_lock(&resolve_lock);
-	// A stalled reporting DNS job must never consume either audio/sync slot.
-	unsigned *jobs = r->report ? &report_resolve_jobs : &resolve_jobs;
-	bool available = *jobs < (r->report ? 1u : 2u);
+	// Stalled reporting/artwork jobs never consume each other or audio/sync slots.
+	unsigned *jobs = r->artwork ? &artwork_resolve_jobs : r->report ? &report_resolve_jobs : &resolve_jobs;
+	bool available = *jobs < (r->report || r->artwork ? 1u : 2u);
 	if (available) (*jobs)++;
 	pthread_mutex_unlock(&resolve_lock);
 	pthread_t thread;
@@ -1741,6 +1743,13 @@ bool http_session_binary(http_session_t *s, size_t max_bytes, int seconds) {
 	s->binary = true;
 	s->wire_limit = s->decoded_limit = max_bytes;
 	s->deadline_ms = seconds * 1000;
+	return true;
+}
+bool http_session_artwork(http_session_t *s, size_t max_bytes) {
+	if (!http_session_binary(s, max_bytes, 8))
+		return false;
+	s->artwork = true;
+	s->no_redirect = true;
 	return true;
 }
 bool http_session_report(http_session_t *s, size_t max_bytes) {

@@ -4,6 +4,7 @@
 #include "src/system/streaming/navidrome.h"
 #include "src/system/streaming/navidromelibrary.h"
 #include <assert.h>
+#include "src/system/core/md5.h"
 #include <dirent.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -157,6 +158,18 @@ static cover_image_t art_wait(int slot, bool want) {
 	return image;
 }
 
+static void artwork_seed(nd_library_t lib, const char *id, int pixels) {
+	nd_context_t context; assert(navidrome_context(&context, true));
+	char *body = NULL; size_t length = 0;
+	assert(!nd_api_artwork(context.host, context.user, context.password, id, pixels, &body, &length));
+	char text[ND_ID_MAX + 100], key[33], dir[1100], path[1200];
+	snprintf(text, sizeof(text), "%s:%zu:%s:%d:v1", lib.scope, strlen(id), id, pixels);
+	md5_hex(text, strlen(text), key);
+	snprintf(dir, sizeof(dir), "%s", lib.path); char *slash = strrchr(dir, '/'); assert(slash); strcpy(slash, "/art"); mkdir(dir, 0700);
+	snprintf(path, sizeof(path), "%s/%s.img", dir, key);
+	FILE *f = fopen(path, "wb"); assert(f && fwrite(body, 1, length, f) == length); fclose(f); free(body); nd_wipe(&context, sizeof(context));
+}
+
 static void artwork_checks(nd_library_t lib) {
 	for (int i = 0; i < 2; i++)
 		navidromeart_request(i, &lib, "red", 32);
@@ -178,35 +191,35 @@ static void artwork_checks(nd_library_t lib) {
 	// consumer. This fixture decoder reports native dimensions, before upscale.
 	navidromeart_request(0, &lib, "quality-upgrade", 32);
 	image = art_wait(0, true);
-	assert(image.dsc.header.w == 32);
+	assert(image.dsc.header.w == 512);
 	cover_free(&image);
 	for (int i = 0; i < 2; i++) {
 		navidromeart_request(ND_ART_ALBUM_SLOT, &lib, "quality-upgrade", 200);
 		image = art_wait(ND_ART_ALBUM_SLOT, true);
-		assert(image.dsc.header.w == 200);
+		assert(image.dsc.header.w == 512);
 		cover_free(&image);
 	}
 	// The same rule applies to ordinary browser/Search/playlist row consumers.
 	navidromeart_request(ND_ART_SEARCH_SLOT, &lib, "quality-upgrade", 72);
 	image = art_wait(ND_ART_SEARCH_SLOT, true);
-	assert(image.dsc.header.w == 72);
+	assert(image.dsc.header.w == 512);
 	cover_free(&image);
 	navidromeart_request_player(&lib, "quality-reuse", 320, 0, 0);
 	image = art_wait(ND_ART_PLAYER_SLOT, true);
 	cover_free(&image);
 	navidromeart_request(ND_ART_ALBUM_SLOT, &lib, "quality-reuse", 200);
 	image = art_wait(ND_ART_ALBUM_SLOT, true);
-	assert(image.dsc.header.w == 320);
+	assert(image.dsc.header.w == 512);
 	cover_free(&image);
 	// Downloads own their own profile-scoped row slots; queue art remains live
 	// while the manager consumes a separately delivered cached cover.
 	navidromeart_request(ND_ART_QUEUE_SLOT, &lib, "quality-upgrade", 72);
 	navidromeart_request(ND_ART_DOWNLOAD_SLOT, &lib, "quality-upgrade", 72);
 	image = art_wait(ND_ART_DOWNLOAD_SLOT, true);
-	assert(image.dsc.header.w == 72);
+	assert(image.dsc.header.w == 512);
 	cover_free(&image);
 	image = art_wait(ND_ART_QUEUE_SLOT, true);
-	assert(image.dsc.header.w == 72);
+	assert(image.dsc.header.w == 512);
 	cover_free(&image);
 	navidromeart_release(ND_ART_DOWNLOAD_SLOT);
 	// Cache filenames are requested sizes, not proof of actual source detail.
@@ -216,8 +229,9 @@ static void artwork_checks(nd_library_t lib) {
 	cover_free(&image);
 	navidromeart_request(ND_ART_ALBUM_SLOT, &lib, "quality-under-key", 200);
 	image = art_wait(ND_ART_ALBUM_SLOT, true);
-	assert(image.dsc.header.w == 200);
+	assert(image.dsc.header.w == 16);
 	cover_free(&image);
+	artwork_seed(lib, "quality-fail", 32);
 	navidromeart_request(0, &lib, "quality-fail", 32);
 	image = art_wait(0, true);
 	cover_free(&image);
@@ -229,21 +243,24 @@ static void artwork_checks(nd_library_t lib) {
 	}
 	navidromeart_request(0, &lib, "quality-best", 72);
 	image = art_wait(0, true);
-	assert(image.dsc.header.w == 32);
+	assert(image.dsc.header.w == 512);
 	cover_free(&image);
 	navidromeart_request(0, &lib, "quality-best", 64);
 	image = art_wait(0, true);
-	assert(image.dsc.header.w == 64);
+	assert(image.dsc.header.w == 512);
 	cover_free(&image);
 	nd_library_t readonly = lib;
 	readonly.writable = false;
 	navidromeart_request(ND_ART_ALBUM_SLOT, &readonly, "quality-best", 200);
 	image = art_wait(ND_ART_ALBUM_SLOT, true);
-	assert(image.dsc.header.w == 64);
+	assert(image.dsc.header.w == 512);
 	cover_free(&image);
 	puts("artwork quality: online header/row upgrades, exact reuse, adequate player-cache reuse, actual source dimensions, failed-upgrade cooldown and best read-only fallback: passed");
 	// Opening offline must not invent a download failure that blocks the first
 	// real online upgrade. Reconnect must also retire an old network failure.
+	artwork_seed(lib, "quality-reconnect", 32);
+	navidrome_test_online(0);
+	navidrome_poll_network();
 	navidromeart_request(0, &lib, "quality-reconnect", 32);
 	image = art_wait(0, true);
 	cover_free(&image);
@@ -261,12 +278,12 @@ static void artwork_checks(nd_library_t lib) {
 	lib = library();
 	navidromeart_request(ND_ART_ALBUM_SLOT, &lib, "quality-reconnect", 200);
 	image = art_wait(ND_ART_ALBUM_SLOT, true);
-	assert(image.dsc.header.w == 200);
+	assert(image.dsc.header.w == 512);
 	cover_free(&image);
 	mode("quality-recovered");
 	navidromeart_request(ND_ART_ALBUM_SLOT, &lib, "quality-fail", 200);
 	image = art_wait(ND_ART_ALBUM_SLOT, true);
-	assert(image.dsc.header.w == 200);
+	assert(image.dsc.header.w == 512);
 	cover_free(&image);
 	mode("normal");
 	puts("offline artwork creates no cooldown; explicit Reconnect immediately upgrades cached thumbnails and retires prior network-failure cooldown: passed");

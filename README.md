@@ -305,45 +305,51 @@ at end preference. Header playback shortcuts stay hidden during playlist picking
 track selection and Search; those views keep their own existing track actions.
 Older snapshots still open without Sync, omitting optional details they lack.
 
-**Album artwork cache** stores downloaded JPEG/PNG image bytes on the selected
-card in `.local/navidrome/.cache/art/<hash>.img`. It is keyed by profile scope,
-server cover-art ID, requested pixel size and cache-format version. It is **not
-one cache file per song**: tracks/albums sharing a cover ID share the same entry
-at a given size. Different requested sizes can produce separate files for that
-cover; a new file is written only when artwork is actually downloaded. Sync does
-not download artwork in bulk. Visible rows and album/player views request it
-on demand.
+**Album artwork cache** stores one shared encoded JPEG/PNG source per profile,
+server cover-art ID and cache-policy version on the selected card in
+`.local/navidrome/.cache/art/<hash>.img`. The current format wraps the server
+bytes in a small validated header; display size is not part of the source key.
+Tracks sharing a cover ID reuse the source across lists, album headers, Queue,
+Downloads and Now Playing. Artwork is fetched on visible demand, never in bulk
+during Library Sync.
 
-| View | Requested artwork size | On the 320 px Blaze panel |
+The baseline is **512 pixels on the shorter side**, preserving aspect ratio.
+A square source is normally 512x512; portrait/landscape sources can be 512x768
+or 768x512. Acquisition requests size 512 first, inspects returned dimensions
+and permits one aspect-aware follow-up capped at 2048. Smaller originals and
+extreme-aspect images settle on the best bounded response without repeated
+upgrade loops. This cannot restore detail absent from the server image.
+
+| View | Locally rendered artwork | On the 320 px Blaze panel |
 | --- | --- | --- |
-| Browse, Search, playlist and download rows | `ui_px(72)` square | 48×48 px |
-| Alternative album header | `ui_px(300)`, clamped to available width | 200×200 px |
-| Now Playing | Current cover-box width, capped at 512 px; Studio uses its own cover width | Normally 320×320 px in the standard player |
+| Browse, Search, playlist and download rows | `ui_px(72)` square | 48x48 px |
+| Alternative album header | `ui_px(300)`, clamped to available width | 200x200 px |
+| Now Playing | Current cover-box width, capped at 512 px; Studio uses its own cover width | Normally 320x320 px |
 
-`ui_px()` scales reference sizes from the 480 px layout; these are request/display
-bounds, not a guarantee that the server's original has that much detail. The
-loader validates and decodes the server image on a worker, cropping/scaling it
-to the requested square. Decoded images and the player's blurred backdrop live
-in bounded RAM slots; there is no separate persistent backdrop or decoded cache
-file for every track. Local Music's embedded/folder artwork uses its separate
-thumbnail/player cache rather than this Navidrome directory.
+Blaze is 320x480, HiBy R3 Pro II 480x720 and R1 480x800; their largest normal
+player cover is 480x480. The worker decodes the shared source and derives each
+view's existing centered square crop at its display size. Decoded pixels and
+player backdrops live in bounded independent RAM slots; no new persistent
+per-view derivatives or full-resolution pixel caches are created. Unchanged
+bindings retain pixels across redraws, scrolling and track transitions. Local
+Music keeps its separate embedded/folder-art cache.
 
-An exact-size downloaded response is reused first. Headers can also reuse cached
-encodings requested at 480, 320, 300, 240, 200, 72, 64, 48, 43 or 32 px; list rows
-check the thumbnail sizes in that set. Actual image dimensions determine whether
-another size has enough detail. When only smaller thumbnails exist, an eligible
-connected view downloads the requested size. Offline/read-only views, or failed
-upgrades, retain the best available smaller copy. Reusing another size does not
-write a new cache file. Now Playing keeps its independent exact-size policy.
+Artwork retains a **32 MiB disk budget**, including old and current formats.
+Each new encoded payload is limited to **2 MiB**, source edges to **2048 pixels**,
+and source pixel count to **4,194,304**. Existing decode-memory budgets remain.
+Failed/interrupted upgrades preserve usable art; invalid/missing art uses the
+existing placeholder. Writes publish atomically after validation/decoding.
+Network failures have a source-scoped 30-second cooldown within that connection;
+offline reads do not extend it. Explicit Reconnect permits eligible retry and
+refreshes an open album header while retaining its prior image.
 
-Artwork has a 32 MiB disk budget with oldest-accessed entries evicted as needed.
-Each encoded response is limited to 256 KiB and source dimensions to 512×512;
-invalid/missing images use placeholders. Writes publish through a temporary file
-after validation. Real download failures have a 30-second cooldown within that
-connection; offline reads and repeated opens do not extend it. Explicit Reconnect
-allows a new attempt and refreshes an open album header while retaining the old
-image until its replacement is ready. A cached thumbnail enlarged offline can
-look soft; reconnecting can supply detail that resampling cannot recreate.
+Legacy size-specific files remain readable through finite known-size probes plus
+the caller's old exact size. Offline/read-only use needs no migration or write.
+Online writable demand upgrades lazily; sufficiently detailed legacy art needs
+no HTTP. Settled-source publication can remove matching old variants. Naturally
+small or capped responses do not repeatedly upgrade on reconnect. A single
+bounded worker-owned encoded source also coalesces adjacent consumers when disk
+publication fails. Clear artwork/cache includes both formats.
 Placeholders stay at native size or downscale. Cache keys and diagnostics exclude
 passwords, authentication tokens and request URLs.
 

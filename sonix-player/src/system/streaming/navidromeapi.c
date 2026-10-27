@@ -209,6 +209,54 @@ const char *nd_api_artwork(const char *host, const char *user, const char *passw
 	return NULL;
 }
 
+const char *nd_api_artwork_source(const char *host, const char *user, const char *password, const char *id, int pixels, bool (*current)(void *), void *arg, char **body, size_t *size) {
+	*body = NULL;
+	*size = 0;
+	if (!id || !*id || strlen(id) >= ND_ID_MAX || pixels < 1 || pixels > 2048)
+		return "nd_response_error";
+	http_session_t *session = http_session_new(current, arg);
+	if (!session)
+		return "nd_json_memory";
+	http_session_artwork(session, 2u * 1024u * 1024u);
+	char encoded[ND_ID_MAX * 3], query[ND_ID_MAX * 3 + 64], url[2500];
+	http_url_encode(id, encoded, sizeof(encoded));
+	snprintf(query, sizeof(query), "id=%s&size=%d", encoded, pixels);
+	const char *error = request_url(host, user, password, "getCoverArt", query, url, sizeof(url));
+	if (!error && (!http_session_get(session, url, false, false) || http_session_status(session) != 200))
+		error = "nd_response_error";
+	nd_wipe(url, sizeof(url));
+	http_clear_request_metadata();
+	*body = !error ? malloc(2u * 1024u * 1024u) : NULL;
+	if (!error && !*body)
+		error = "nd_json_memory";
+	while (!error) {
+		char chunk[8192];
+		int n = http_session_read(session, chunk, sizeof(chunk));
+		if (n < 0) {
+			error = "nd_response_error";
+			break;
+		}
+		if (!n)
+			break;
+		if ((size_t)n > 2u * 1024u * 1024u - *size) {
+			error = "nd_response_error";
+			break;
+		}
+		memcpy(*body + *size, chunk, n);
+		*size += n;
+	}
+	http_session_free(session);
+	if (error || !*size) {
+		if (*body)
+			nd_wipe(*body, *size);
+		free(*body);
+		*body = NULL;
+		*size = 0;
+		return error ? error : "nd_response_error";
+	}
+	return NULL;
+}
+
 const char *nd_api_page(http_session_t *session, const char *host, const char *user, const char *password, nd_kind_t kind, int offset, int requested, bool gzip, bool reuse, nd_batch_t *batch) {
 	char query[256], url[2500];
 	snprintf(query, sizeof(query), "query=&songCount=%d&songOffset=%d&albumCount=%d&albumOffset=%d&artistCount=%d&artistOffset=%d", kind == ND_TRACKS ? requested : 0, offset, kind == ND_ALBUMS ? requested : 0, offset, kind == ND_ARTISTS ? requested : 0, offset);

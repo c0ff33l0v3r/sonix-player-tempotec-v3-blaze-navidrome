@@ -16,6 +16,8 @@ typedef struct {
 // query values must already be URL encoded. Success transfers ownership to out.
 const char *nd_api_json(const char *host, const char *user, const char *password, const char *method, const char *query, size_t limit, nd_document_t *out);
 const char *nd_api_artwork(const char *host, const char *user, const char *password, const char *id, int pixels, char **body, size_t *size);
+// Shared artwork source: finite 2 MiB, cancellable, no redirects.
+const char *nd_api_artwork_source(const char *host, const char *user, const char *password, const char *id, int pixels, bool (*current)(void *), void *arg, char **body, size_t *size);
 // Playlist-only larger bounded response and optional form POST; legacy callers retain limits.
 const char *nd_api_playlist(const char *host, const char *user, const char *password, const char *method, const char *query, const char *form, nd_document_t *out);
 void nd_api_free(nd_document_t *doc);

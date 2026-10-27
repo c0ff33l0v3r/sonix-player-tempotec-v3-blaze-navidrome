@@ -1,14 +1,18 @@
 // Production player artwork state and rendered pixels; no audio/network device.
 #include "src/gui/nowplaying/player.c"
+#include "src/gui/streaming/navidromealbum.h"
+#include "src/gui/streaming/navidromethumb.h"
 #include <assert.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <unistd.h>
 static nd_playrow_t fixture_track;
 static nd_library_t fixture_library;
-static bool resolved = true, preparing = true, delivered;
+static bool resolved = true, preparing = true, delivered, missing;
 static unsigned requests;
 static int color;
+static const char *detailed_file;
+static int detailed_size;
 int32_t ui_panel_width = 320;
 lv_style_t theme_style_icon, theme_style_text, theme_style_text_dim;
 const theme_palette_t *theme(void) {
@@ -39,12 +43,56 @@ void navidromeart_release(int slot) {
 }
 void navidromeart_request_player(const nd_library_t *lib, const char *id, int size, int w, int h) {
 	(void)lib;
-	(void)size;
+	detailed_size = size;
 	(void)w;
 	(void)h;
 	requests++;
 	color = *id == 'b' ? 1 : *id == 'c' ? 2 : 0;
 	delivered = false;
+}
+void navidromeart_request(int slot, const nd_library_t *library, const char *id, int size) {
+	(void)slot;
+	(void)library;
+	(void)id;
+	detailed_size = size;
+	requests++;
+}
+bool navidromeart_take(int slot, cover_image_t *out, bool *finished) {
+	(void)slot;
+	*finished = true;
+	return detailed_file && cover_load_image_file(detailed_file, detailed_size, detailed_size, COVER_FIT_COVER, out);
+}
+bool navidrome_context(nd_context_t *out, bool network) {
+	(void)network;
+	memset(out, 0, sizeof(*out));
+	return false;
+}
+void nd_wipe(void *data, size_t length) { memset(data, 0, length); }
+void settingsrow_title_fit_width(lv_obj_t *title, int width) {
+	(void)title;
+	(void)width;
+}
+void back_btn_tint_on_screen(lv_obj_t *screen, bool on, lv_color_t color) {
+	(void)screen;
+	(void)on;
+	(void)color;
+}
+void topbar_tint_on_screen(lv_obj_t *screen, bool on, lv_color_t bg, lv_color_t ink) {
+	(void)screen;
+	(void)on;
+	(void)bg;
+	(void)ink;
+}
+static void detailed_rendered(lv_obj_t *object, const cover_image_t *cover) {
+	lv_draw_buf_t *frame = lv_snapshot_take(object, LV_COLOR_FORMAT_ARGB8888);
+	assert(frame && frame->header.w == cover->dsc.header.w && frame->header.h == cover->dsc.header.h);
+	lv_obj_t *reference = lv_image_create(player_screen);
+	lv_image_set_src(reference, &cover->dsc);
+	lv_draw_buf_t *expected = lv_snapshot_take(reference, LV_COLOR_FORMAT_ARGB8888);
+	assert(expected && frame->data_size == expected->data_size && !memcmp(frame->data, expected->data, frame->data_size));
+	lv_draw_buf_destroy(frame);
+	lv_draw_buf_destroy(expected);
+	lv_obj_delete(reference);
 }
 static void pixels(cover_image_t *out, int w, int h, int channel) {
 	*out = (cover_image_t){0};
@@ -60,8 +108,13 @@ static void pixels(cover_image_t *out, int w, int h, int channel) {
 }
 bool navidromeart_take_player(cover_image_t *out, cover_image_t *back, bool *finished) {
 	*finished = delivered;
-	if (!delivered || !fixture_track.row.cover[0])
+	if (!delivered || missing || !fixture_track.row.cover[0])
 		return false;
+	if (detailed_file) {
+		assert(cover_load_image_file(detailed_file, detailed_size, detailed_size, COVER_FIT_COVER, out));
+		cover_blur_fill(out, 64, 32, back);
+		return true;
+	}
 	pixels(out, 64, 64, color);
 	pixels(back, 64, 32, color);
 	return true;
@@ -114,7 +167,8 @@ int main(int argc, char **argv) {
 	alarm(30);
 	ui_panel_width = argc > 1 ? atoi(argv[1]) : 320;
 	lv_init();
-	lv_display_t *display = lv_display_create(ui_panel_width, ui_panel_width == 320 ? 480 : 800);
+	font_ui_14 = lv_font_unscii_8;
+	lv_display_t *display = lv_display_create(ui_panel_width, argc > 2 ? atoi(argv[2]) : ui_panel_width == 320 ? 480 : 800);
 	player_screen = lv_obj_create(NULL);
 	lv_screen_load(player_screen);
 	cover_panel = lv_obj_create(player_screen);
@@ -183,6 +237,22 @@ int main(int argc, char **argv) {
 		delivered = true;
 		apply_cover_result();
 		assert(!current_cover.pixels && !current_backdrop.pixels);
+		// A failed nonempty cover binding must retry on visible demand;
+		// an unchanged in-flight retry still coalesces normally.
+		strcpy(fixture_track.row.cover, "temporarily-missing");
+		refresh_cover("ndq:missing");
+		missing = delivered = true;
+		apply_cover_result();
+		assert(!current_cover.pixels && !cover_request_outstanding);
+		unsigned failed_requests = requests;
+		refresh_cover("ndq:missing");
+		assert(requests == failed_requests + 1 && cover_request_outstanding);
+		refresh_cover("ndq:missing");
+		assert(requests == failed_requests + 1);
+		missing = false;
+		delivered = true;
+		apply_cover_result();
+		assert(current_cover.pixels);
 		strcpy(fixture_track.row.cover, "album-a");
 		refresh_cover("ndq:1:7");
 		delivered = true;
@@ -191,6 +261,80 @@ int main(int argc, char **argv) {
 		fixture_library.card_epoch++;
 		refresh_cover("ndq:1:8");
 		assert(!current_cover.pixels);
+	}
+	if (argc > 3) {
+		detailed_file = argv[3];
+		cover_box_w = cover_box_h = ui_panel_width;
+		studio_box_w = ui_panel_width;
+		studio_box_h = lv_display_get_vertical_resolution(display) - ui_px(210);
+		lv_obj_set_size(cover_panel, ui_panel_width, ui_panel_width);
+		lv_obj_set_style_pad_all(cover_panel, 0, 0);
+		lv_obj_set_style_border_width(cover_panel, 0, 0);
+		for (int mode = 0; mode < 2; mode++) {
+			layout_studio_now = mode;
+			navidrome_cover_key.bound = false;
+			strcpy(fixture_track.row.cover, "detailed");
+			refresh_cover("ndq:detailed");
+			delivered = true;
+			apply_cover_result();
+			assert(current_cover.pixels && current_cover.dsc.header.w == (unsigned)detailed_size);
+			lv_obj_t *shown = mode ? studio_cover : cover_img;
+			lv_draw_buf_t *frame = lv_snapshot_take(shown, LV_COLOR_FORMAT_ARGB8888);
+			assert(frame && frame->header.w == (unsigned)detailed_size && frame->header.h == (unsigned)detailed_size);
+			lv_obj_t *reference = lv_image_create(player_screen);
+			lv_image_set_src(reference, &current_cover.dsc);
+			lv_draw_buf_t *expected = lv_snapshot_take(reference, LV_COLOR_FORMAT_ARGB8888);
+			assert(expected && frame->data_size == expected->data_size && !memcmp(frame->data, expected->data, frame->data_size));
+			// Fine pattern must survive actual rendering, not become a flat glyph.
+			unsigned changes = 0;
+			for (unsigned y = 0; y < frame->header.h; y++)
+				for (unsigned x = 1; x < frame->header.w; x++) {
+					const uint8_t *pixel = frame->data + y * frame->header.stride + x * 4;
+					changes += memcmp(pixel, pixel - 4, 3) != 0;
+				}
+			assert(changes > (unsigned)detailed_size * detailed_size / 8);
+			lv_draw_buf_destroy(frame);
+			lv_draw_buf_destroy(expected);
+			lv_obj_delete(reference);
+			uint8_t *old = current_cover.pixels;
+			unsigned before = requests;
+			refresh_cover("ndq:detailed-next");
+			assert(current_cover.pixels == old && requests == before);
+			cover_drop_current(true);
+		}
+		nd_thumb_t thumb = {0};
+		lv_obj_t *row = lv_obj_create(player_screen);
+		lv_obj_set_size(row, ui_panel_width, ui_px(100));
+		navidromethumb_init(&thumb, row, ND_ART_DOWNLOAD_SLOT);
+		navidromethumb_bind(&thumb, &fixture_library, 1, "detail-row");
+		navidromethumb_tick(&thumb);
+		assert(thumb.cover.pixels);
+		detailed_rendered(thumb.image, &thumb.cover);
+		uint8_t *kept = thumb.cover.pixels;
+		navidromethumb_bind(&thumb, &fixture_library, 1, "detail-row");
+		assert(thumb.cover.pixels == kept);
+		navidromethumb_release(&thumb);
+		lv_obj_delete(row);
+		gui_config_t cfg = {.screen_width = ui_panel_width, .padding = 8};
+		nd_album_view_t album = {.active = true, .revision = navidromealbum_revision(), .slot = ND_ART_ALBUM_SLOT, .cfg = &cfg, .title_y = 100000};
+		album.list = lv_obj_create(player_screen);
+		album.cover = lv_image_create(player_screen);
+		album.page_title = lv_label_create(player_screen);
+		album.mask = lv_obj_create(player_screen);
+		int size = LV_MIN(ui_px(300), ui_panel_width - 16);
+		lv_obj_set_size(album.cover, size, size);
+		navidromeart_request(album.slot, &fixture_library, "detail-header", size);
+		navidromealbum_tick(&album);
+		assert(album.image.pixels);
+		detailed_rendered(album.cover, &album.image);
+		lv_image_set_src(album.cover, NULL);
+		cover_free(&album.image);
+		lv_obj_delete(album.cover);
+		lv_obj_delete(album.list);
+		lv_obj_delete(album.page_title);
+		lv_obj_delete(album.mask);
+		puts("detailed shared-source crops preserve pixels in production album-header delivery and shared row thumbnail: passed");
+		puts("detailed shared-source crop renders unchanged through production normal/Studio player at panel geometry: passed");
 	}
 	lv_display_delete(display);
 	lv_deinit();
