@@ -1970,7 +1970,7 @@ static bool finite_request(http_session_t *s, const char *url, const char *form,
 				snprintf(location, sizeof(location), "%s", value);
 			}
 		}
-		if (s->diagnostic) {
+		{ // The callback is an optional observer; stderr is the shared sink.
 			http_req_t logging = {.diagnostic = s->diagnostic};
 			const char *type = strcasestr(s->content_type, "html") ? "html" : strcasestr(s->content_type, "json") ? "json" : strcasestr(s->content_type, "xml") ? "xml" : "other";
 			protected_diagnostic(&logging, "http: protected response status=%d content_type=%s encoding=%s framing=%s declared_bytes=%zu\n", s->status, type, compressed ? "gzip" : "identity", has_transfer ? "chunked" : has_length ? "content_length" : "close", s->remaining);
@@ -1982,7 +1982,7 @@ static bool finite_request(http_session_t *s, const char *url, const char *form,
 			break;
 		}
 		if (s->status >= 300 && s->status < 400 && *location) {
-			if (s->diagnostic) {
+			{ // The callback is an optional observer; stderr is the shared sink.
 				http_req_t logging = {.diagnostic = s->diagnostic};
 				protected_diagnostic(&logging, "http: protected redirect status=%d destination=%s\n", s->status, location[0] == '/' ? "relative" : "absolute");
 			}
@@ -2075,7 +2075,7 @@ bool http_finite_request(const char *url, const char *form, bool (*current)(void
 		ok = false;
 		s->error = "server_status";
 	}
-	if (!ok && s->diagnostic) {
+	if (!ok) {
 		http_req_t logging = {.diagnostic = s->diagnostic};
 		const char *failure = s->error ? s->error : "incomplete_body";
 		if (s->chunked && !strcmp(failure, "framing"))

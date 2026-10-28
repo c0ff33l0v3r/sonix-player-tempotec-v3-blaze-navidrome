@@ -1,4 +1,5 @@
 // Real HTTP transport checks driven by navidrome_networkcheck.py.
+#include "src/system/core/config.h"
 #include "src/system/core/logging.h"
 #include "src/system/net/http.h"
 #include "src/system/streaming/navidrome.h"
@@ -19,12 +20,13 @@ void thread_be_background(const char *name) { (void)name; }
 
 int main(int argc, char **argv) {
 	assert(argc == 3);
-	bool file_log = getenv("SONIX_LOG") != NULL;
+	bool file_log = getenv("SONIX_LOG") != NULL || getenv("ND_DEBUG_CARD") != NULL;
 	if (file_log)
 		logging_init();
 	if (getenv("ND_DEBUG_CARD")) {
-		nd_debug_enable(true);
-		nd_debug_card(getenv("ND_DEBUG_CARD"));
+		config_init(NULL);
+		config_set_bool("system", "log_to_sd", true);
+		logging_attach_sd(getenv("ND_DEBUG_CARD"));
 	}
 	if (!strcmp(argv[2], "legacy")) {
 		char *body = NULL;
@@ -66,6 +68,5 @@ int main(int argc, char **argv) {
 	puts("real HTTP fixture: passed");
 	if (file_log)
 		logging_flush();
-	nd_debug_shutdown();
 	return 0;
 }

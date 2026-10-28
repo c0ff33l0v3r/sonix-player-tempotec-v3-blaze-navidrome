@@ -1,6 +1,7 @@
 #include "navidromeplaylists.h"
 #include "navidromeart.h"
 #include "navidromebrowse.h"
+#include "navidromediagnostic.h"
 #include "navidromeofflinebadge.h"
 #include "navidromepage.h"
 #include "navidromerow.h"
@@ -31,6 +32,7 @@
 #include <time.h>
 
 typedef struct {
+	nd_view_diagnostic_t diagnostic_view;
 	lv_obj_t *screen, *list, *extent, *title, *status, *buttons[3];
 	lv_obj_t *download, *sort, *reorder, *drop_line;
 	bool reordering, reorder_pending, move_pending, order_saved, dragging;
@@ -292,6 +294,8 @@ static void pl_show_rows(pl_page_t *p, const bool keep_art[ND_WINDOW]) {
 	pl_reorder_rows(p);
 	pl_status(p);
 	pl_buttons(p);
+
+	nd_view_observe(&p->diagnostic_view, p->list, p->rows, p->count, p->total, p->loading);
 }
 static void pl_confirm_ok(void *unused) {
 	(void)unused;
@@ -321,6 +325,7 @@ static void pl_done(nd_pl_result_t *r, void *value) {
 	int page = (int)(token & 3);
 	unsigned serial = (unsigned)(token >> 2);
 	pl_page_t *p = &pl_pages[page];
+	DIAG(diagnostic_current(), D_BIND, p->serial != serial || !pl_active(page) ? D_SUPERSEDED : diagnostic_error_outcome(r->error), DV(D_SERIAL, serial), DV(D_OFFSET, r->request.first), DV(D_COUNT, r->count));
 	if (p->serial != serial || !pl_active(page)) {
 		free(r);
 		return;
@@ -1050,6 +1055,8 @@ static void pl_menu(lv_event_t *event) {
 }
 static void pl_scroll(lv_event_t *event) {
 	pl_page_t *p = lv_event_get_user_data(event);
+	nd_view_observe(&p->diagnostic_view, p->list, p->rows, p->count, p->total, p->loading);
+
 	if (!pl_active((int)(p - pl_pages)) || p->loading || pl_gesture())
 		return;
 	if (!nd_row_covered(p->list, p->first, p->count, p->total, p->pitch, p->offset))
@@ -1073,6 +1080,7 @@ static void pl_loaded(lv_event_t *event) {
 }
 static void pl_unloaded(lv_event_t *event) {
 	pl_page_t *p = lv_event_get_user_data(event);
+	nd_view_retire(&p->diagnostic_view);
 	pl_reorder_exit(p, false);
 	p->move_pending = false;
 	pl_menu_token++;

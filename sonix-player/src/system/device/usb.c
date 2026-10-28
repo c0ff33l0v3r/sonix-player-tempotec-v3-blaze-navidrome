@@ -730,7 +730,7 @@ static void storage_export(void) {
 	// Where the track was, first of all: the stop below is what the next press
 	// of play would otherwise read as "the track ended, start it again".
 	device_state_note_storage_gone();
-	audio_stop();
+	audio_stop_reason(AUDIO_STOP_USB);
 	library_close();
 	audiobookdb_close();
 	navidrome_set_root(NULL);

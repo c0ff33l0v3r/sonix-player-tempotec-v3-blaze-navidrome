@@ -1,6 +1,7 @@
-#include "navidromecache.h"
 #include "navidromeaudio.h"
+#include "navidromecache.h"
 #include "navidromelibrary.h"
+#include "src/system/core/diagnostic.h"
 #include "src/system/core/md5.h"
 #include "src/system/decode/decode.h"
 #include "src/system/decode/growfile.h"
@@ -436,6 +437,7 @@ static const char *fetch_audio(const nd_library_t *lib, const nd_context_t *ctx,
 	if (!names(lib, track->row.id, root, stem) || !navidrome_playback_begin(ctx))
 		return "nd_cache_storage";
 	bool hit = cached(lib, stem, track->row.id, path);
+	DIAG(diagnostic_current(), hit ? D_CACHE_HIT : D_CACHE_MISS, hit ? D_OK : D_PENDING);
 	if (hit && !nd_audio_valid(path)) {
 		pthread_mutex_lock(&lock);
 		snprintf(failed_path, sizeof(failed_path), "%s", path);
@@ -465,6 +467,7 @@ static const char *fetch_audio(const nd_library_t *lib, const nd_context_t *ctx,
 		return current(user) && !navidrome_playback_current(ctx, true) ? "nd_network_error" : "nd_audio_cancelled";
 	http_session_t *stream = http_session_new(turn_current, &wait);
 	const char *error = !stream || !http_session_audio(stream, AUDIO_BUDGET) ? "nd_worker_error" : turn_current(&wait) ? nd_api_stream(ctx->host, ctx->user, ctx->password, track->row.id, stream) : "nd_audio_cancelled";
+	DIAG(diagnostic_current(), D_RESPONSE, diagnostic_error_outcome(error), DV(D_STATUS, stream ? http_session_status(stream) : 0));
 	long content_length = stream ? (long)http_session_length(stream) : 0;
 	bool length_known = content_length > 0;
 	if (!error && (strstr(http_session_content_type(stream), "text/") || strstr(http_session_content_type(stream), "json") || strstr(http_session_content_type(stream), "xml")))
@@ -613,6 +616,7 @@ static const char *fetch_audio(const nd_library_t *lib, const nd_context_t *ctx,
 			}
 		}
 		if (!error && progressive_start && progressive && !delivered && done >= prebuffer && current(user)) {
+			DIAG(diagnostic_current(), D_PREPARE, D_OK, DV(D_BUFFERED, done), DV(D_LIMIT, prebuffer));
 			ready(path, user);
 			delivered = true;
 		}
@@ -691,11 +695,13 @@ static void transfer_ready(const char *path, void *data) {
 	if (transfer_current(t)) t->ready(path, t->user);
 }
 const char *nd_audio_fetch(const nd_library_t *lib, const nd_context_t *ctx, const nd_playrow_t *track, bool progressive_start, nd_audio_current_cb current, nd_audio_ready_cb ready, void *user) {
+	DIAGNOSTIC_SCOPE(D_AUDIO);
 	cache_transfer_t t = {.epoch = nd_cache_epoch(), .current = current, .ready = ready, .user = user};
-	if (!nd_cache_io_begin(t.epoch)) return "nd_audio_cancelled";
+	if (!nd_cache_io_begin(t.epoch))
+		DIAGNOSTIC_RETURN_ERROR("nd_audio_cancelled");
 	const char *error = fetch_audio(lib, ctx, track, progressive_start, transfer_current, transfer_ready, &t);
 	nd_cache_io_end();
-	return error;
+	DIAGNOSTIC_RETURN_ERROR(error);
 }
 
 // The shared transfer turn excludes an evicting cache writer while reservation

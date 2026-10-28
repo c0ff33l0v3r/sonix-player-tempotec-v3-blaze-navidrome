@@ -1,6 +1,7 @@
 #include "navidromeactions.h"
 #include "navidromeplaycatalog.h"
 #include "src/gui/shell/gui.h"
+#include "src/system/core/diagnostic.h"
 #include "src/system/core/utils.h"
 #include <dirent.h>
 #include <limits.h>
@@ -26,6 +27,8 @@ typedef struct action_rows {
 	struct action_rows *next, *retired_next;
 } action_rows_t;
 typedef struct {
+	diagnostic_t diagnostic;
+	uint64_t delivery_us;
 	nd_action_request_t request;
 	nd_context_t context;
 	nd_action_result_t *result;
@@ -409,6 +412,8 @@ static bool local_album(action_rows_t *out, const nd_action_request_t *q, const 
 	return ok;
 }
 void nd_action_execute(const nd_action_request_t *q, const nd_context_t *identity, nd_action_result_t *result) {
+	DIAGNOSTIC_SCOPE(D_ACTION);
+	_diagnostic_scope.error = &result->error;
 	memset(result, 0, sizeof(*result));
 	result->token = q->token;
 	if (!start() || !job_current((void *)identity) || q->library.card_epoch != identity->card_epoch || q->kind < ND_ALBUMS || q->kind > ND_ARTISTS || q->count < 0 || q->count > ND_WINDOW || (q->selection && !nd_owned_current(q->selection))) {
@@ -538,6 +543,9 @@ void nd_action_result_free(nd_action_result_t *result) {
 }
 static void deliver(void *value) {
 	action_job_t *job = value;
+	DIAGNOSTIC_ATTACH(job->diagnostic);
+	DIAG(job->diagnostic, D_DELIVER, diagnostic_error_outcome(job->result->error), DV(D_DELIVERY_US, diagnostic_since(job->delivery_us)));
+	DIAG(job->diagnostic, D_END, diagnostic_error_outcome(job->result->error));
 	if (job->done)
 		job->done(job->result, job->user);
 	else
@@ -602,6 +610,8 @@ static void *work(void *unused) {
 		}
 		if (!job)
 			continue;
+		DIAGNOSTIC_ATTACH(job->diagnostic);
+		DIAG(job->diagnostic, D_WORK, D_PENDING);
 		nd_action_execute(&job->request, &job->context, job->result);
 		nd_owned_release(job->request.selection);
 		for (int k = 0; k < 2; k++)
@@ -609,6 +619,7 @@ static void *work(void *unused) {
 		if (job->pinned)
 			nd_store_release_source(&job->request.library);
 		nd_wipe(&job->context, sizeof(job->context));
+		job->delivery_us = diagnostic_clock();
 		if (!gui_post(deliver, job)) {
 			pthread_mutex_lock(&mutex);
 			deferred = job;
@@ -639,6 +650,8 @@ bool navidrome_actions_submit(const nd_action_request_t *q, void (*done)(nd_acti
 	pthread_mutex_lock(&mutex);
 	ok = ok && !busy;
 	if (ok) {
+		job->diagnostic = diagnostic_begin(D_ACTION, diagnostic_current().id);
+		DIAG(job->diagnostic, D_QUEUED, D_PENDING, DV(D_SOURCE, q->remote));
 		job->request = *q;
 		job->request.selection = nd_owned_retain(q->selection);
 		for (int k = 0; k < 2; k++)

@@ -2,6 +2,7 @@
 #include "lvgl/lvgl.h"
 #include "navidromedebug.h"
 #include "navidromereportstore.h"
+#include "src/system/core/diagnostic.h"
 #include "src/system/device/clock.h"
 #include "streamturn.h"
 #include <errno.h>
@@ -124,6 +125,7 @@ static void observe(void) {
 		return;
 	}
 	if (ready && !strcmp(sample.path, tracked_path)) {
+		DIAG(qualified.diagnostic, D_ADMISSION, count < 32 ? D_OK : D_UNAVAILABLE, DV(D_COUNT, count));
 		if (count < 32) {
 			ingress[(head + count) % 32] = qualified;
 			count++;
@@ -147,7 +149,7 @@ void nd_reports_start(const nd_context_t *c, const nd_library_t *lib, const char
 	audio_observation_t sample;
 	if (!audio_observe(&sample) || strcmp(sample.path, path))
 		return;
-	nd_listen_t e = {.profile = c->profile_epoch, .card = c->card_epoch, .session = ++session, .boot = seconds(), .when = wall_time()};
+	nd_listen_t e = {.diagnostic = diagnostic_begin(D_REPORT, diagnostic_current().id), .profile = c->profile_epoch, .card = c->card_epoch, .session = ++session, .boot = seconds(), .when = wall_time()};
 	snprintf(e.scope, sizeof(e.scope), "%s", lib->scope);
 	snprintf(e.id, sizeof(e.id), "%s", id);
 	snprintf(tracked_path, sizeof(tracked_path), "%s", path);
@@ -173,11 +175,12 @@ static bool current(void *user) {
 }
 static bool matches(const nd_listen_t *e, const nd_report_context_t *c) { return e->profile == c->profile && e->card == c->card && !strcmp(e->scope, c->scope); }
 static const char *request(const nd_context_t *secret, request_t *r, const char *method, const char *query, nd_document_t *doc, int *status, double *last_request) {
+	DIAGNOSTIC_SCOPE(D_REPORT);
 	const char *error = nd_api_report(secret->host, secret->user, secret->password, method, query, current, r, doc, status);
 	*last_request = seconds();
 	// Only bounded fixed classifications. No IDs, scope, user, history or text.
 	nd_log("navidrome: report status=%d result=%s drops=%u\n", *status, error ? !strcmp(error, "nd_sync_cancelled") ? "cancelled" : "failed" : "ack", atomic_load(&drops));
-	return error;
+	DIAGNOSTIC_RETURN_ERROR(error);
 }
 static bool extensions(const nd_document_t *d) {
 	int a = json_get(&d->doc, d->response, "openSubsonicExtensions");
@@ -202,21 +205,26 @@ static bool extensions(const nd_document_t *d) {
 	return false;
 }
 static bool persist(const nd_report_context_t *c, nd_listen_t *e, const char *key, int64_t now) {
+	diagnostic_scope_t parent __attribute__((cleanup(diagnostic_scope_end))) = diagnostic_attach(e->diagnostic);
+	DIAGNOSTIC_SCOPE(D_REPORT);
 	if (!navidrome_report_current(c, false, true))
-		return false;
+		DIAGNOSTIC_RETURN_BOOL(false);
 	nd_report_store_t store;
 #ifdef NAVIDROME_REPORT_TEST
 	atomic_fetch_add(&test_opens, 1);
 #endif
+	bool stored = false;
 	bool opened = nd_report_store_open(&store, c->path, c->scope, true);
 	if (opened) {
 		// Even a failed COMMIT is terminal for the volatile copy: it could
 		// already be durable. Never create a second delivery route.
-		if (!nd_report_store_put(&store, e, key, now))
+		stored = nd_report_store_put(&store, e, key, now);
+		if (!stored)
 			atomic_fetch_add(&drops, 1);
 	}
 	nd_report_store_close(&store);
 	navidrome_cache_end();
+	_diagnostic_scope.outcome = !opened ? D_FAILED : stored ? D_OK : D_UNCERTAIN;
 	return opened;
 }
 static bool take(const nd_report_context_t *c, int64_t now, nd_listen_t *e) {
@@ -284,6 +292,8 @@ static void *work(void *unused) {
 		stream = next_stream;
 		demand = next_demand;
 		if (!available || c.profile != previous.profile || c.card != previous.card || strcmp(c.scope, previous.scope)) {
+			for (unsigned i = 0; i < pending_count; i++)
+				DIAG(pending[i].diagnostic, D_RETIRED, D_SUPERSEDED, DV(D_REASON, 1));
 			pending_count = 0;
 			storage_failed = false;
 			had_store = false;
@@ -311,8 +321,10 @@ static void *work(void *unused) {
 			count--;
 			if (available && matches(&e, &c) && pending_count < 32)
 				pending[pending_count++] = e;
-			else
+			else {
+				DIAG(e.diagnostic, D_RETIRED, D_UNAVAILABLE, DV(D_REASON, 2));
 				atomic_fetch_add(&drops, 1);
+			}
 		}
 		pthread_mutex_unlock(&mailbox);
 		int64_t wall = wall_time();
@@ -330,6 +342,8 @@ static void *work(void *unused) {
 				char key[64];
 				snprintf(key, sizeof(key), "%s-%u", boot_key, e.session);
 				bool consumed = e.when <= 0 || e.when < wall - ND_LISTEN_AGE || e.when > wall + 300000;
+				if (consumed)
+					DIAG(e.diagnostic, D_RETIRED, D_UNAVAILABLE, DV(D_REASON, 3));
 				if (!consumed && c.writable && !storage_failed) {
 					consumed = persist(&c, &e, key, wall);
 					if (consumed)
@@ -401,6 +415,8 @@ static void *work(void *unused) {
 					}
 					// Revalidate AFTER the no-replay transaction and before HTTP.
 					if (send && current(&r)) {
+						diagnostic_t lineage = event ? e.diagnostic : target.event.diagnostic;
+						DIAGNOSTIC_ATTACH(lineage);
 						error = request(&secret, &r, method, query, &doc, &status, &last_request);
 						if (!error)
 							nd_api_free(&doc);

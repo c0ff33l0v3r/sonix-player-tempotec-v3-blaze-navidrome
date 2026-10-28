@@ -25,6 +25,8 @@
 // Starts the stamping and redirects output to the tmpfs. Call first thing in
 // main(), before anything can print: it replaces stdout and stderr.
 void logging_init(void);
+// Call after config_init and before storage attachment.
+bool logging_migrate_navidrome(void);
 
 // Moves the log onto the card, if that is what the settings ask for. Call once
 // the card is mounted and the config has been read.

@@ -1,4 +1,5 @@
 #include "workactivity.h"
+#include "src/system/core/diagnostic.h"
 #include <stdatomic.h>
 
 // Three independent 10-bit counts and a suspend-admission bit. One native-word
@@ -51,8 +52,17 @@ void work_activity_end(work_activity_t *owner) {
 
 bool work_activity_network(void) { return (atomic_load(&activity) & COUNT_MASK) != 0; }
 bool work_activity_busy(void) { return (atomic_load(&activity) & ~SUSPENDING) != 0; }
+static diagnostic_t suspend_diagnostic;
 bool work_activity_suspend_begin(void) {
 	unsigned idle = 0;
-	return atomic_compare_exchange_strong(&activity, &idle, SUSPENDING);
+	bool ok = atomic_compare_exchange_strong(&activity, &idle, SUSPENDING);
+	if (ok) {
+		suspend_diagnostic = diagnostic_begin(D_POWER, diagnostic_current().id);
+		DIAG(suspend_diagnostic, D_ADMISSION, D_OK);
+	}
+	return ok;
 }
-void work_activity_suspend_end(void) { atomic_fetch_and(&activity, ~SUSPENDING); }
+void work_activity_suspend_end(void) {
+	DIAG(suspend_diagnostic, D_END, D_OK);
+	atomic_fetch_and(&activity, ~SUSPENDING);
+}

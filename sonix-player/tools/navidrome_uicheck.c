@@ -15,6 +15,8 @@ const theme_palette_t *theme(void) { static theme_palette_t colors; return &colo
 extern const lv_font_t lv_font_unscii_8;
 lv_style_t theme_style_screen, theme_style_card, theme_style_card_pressed;
 lv_style_t theme_style_text, theme_style_text_dim, theme_style_icon;
+static const char *fixture_logging_path = "log_disabled";
+const char *logging_path(void) { return fixture_logging_path; }
 static unsigned prompt_count;
 static bool prompt_open, prompt_enabled, keyboard_visible_fixture;
 static void (*prompt_yes)(void *), (*prompt_no)(void *);
@@ -204,6 +206,15 @@ int NAVIDROME_SETTINGS_MAIN(void) {
 	navidromesettings_init(&cfg);
 	navidromesettings_open();
 	assert(lv_screen_active() == settings_form.screen);
+	assert(strstr(lv_label_get_text(logging_note), "developer_options"));
+	assert(strstr(lv_label_get_text(logging_note), "devoptions_log_to_microsd"));
+	assert(strstr(lv_label_get_text(logging_note), "log_disabled"));
+	fixture_logging_path = "log_card_missing";
+	navidromesettings_refresh();
+	assert(strstr(lv_label_get_text(logging_note), "log_card_missing"));
+	fixture_logging_path = "/synthetic/.local/sonix_player.log";
+	navidromesettings_refresh();
+	assert(strstr(lv_label_get_text(logging_note), "sonix_player.log"));
 	assert(!lv_obj_has_state(auto_connect_switch, LV_STATE_CHECKED));
 	assert(!lv_obj_has_state(auto_connect_switch, LV_STATE_DISABLED));
 	lv_obj_add_state(auto_connect_switch, LV_STATE_CHECKED);

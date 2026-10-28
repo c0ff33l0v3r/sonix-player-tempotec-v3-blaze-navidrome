@@ -2,6 +2,10 @@
 #define _GNU_SOURCE
 
 #include "logging.h"
+#define SONIX_DIAGNOSTIC_IMPLEMENTATION
+#include "diagnostic.h"
+#include <inttypes.h>
+#include <stdatomic.h>
 
 #include <sys/klog.h>
 
@@ -27,15 +31,11 @@
 #define LOG_SUBDIR ".local"
 #define LOG_FILE_NAME "sonix_player.log"
 
-// Nothing ever shortened the log: left on, it reached 8 MB and more, which is
-// a file nobody can read or send, and every boot appended to the end of a
-// cluster chain that only grew. When it is past this size on opening, it is
-// renamed to sonix_player.log.old (replacing the one before) and a fresh file
-// is started, so the card holds at most twice this and the run being
-// reported always starts near the top of a file. On opening only, not
-// mid-run: a rename under the writer thread would mean moving the log, with
-// the drain that waits on that very thread.
+// The sole writer rotates complete queued batches during capture. Each card
+// retains the current 4-MiB file and one predecessor; explicit SONIX_LOG is exempt.
+#ifndef LOG_ROTATE_BYTES
 #define LOG_ROTATE_BYTES (4L * 1024 * 1024)
+#endif
 
 // The player prints a good deal before the card is mounted: which block device
 // it found, what the battery reported, whether the clock survived. That cannot
@@ -61,7 +61,14 @@
 static FILE *early_stream;
 
 static char sd_log_path[512];
-static bool on_sd;
+static atomic_bool on_sd;
+static atomic_bool managed_card;
+static atomic_bool writer_failed;
+static atomic_bool diagnostic_suspended;
+static atomic_uint writer_lost_bytes;
+static atomic_uint writer_sync_us, writer_sync_errno, writer_health_revision;
+static uint64_t diagnostic_run; // Initialized before the writer starts; immutable thereafter.
+static unsigned rotation_serial;
 
 // The stream stdout/stderr currently feed. Kept so a switch can close the
 // previous one: dup2 copies the descriptor into 1 and 2, but the original stays
@@ -87,7 +94,7 @@ static pthread_mutex_t log_lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
 static off_t synced_size = -1;
 
 const char *logging_path(void) {
-	if (on_sd && sd_log_path[0]) {
+	if (on_sd && sd_log_path[0] && !atomic_load(&writer_failed)) {
 		return sd_log_path;
 	}
 	// The setting is on but the file is not open: the card is out, or it came
@@ -138,6 +145,14 @@ static void drain_held(FILE *held, FILE *destination) {
 		}
 		char chunk[512];
 		long left = size;
+		struct stat destination_stat;
+		if (!getenv("SONIX_LOG") && !fstat(fileno(destination), &destination_stat) && S_ISREG(destination_stat.st_mode)) {
+			off_t room = destination_stat.st_size < LOG_ROTATE_BYTES ? LOG_ROTATE_BYTES - destination_stat.st_size : 0;
+			if (left > room) {
+				atomic_fetch_add(&writer_lost_bytes, (unsigned)(left - room));
+				left = room;
+			}
+		}
 		while (left > 0) {
 			size_t want = (size_t)(left < (long)sizeof(chunk) ? left : (long)sizeof(chunk));
 			size_t got = fread(chunk, 1, want, held);
@@ -213,7 +228,7 @@ static void write_all(int fd, const char *data, size_t size);
 #define QUEUE_BYTES (64 * 1024)
 #define QUEUE_RECORD_MAX 2048
 #define QUEUE_HEADER 3
-#define QUEUE_WRITE_MAX 8192
+#define QUEUE_WRITE_MAX ((LOG_ROTATE_BYTES < 8448) ? LOG_ROTATE_BYTES - 256 : 8192)
 #define QUEUE_SYNC_MS 1000
 // The first boot after an update sometimes freezes a couple of seconds in and
 // the device restarts on its own; with a sync a second the last lines before
@@ -237,7 +252,11 @@ static unsigned long queue_dropped;
 // context switch per line on one core) and a write() into /dev/null. Now emit()
 // drops it on the spot. The stamp is still worked out and the line tap still
 // sees every line, so the Bluetooth log is unchanged.
-static bool log_discarding;
+static atomic_bool log_discarding;
+static atomic_bool diagnostic_ready;
+static atomic_uint diagnostic_capture = 1;
+static atomic_uint diagnostic_next;
+static atomic_uint diagnostic_lost_lock, diagnostic_lost_queue, diagnostic_lost_rate, diagnostic_lost_context;
 
 static void ring_put(const char *data, size_t size) {
 	size_t tail = (queue_head + queue_len) % QUEUE_BYTES;
@@ -269,6 +288,18 @@ static bool queue_record(int fd, const char *data, size_t size) {
 	char header[QUEUE_HEADER] = {(char)fd, (char)(size & 0xff), (char)(size >> 8)};
 	ring_put(header, QUEUE_HEADER);
 	ring_put(data, size);
+	return true;
+}
+
+static bool diagnostic_record(const char *line, size_t size) {
+	uint32_t epoch = atomic_load(&diagnostic_capture);
+	if (QUEUE_BYTES - queue_len < size + sizeof(epoch) + QUEUE_HEADER)
+		return false;
+	size_t length = size + sizeof(epoch);
+	char header[QUEUE_HEADER] = {(char)0x82, (char)length, (char)(length >> 8)};
+	ring_put(header, sizeof(header));
+	ring_put((const char *)&epoch, sizeof(epoch));
+	ring_put(line, size);
 	return true;
 }
 
@@ -311,6 +342,7 @@ static long queue_now_ms(void) {
 }
 
 static void sync_card(void);
+static void writer_output(int fd, const char *data, size_t size);
 
 // Takes out the records at the front that go to one descriptor, up to
 // QUEUE_WRITE_MAX bytes. Caller holds queue_lock and has checked queue_len.
@@ -322,11 +354,23 @@ static size_t queue_take(char *out, int *fd_out) {
 		ring_peek(header, QUEUE_HEADER);
 		int rec_fd = (unsigned char)header[0];
 		size_t size = (unsigned char)header[1] | ((size_t)(unsigned char)header[2] << 8);
-		if ((fd >= 0 && rec_fd != fd) || used + size > QUEUE_WRITE_MAX) {
+		bool diagnostic = rec_fd == 0x82;
+		if (diagnostic)
+			rec_fd = STDERR_FILENO;
+		if ((fd >= 0 && rec_fd != fd) || used + size > QUEUE_WRITE_MAX)
 			break;
-		}
 		ring_get(header, QUEUE_HEADER);
-		ring_get(out + used, size);
+		if (diagnostic) {
+			uint32_t epoch;
+			ring_get((char *)&epoch, sizeof(epoch));
+			size -= sizeof(epoch);
+			ring_get(out + used, size);
+			if (epoch != atomic_load(&diagnostic_capture) || atomic_load(&diagnostic_suspended)) {
+				atomic_fetch_add(&diagnostic_lost_queue, 1);
+				continue;
+			}
+		} else
+			ring_get(out + used, size);
 		used += size;
 		fd = rec_fd;
 	}
@@ -373,7 +417,7 @@ static void *queue_writer(void *arg) {
 		pthread_mutex_unlock(&queue_lock);
 
 		if (size > 0) {
-			write_all(fd, out, size);
+			writer_output(fd, out, size);
 			unsynced = true;
 		}
 		if (unsynced && (queue_now_ms() - synced_at >= QUEUE_SYNC_MS || queue_now_ms() < boot_sync_until)) {
@@ -546,12 +590,14 @@ void logging_child_stdio(void) {
 static void write_all(int fd, const char *data, size_t size) {
 	while (size > 0) {
 		ssize_t done = write(fd, data, size);
-		if (done < 0) {
-			if (errno == EINTR) {
+		if (done <= 0) {
+			if (done < 0 && errno == EINTR)
 				continue;
-			}
-			return; // a card that went away mid-line; nothing to be done here
+			atomic_store(&writer_failed, true);
+			atomic_fetch_add(&writer_lost_bytes, (unsigned)size);
+			return;
 		}
+		atomic_store(&writer_failed, false);
 		data += done;
 		size -= (size_t)done;
 	}
@@ -665,6 +711,7 @@ static bool redirect_to(FILE *stream) {
 	}
 	active_stream = stream;
 	synced_size = -1;
+	atomic_fetch_add(&diagnostic_capture, 1);
 	log_discarding = false; // open_null_log() sets it again for its sink
 	stamp_day = -1; // a new file starts with the date, even if /dev/null had it
 	return true;
@@ -672,7 +719,9 @@ static bool redirect_to(FILE *stream) {
 
 void logging_init(void) {
 	stamp_install();
+	diagnostic_run = logging_diagnostic_clock() ^ ((uint64_t)(unsigned)getpid() << 32);
 	queue_start();
+	atomic_store(&diagnostic_ready, queue_running);
 	relay_start();
 
 	const char *override = getenv("SONIX_LOG");
@@ -711,6 +760,41 @@ static void flush_early(FILE *destination) {
 	early_stream = NULL;
 }
 
+// Opening/resuming may append bounded held output before the queue takes over.
+// Reserve that space up front; live writes continue rotating in the writer.
+static FILE *open_bounded_card(void) {
+	struct stat st;
+	const off_t reserve = HELD_MAX < LOG_ROTATE_BYTES / 2 ? HELD_MAX : LOG_ROTATE_BYTES / 2;
+	char old[sizeof(sd_log_path) + 8];
+	snprintf(old, sizeof(old), "%s.old", sd_log_path);
+	if (!stat(sd_log_path, &st) && st.st_size > LOG_ROTATE_BYTES - reserve) {
+		if (rename(sd_log_path, old))
+			return NULL;
+	}
+	// An oversized pre-migration general log cannot become an unbounded .old.
+	// Preserve complete leading lines within the new retention budget. Dedicated
+	// legacy Navidrome files are never opened here.
+	if (!stat(old, &st) && st.st_size > LOG_ROTATE_BYTES) {
+		int fd = open(old, O_RDWR | O_CLOEXEC);
+		if (fd < 0)
+			return NULL;
+		char tail[2048];
+		off_t from = LOG_ROTATE_BYTES > (off_t)sizeof(tail) ? LOG_ROTATE_BYTES - sizeof(tail) : 0;
+		ssize_t n = pread(fd, tail, sizeof(tail), from);
+		off_t keep = 0;
+		for (ssize_t i = n; i > 0; i--)
+			if (tail[i - 1] == '\n') {
+				keep = from + i;
+				break;
+			}
+		bool ok = n >= 0 && !ftruncate(fd, keep);
+		close(fd);
+		if (!ok)
+			return NULL;
+	}
+	return fopen(sd_log_path, "ae");
+}
+
 // Opens the card's log and makes it the destination. Returns false if the card
 // will not take it.
 static bool open_sd_log(void) {
@@ -718,14 +802,7 @@ static bool open_sd_log(void) {
 		return false;
 	}
 
-	struct stat st;
-	if (stat(sd_log_path, &st) == 0 && st.st_size > LOG_ROTATE_BYTES) {
-		char old_path[sizeof(sd_log_path) + 8];
-		snprintf(old_path, sizeof(old_path), "%s.old", sd_log_path);
-		rename(sd_log_path, old_path); // failing leaves it appending, as before
-	}
-
-	FILE *file = fopen(sd_log_path, "ae");
+	FILE *file = open_bounded_card();
 	if (!file) {
 		return false;
 	}
@@ -737,6 +814,8 @@ static bool open_sd_log(void) {
 	}
 	usb_stream = NULL;
 	on_sd = true;
+	managed_card = getenv("SONIX_LOG") == NULL;
+	diagnostic_suspended = false;
 
 	printf("log: writing to %s\n", sd_log_path);
 	return true;
@@ -757,6 +836,7 @@ static void open_null_log(void) {
 		}
 	}
 	on_sd = false;
+	managed_card = false;
 }
 
 static void logging_attach_sd_locked(const char *sd_root) {
@@ -811,6 +891,7 @@ static void logging_suspend_for_usb_locked(void) {
 		return;
 	}
 	usb_was_on_sd = true;
+	atomic_store(&diagnostic_suspended, true);
 
 	printf("log: card log released, holding output until the card is back\n");
 	fflush(stdout);
@@ -824,6 +905,7 @@ static void logging_suspend_for_usb_locked(void) {
 		open_null_log();
 	}
 	on_sd = false;
+	managed_card = false;
 }
 
 void logging_suspend_for_usb(void) {
@@ -837,7 +919,7 @@ static void logging_resume_after_usb_locked(void) {
 		return;
 	}
 
-	FILE *file = sd_log_path[0] ? fopen(sd_log_path, "ae") : NULL;
+	FILE *file = sd_log_path[0] ? open_bounded_card() : NULL;
 	if (file) {
 		// The held lines go in before the redirect, because draining closes
 		// the stream stdout is still pointing at.
@@ -853,6 +935,8 @@ static void logging_resume_after_usb_locked(void) {
 			return;
 		}
 		on_sd = true;
+		managed_card = getenv("SONIX_LOG") == NULL;
+		diagnostic_suspended = false;
 		usb_was_on_sd = false; // only now: the flag is spent when it has paid off
 		printf("log: card log resumed\n");
 	} else {
@@ -918,9 +1002,15 @@ static void sync_card(void) {
 		int fd = fileno(active_stream);
 		struct stat st;
 		if (fd >= 0 && fstat(fd, &st) == 0 && st.st_size != synced_size) {
-			if (fdatasync(fd) == 0) {
+			uint64_t started = logging_diagnostic_clock();
+			int result = fdatasync(fd);
+			int error = result ? errno : 0;
+			uint64_t elapsed = logging_diagnostic_clock() - started;
+			atomic_store(&writer_sync_us, elapsed > UINT32_MAX ? UINT32_MAX : (unsigned)elapsed);
+			atomic_store(&writer_sync_errno, error);
+			atomic_fetch_add(&writer_health_revision, 1);
+			if (!result)
 				synced_size = st.st_size;
-			}
 		}
 	}
 	pthread_mutex_unlock(&log_lock);
@@ -1359,4 +1449,234 @@ void logging_report_previous_run(void) {
 	}
 
 	free(buffer);
+}
+
+// Typed, nonwaiting producer path. It bypasses stdio locks and never falls back
+// to synchronous output if the queue/writer is unavailable.
+bool logging_diagnostic_enabled(void) { return atomic_load(&diagnostic_ready) && !atomic_load(&log_discarding) && !atomic_load(&diagnostic_suspended); }
+uint64_t logging_diagnostic_clock(void) {
+	struct timespec t;
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	return (uint64_t)t.tv_sec * 1000000 + t.tv_nsec / 1000;
+}
+diagnostic_t logging_diagnostic_begin(diagnostic_component_t component, uint32_t parent) {
+	int saved_errno = errno;
+	diagnostic_t c = {.id = atomic_fetch_add(&diagnostic_next, 1) + 1, .parent = parent, .component = component};
+	if (logging_diagnostic_enabled()) {
+		c.capture = atomic_load(&diagnostic_capture);
+		c.start_us = logging_diagnostic_clock();
+	}
+	logging_diagnostic_event(c, D_BEGIN, D_PENDING, NULL, 0);
+	errno = saved_errno;
+	return c;
+}
+static const char *const diagnostic_components[] = {"service", "sync", "store", "play", "audio", "art", "browse", "playlist", "search", "discovery", "download", "offline", "star", "action", "lyrics", "report", "session", "http", "gui", "power", "cache", "vault"};
+static const char *const diagnostic_events[] = {"begin", "end", "snapshot", "queued", "work", "admission", "request", "response", "parse", "prepare", "execute", "commit", "validate", "publish", "cleanup", "deliver", "bind", "visible", "cache_hit", "cache_miss", "priority_wait", "retry", "retired", "decode", "pcm", "first_write", "underrun", "pause", "stop", "intent", "progress", "probe", "flush", "register", "recovery", "release", "query", "display"};
+static const char *const diagnostic_outcomes[] = {"unknown", "ok", "failed", "cancelled", "superseded", "pending", "unavailable", "uncertain"};
+static const char *const diagnostic_fields[] = {"kind", "serial", "count", "offset", "limit", "bytes", "duration_us", "wait_us", "prepare_us", "execute_us", "commit_us", "status", "errno", "source", "flags", "visible_rows", "total", "retries", "width", "height", "target", "strategy", "fs_magic", "syscall", "buffered", "rate", "bits", "reason", "queue_us", "delivery_us", "blank_us", "entity_us", "relation_us", "kernel", "build"};
+_Static_assert(sizeof(diagnostic_components) / sizeof(*diagnostic_components) == D_COMPONENTS, "component vocabulary");
+_Static_assert(sizeof(diagnostic_events) / sizeof(*diagnostic_events) == D_EVENTS, "event vocabulary");
+_Static_assert(sizeof(diagnostic_outcomes) / sizeof(*diagnostic_outcomes) == D_OUTCOMES, "outcome vocabulary");
+_Static_assert(sizeof(diagnostic_fields) / sizeof(*diagnostic_fields) == D_FIELDS, "field vocabulary");
+typedef struct {
+	uint32_t id, capture;
+	uint64_t last_us;
+} diagnostic_summary_t;
+static diagnostic_summary_t diagnostic_summaries[128]; // Only recurring summaries need slots.
+_Static_assert(sizeof(diagnostic_summaries) <= 32 * 1024, "diagnostic state bound");
+static uint64_t diagnostic_second;
+static unsigned diagnostic_used, diagnostic_regular, diagnostic_sequence;
+static unsigned diagnostic_health_seen;
+static uint64_t diagnostic_health_second;
+
+void logging_diagnostic_event(diagnostic_t c, diagnostic_event_t event, diagnostic_outcome_t outcome, const diagnostic_value_t *values, size_t count) {
+	if (!logging_diagnostic_enabled())
+		return;
+	if ((unsigned)c.component >= D_COMPONENTS || (unsigned)event >= D_EVENTS || (unsigned)outcome >= D_OUTCOMES || count > 12)
+		return;
+	int saved_errno = errno;
+	uint64_t now = logging_diagnostic_clock();
+	if (pthread_mutex_trylock(&queue_lock)) {
+		atomic_fetch_add(&diagnostic_lost_lock, 1);
+		errno = saved_errno;
+		return;
+	}
+	uint32_t capture = atomic_load(&diagnostic_capture);
+	if (now / 1000000 != diagnostic_second) {
+		diagnostic_second = now / 1000000;
+		diagnostic_used = diagnostic_regular = 0;
+	}
+	bool critical = event == D_END || event == D_RETIRED || event == D_UNDERRUN || outcome == D_FAILED || outcome == D_CANCELLED;
+	diagnostic_summary_t *slot = NULL;
+	for (size_t i = 0; i < 128; i++) {
+		diagnostic_summary_t *s = &diagnostic_summaries[i];
+		if (s->id == c.id && s->capture == capture) {
+			slot = s;
+			break;
+		}
+	}
+	if (event == D_PROGRESS) {
+		if (!slot) {
+			for (size_t i = 0; i < 128; i++) {
+				diagnostic_summary_t *s = &diagnostic_summaries[i];
+				if (!s->id || s->capture != capture || now - s->last_us >= 1000000) {
+					slot = s;
+					break;
+				}
+			}
+		}
+		if (!slot) {
+			atomic_fetch_add(&diagnostic_lost_context, 1);
+			goto done;
+		}
+		if (slot->id == c.id && slot->capture == capture && now - slot->last_us < 1000000)
+			goto done;
+		*slot = (diagnostic_summary_t){c.id, capture, now};
+	}
+	if (event == D_END && slot)
+		slot->id = 0;
+	char line[768];
+	int n = snprintf(line, sizeof(line), "navidrome-perf v=1 run=%" PRIx64 " capture=%u seq=%u mono_us=%" PRIu64 " op=%u parent=%u component=%s event=%s result=%s elapsed_us=%" PRId64 " snapshot=%d", diagnostic_run, capture, ++diagnostic_sequence, now, c.id, c.parent, diagnostic_components[c.component], diagnostic_events[event], diagnostic_outcomes[outcome], c.start_us && c.capture == capture && now >= c.start_us ? (int64_t)(now - c.start_us) : (int64_t)-1, !c.start_us || c.capture != capture);
+	for (size_t i = 0; i < count && n > 0 && n < (int)sizeof(line) - 1; i++) {
+		if ((unsigned)values[i].key >= D_FIELDS)
+			continue;
+		int added = snprintf(line + n, sizeof(line) - n, " %s=%" PRId64, diagnostic_fields[values[i].key], values[i].value);
+		if (added < 0 || added >= (int)sizeof(line) - n - 1) {
+			n = -1;
+			break;
+		}
+		n += added;
+	}
+	if (n < 0 || n >= (int)sizeof(line) - 1) {
+		atomic_fetch_add(&diagnostic_lost_context, 1);
+		goto done;
+	}
+	line[n++] = '\n';
+	if (diagnostic_used + (unsigned)n > 32768 || (!critical && diagnostic_regular + (unsigned)n > 24576)) {
+		atomic_fetch_add(&diagnostic_lost_rate, 1);
+		goto done;
+	}
+	if (!diagnostic_record(line, n)) {
+		atomic_fetch_add(&diagnostic_lost_queue, 1);
+		goto done;
+	}
+	diagnostic_used += n;
+	if (!critical)
+		diagnostic_regular += n;
+	// Loss counters are exchanged only when room and rate budget allow the note.
+	if (diagnostic_used + 256 <= 32768 && QUEUE_BYTES - queue_len >= 256 + QUEUE_HEADER && (atomic_load(&diagnostic_lost_lock) || atomic_load(&diagnostic_lost_queue) || atomic_load(&diagnostic_lost_rate) || atomic_load(&diagnostic_lost_context))) {
+		n = snprintf(line, sizeof(line), "navidrome-perf v=1 run=%" PRIx64 " capture=%u seq=%u mono_us=%" PRIu64 " event=loss lock=%u queue=%u rate=%u context=%u\n", diagnostic_run, capture, ++diagnostic_sequence, now, atomic_exchange(&diagnostic_lost_lock, 0), atomic_exchange(&diagnostic_lost_queue, 0), atomic_exchange(&diagnostic_lost_rate, 0), atomic_exchange(&diagnostic_lost_context, 0));
+		diagnostic_record(line, n);
+		diagnostic_used += n;
+	}
+	// Piggyback health on real feature traffic; never enqueue from sync_card,
+	// which would create a self-sustaining write/sync loop while otherwise idle.
+	unsigned health = atomic_load(&writer_health_revision);
+	if (health != diagnostic_health_seen && now / 1000000 != diagnostic_health_second && diagnostic_used + 256 <= 32768 && diagnostic_regular + 256 <= 24576 && QUEUE_BYTES - queue_len >= 256 + QUEUE_HEADER) {
+		n = snprintf(line, sizeof(line), "navidrome-perf v=1 run=%" PRIx64 " capture=%u seq=%u mono_us=%" PRIu64 " event=writer_health queued_bytes=%zu sync_us=%u sync_errno=%u\n", diagnostic_run, capture, ++diagnostic_sequence, now, queue_len, atomic_load(&writer_sync_us), atomic_load(&writer_sync_errno));
+		if (diagnostic_record(line, n)) {
+			diagnostic_used += n;
+			diagnostic_regular += n;
+			diagnostic_health_seen = health;
+			diagnostic_health_second = now / 1000000;
+		}
+	}
+	pthread_cond_signal(&queue_filled);
+done:
+	pthread_mutex_unlock(&queue_lock);
+	errno = saved_errno;
+}
+
+bool logging_migrate_navidrome(void) {
+	if (config_get_bool("system", "logging_migrated", false))
+		return true;
+	bool old = config_get_bool("navidrome", "debug", false);
+	if (old)
+		config_set_bool("system", "log_to_sd", true);
+	config_set_bool("navidrome", "debug", false);
+	config_set_bool("system", "logging_migrated", true);
+	bool saved = config_save();
+	if (!saved)
+		config_set_bool("system", "logging_migrated", false);
+	fprintf(stderr, "log: consolidated migration legacy_enabled=%d persisted=%d\n", old, saved);
+	return saved;
+}
+
+static void writer_output(int fd, const char *data, size_t size) {
+	if (!atomic_load(&managed_card)) {
+		write_all(fd, data, size);
+		return;
+	}
+	if (pthread_mutex_trylock(&log_lock)) {
+		atomic_fetch_add(&writer_lost_bytes, (unsigned)size);
+		return;
+	}
+	if (!on_sd || !active_stream) {
+		atomic_fetch_add(&writer_lost_bytes, (unsigned)size);
+		pthread_mutex_unlock(&log_lock);
+		return;
+	}
+	struct stat st;
+	if (fstat(fileno(active_stream), &st)) {
+		atomic_fetch_add(&writer_lost_bytes, (unsigned)size);
+		pthread_mutex_unlock(&log_lock);
+		return;
+	}
+	// queue_take retains complete queue records. A typed event occupies one
+	// whole record; legacy stdio can submit a line in separate fragments.
+	if (st.st_size + (off_t)size > LOG_ROTATE_BYTES) {
+		char old[sizeof(sd_log_path) + 8];
+		snprintf(old, sizeof(old), "%s.old", sd_log_path);
+		if (rename(sd_log_path, old))
+			goto failed;
+		FILE *next = fopen(sd_log_path, "we");
+		if (!next) {
+			rename(old, sd_log_path);
+			goto failed;
+		}
+		setvbuf(next, NULL, _IOLBF, 0);
+		if (dup2(fileno(next), STDOUT_FILENO) < 0 || dup2(fileno(next), STDERR_FILENO) < 0) {
+			// Restore both descriptors before closing the candidate on partial dup2.
+			(void)dup2(fileno(active_stream), STDOUT_FILENO);
+			(void)dup2(fileno(active_stream), STDERR_FILENO);
+			fclose(next);
+			(void)unlink(sd_log_path);
+			(void)rename(old, sd_log_path);
+			goto failed;
+		}
+		fclose(active_stream);
+		active_stream = next;
+		synced_size = -1;
+		char note[128];
+		int n = snprintf(note, sizeof(note), "log: rotation=%u continuation=1 run=%" PRIx64 " capture=%u\n", ++rotation_serial, diagnostic_run, atomic_load(&diagnostic_capture));
+		write_all(fd, note, n);
+	}
+	unsigned lost = atomic_exchange(&writer_lost_bytes, 0);
+	if (lost && size + 96 < LOG_ROTATE_BYTES) {
+		char note[96];
+		int n = snprintf(note, sizeof(note), "log: writer_dropped_bytes=%u\n", lost);
+		// Account the note in the size bound; leave reporting for a later batch if full.
+		if (!fstat(fileno(active_stream), &st) && st.st_size + n + (off_t)size <= LOG_ROTATE_BYTES)
+			write_all(fd, note, n);
+		else
+			atomic_fetch_add(&writer_lost_bytes, lost);
+	}
+	if (!fstat(fileno(active_stream), &st) && st.st_size + (off_t)size <= LOG_ROTATE_BYTES)
+		write_all(fd, data, size);
+	else
+		goto failed;
+	pthread_mutex_unlock(&log_lock);
+	return;
+failed:
+	atomic_store(&writer_failed, true);
+	atomic_fetch_add(&writer_lost_bytes, (unsigned)size);
+	pthread_mutex_unlock(&log_lock);
+}
+
+static __thread diagnostic_t diagnostic_thread_context;
+diagnostic_t logging_diagnostic_current(void) { return diagnostic_thread_context; }
+diagnostic_t logging_diagnostic_attach(diagnostic_t c) {
+	diagnostic_t previous = diagnostic_thread_context;
+	diagnostic_thread_context = c;
+	return previous;
 }

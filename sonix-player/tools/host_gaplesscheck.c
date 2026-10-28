@@ -4,7 +4,45 @@
 #define HOST_GAPLESS_AUDIO_SOURCE "src/system/audio/audio.c"
 #endif
 #include HOST_GAPLESS_AUDIO_SOURCE
+#include "src/system/core/diagnostic.h"
 #include <assert.h>
+
+// A bounded event recorder checks production audio emission sites. The real
+// shared queue, formatting and storage faults are exercised by debugcheck.
+static bool trace_enabled, inject_epipe;
+static diagnostic_t trace_context;
+static unsigned trace_counts[D_EVENTS];
+static int64_t trace_errno, trace_pause_reason;
+bool logging_diagnostic_enabled(void) { return trace_enabled; }
+uint64_t logging_diagnostic_clock(void) {
+	struct timespec t;
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	return (uint64_t)t.tv_sec * 1000000 + t.tv_nsec / 1000;
+}
+diagnostic_t logging_diagnostic_current(void) { return trace_context; }
+diagnostic_t logging_diagnostic_attach(diagnostic_t c) {
+	diagnostic_t old = trace_context;
+	trace_context = c;
+	return old;
+}
+diagnostic_t logging_diagnostic_begin(diagnostic_component_t component, uint32_t parent) {
+	static unsigned id;
+	return (diagnostic_t){.id = ++id, .parent = parent, .component = component, .start_us = logging_diagnostic_clock()};
+}
+void logging_diagnostic_event(diagnostic_t c, diagnostic_event_t event, diagnostic_outcome_t outcome, const diagnostic_value_t *values, size_t count) {
+	if (!trace_enabled)
+		return;
+	assert(c.id == trace_context.id);
+	trace_counts[event]++;
+	if (event == D_RECOVERY || event == D_FIRST_WRITE)
+		assert(outcome == D_OK);
+	for (size_t i = 0; i < count; i++) {
+		if (event == D_UNDERRUN && values[i].key == D_ERRNO)
+			trace_errno = values[i].value;
+		if (event == D_PAUSE && values[i].key == D_REASON)
+			trace_pause_reason = values[i].value;
+	}
+}
 
 typedef struct {
 	char name[160];
@@ -106,6 +144,10 @@ int snd_pcm_delay(snd_pcm_t *pcm, snd_pcm_sframes_t *frames) {
 }
 snd_pcm_sframes_t snd_pcm_writei(snd_pcm_t *pcm, const void *buffer, snd_pcm_uframes_t frames) {
 	fake_pcm_t *f = handle(pcm);
+	if (inject_epipe) {
+		inject_epipe = false;
+		return -EPIPE;
+	}
 	if (reject_writes)
 		return -EIO;
 	assert(f->samples + frames * 2 <= 128);
@@ -370,6 +412,27 @@ static void drains_and_pacing(void) {
 #endif
 	puts("Missing-next/retired-output drains remain finite with a newer request retained; existing host pacing stays bounded.");
 }
+#ifndef HOST_GAPLESS_BASELINE
+static void interruption_diagnostics(void) {
+	reset();
+	trace_context = diagnostic_begin(D_AUDIO, 42);
+	requested_diagnostic = trace_context;
+	trace_enabled = true;
+	diagnostic_first_write = false;
+	diagnostic_frames = diagnostic_errors = 0;
+	snd_pcm_t *pcm = open_output();
+	inject_epipe = true;
+	write_frames(&pcm, (int16_t[]){1, 2, 3, 4}, 4);
+	assert(trace_counts[D_UNDERRUN] == 1 && trace_errno == EPIPE);
+	assert(trace_counts[D_RECOVERY] == 1 && trace_counts[D_FIRST_WRITE] == 1);
+	assert(trace_counts[D_PCM] == 1 && diagnostic_frames == 2);
+	audio_pause_reason(AUDIO_PAUSE_OUTPUT_REMOVED);
+	assert(trace_counts[D_PAUSE] == 1 && trace_pause_reason == AUDIO_PAUSE_OUTPUT_REMOVED);
+	trace_enabled = false;
+	snd_pcm_close(pcm);
+	puts("Production EPIPE/recovery/first-write and output-removal pause carry the original operation and exact numeric cause.");
+}
+#endif
 int main(void) {
 	compatible();
 	mismatches();
@@ -380,6 +443,9 @@ int main(void) {
 	transport_and_failures();
 	bluetooth();
 	drains_and_pacing();
+#ifndef HOST_GAPLESS_BASELINE
+	interruption_diagnostics();
+#endif
 	puts("Production audio handoff checks passed; no actual audio device opened.");
 	return 0;
 }

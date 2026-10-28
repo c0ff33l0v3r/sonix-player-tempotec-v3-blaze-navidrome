@@ -1,4 +1,5 @@
 #include "streamturn.h"
+#include "src/system/core/diagnostic.h"
 
 #include <pthread.h>
 #include <stdbool.h>
@@ -59,6 +60,7 @@ void streamturn_acquire(void) {
 }
 
 bool streamturn_acquire_current(bool (*current)(void *), void *user) {
+	DIAGNOSTIC_SCOPE(D_AUDIO);
 	demand_begin();
 	pthread_mutex_lock(&lock);
 	playback_waiters++;
@@ -72,14 +74,14 @@ bool streamturn_acquire_current(bool (*current)(void *), void *user) {
 			pthread_cond_broadcast(&changed);
 			pthread_mutex_unlock(&lock);
 			demand_end();
-			return false;
+			DIAGNOSTIC_RETURN_BOOL(false);
 		}
 		pthread_mutex_lock(&lock);
 		if (!busy) {
 			busy = true;
 			playback_waiters--;
 			pthread_mutex_unlock(&lock);
-			return true;
+			DIAGNOSTIC_RETURN_BOOL(true);
 		}
 		struct timespec deadline;
 		clock_gettime(CLOCK_REALTIME, &deadline);

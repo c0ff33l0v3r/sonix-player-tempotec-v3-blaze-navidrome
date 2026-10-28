@@ -2512,6 +2512,7 @@ int main(int argc, char **argv) {
 	bool first_start = stat(config_file, &config_st) != 0;
 #endif
 	config_init(config_file);
+	logging_migrate_navidrome();
 
 	// A start by the cable is the charging screen alone, until the power key is
 	// held: before anything else opens the display, the keys or the audio.

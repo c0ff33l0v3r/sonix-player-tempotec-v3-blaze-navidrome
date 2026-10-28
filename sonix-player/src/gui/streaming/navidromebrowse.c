@@ -1,6 +1,7 @@
 #include "navidromebrowse.h"
 #include "navidromealbum.h"
 #include "navidromeart.h"
+#include "navidromediagnostic.h"
 #include "navidromefavorites.h"
 #include "navidromeofflinebadge.h"
 #include "navidromepage.h"
@@ -37,6 +38,7 @@
 #include <string.h>
 
 typedef struct {
+	nd_view_diagnostic_t diagnostic_view;
 	lv_obj_t *screen, *list, *extent, *title, *status, *selection_status;
 	lv_obj_t *rows[ND_WINDOW], *names[ND_WINDOW], *details[ND_WINDOW], *images[ND_WINDOW], *checks[ND_WINDOW];
 	lv_obj_t *playmarks[ND_WINDOW];
@@ -68,6 +70,8 @@ static int pitch;
 static lv_timer_t *browse_timer;
 static const char *const captions[] = {"albums", "navidrome_tracks", "artists", "music_genres"};
 typedef struct {
+	diagnostic_t diagnostic;
+	uint64_t delivery_us;
 	int page, first, count, total;
 	int return_page, artist_parent;
 	char artist[ND_ID_MAX]; // Owned ancestor identity; never read GUI pages on the worker.
@@ -120,10 +124,13 @@ static void release_art(browse_page_t *p) {
 
 static void window_done(void *value) {
 	window_t *result = value;
+	DIAGNOSTIC_ATTACH(result->diagnostic);
+	DIAG(result->diagnostic, D_DELIVER, D_PENDING, DV(D_DELIVERY_US, diagnostic_since(result->delivery_us)));
 	browse_page_t *p = &pages[result->page];
 	nd_library_t current;
 	browse_snapshot(result->query.favorites, &current);
 	if (result->layout_revision != navidromealbum_revision() || p->serial != result->serial || lv_screen_active() != p->screen || !current.ready || current.epoch != result->library.epoch || current.card_epoch != result->library.card_epoch || current.generation != result->library.generation) {
+		DIAG(result->diagnostic, D_END, D_SUPERSEDED);
 		free(result);
 		return;
 	}
@@ -134,6 +141,7 @@ static void window_done(void *value) {
 	browse_selection_ui(p);
 	if (!result->ok) {
 		navidromeofflinebadge_release(&p->offline);
+		DIAG(result->diagnostic, D_END, D_FAILED);
 		lv_label_set_text(p->status, tr("nd_cache_error"));
 		free(result);
 		return;
@@ -281,6 +289,9 @@ static void window_done(void *value) {
 		navidromeofflinebadge_bind_album(&p->offline, p->screen, &q, p->details, p->album.active ? &p->album : NULL);
 	}
 	browse_selection_ui(p);
+	nd_view_observe(&p->diagnostic_view, p->list, p->rows, p->count, p->total, p->loading);
+	DIAG(result->diagnostic, D_BIND, D_OK, DV(D_COUNT, p->count), DV(D_TOTAL, result->total));
+	DIAG(result->diagnostic, D_END, D_OK);
 	free(result);
 }
 
@@ -308,10 +319,14 @@ static void *read_windows(void *unused) {
 			pthread_cond_wait(&window_ready, &window_lock);
 		window_t *result = malloc(sizeof(*result));
 		if (!result) {
+			DIAG(request.diagnostic, D_END, D_FAILED, DV(D_REASON, 7));
 			pending = false;
 			continue;
 		}
 		*result = request;
+		DIAGNOSTIC_ATTACH(result->diagnostic);
+		DIAG(result->diagnostic, D_WORK, D_PENDING);
+		uint64_t query_started = diagnostic_clock();
 		pending = false;
 		pthread_mutex_unlock(&window_lock);
 		nd_store_t store = {0};
@@ -391,8 +406,12 @@ static void *read_windows(void *unused) {
 			navidrome_cache_end();
 		if (cache_io)
 			nd_cache_io_end();
-		if (!gui_post(window_done, result))
+		result->delivery_us = diagnostic_clock();
+		DIAG(result->diagnostic, D_QUERY, result->ok ? D_OK : D_FAILED, DV(D_COUNT, result->count), DV(D_DURATION_US, diagnostic_since(query_started)));
+		if (!gui_post(window_done, result)) {
+			DIAG(result->diagnostic, D_END, D_UNAVAILABLE, DV(D_REASON, 1));
 			free(result);
+		}
 		pthread_mutex_lock(&window_lock);
 	}
 	return NULL;
@@ -411,7 +430,11 @@ static void submit_window(browse_page_t *p) {
 	atomic_fetch_add(&worker_revision, 1);
 	nd_store_cancel_reads();
 	pthread_mutex_lock(&window_lock);
+	if (pending)
+		DIAG(request.diagnostic, D_END, D_SUPERSEDED);
 	memset(&request, 0, sizeof(request));
+	request.diagnostic = diagnostic_begin(D_BROWSE, diagnostic_current().id);
+	DIAG(request.diagnostic, D_QUEUED, D_PENDING, DV(D_OFFSET, first), DV(D_SERIAL, p->serial), DV(D_SOURCE, p->query.favorites));
 	request.page = (int)(p - pages);
 	request.return_page = request.page - 1;
 	// Capture only the current hierarchy, so a direct album entry cannot
@@ -464,8 +487,9 @@ static void scrolling(lv_event_t *e) {
 	if (lv_screen_active() != p->screen || p->select_busy || gesture())
 		return;
 
-    navidromealbum_tick(&p->album);
-    if (p->album.active) {
+	nd_view_observe(&p->diagnostic_view, p->list, p->rows, p->count, p->total, p->loading);
+	navidromealbum_tick(&p->album);
+	if (p->album.active) {
         int y = LV_MAX(0, nd_row_scroll(p->list, p->album.height + p->album_window.extent) - p->album.height);
         int last = p->count ? p->album_window.y[p->count - 1] + (p->album_window.heading[p->count - 1] ? ui_px(ND_ALBUM_DISC_HEIGHT) : pitch) : 0;
         if (!p->loading && (y < p->album_window.offset || (y + lv_obj_get_height(p->list) > last && last < p->album_window.extent)))
@@ -546,6 +570,7 @@ static void loaded(lv_event_t *e) {
 
 static void unloaded(lv_event_t *e) {
 	browse_page_t *p = lv_event_get_user_data(e);
+	nd_view_retire(&p->diagnostic_view);
 	navidromeofflinebadge_release(&p->offline);
 	p->serial++;
 	atomic_fetch_add(&worker_revision, 1);

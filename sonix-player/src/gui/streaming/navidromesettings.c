@@ -15,10 +15,10 @@
 #include "src/gui/shell/uiscale.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
+#include "src/system/core/logging.h"
 #include "src/system/streaming/navidrome.h"
 #include "src/system/streaming/navidromecache.h"
 #include "src/system/streaming/navidromeplay.h"
-#include "src/system/streaming/navidromedebug.h"
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
@@ -32,7 +32,7 @@ typedef enum { PASSPHRASE_CREATE, PASSPHRASE_UNLOCK, PASSPHRASE_CHANGE, PASSPHRA
 static form_t main_form, pass_form, settings_form;
 static lv_obj_t *encrypt_switch, *encrypt_row, *protection_note, *pass_return;
 static bool encrypt_selected;
-static lv_obj_t *debug_switch, *debug_note, *album_view_switch, *auto_connect_switch;
+static lv_obj_t *logging_note, *album_view_switch, *auto_connect_switch;
 static gui_config_t *config;
 static lv_obj_t *save_button, *update_button, *reconnect_button, *unlock_button;
 static lv_obj_t *lock_button, *forget_button, *change_button, *pass_button;
@@ -232,13 +232,7 @@ static void actions(void) {
 	lv_label_set_text(protection_note, tr(encrypted ? "nd_encryption_on_note" : "nd_encryption_off_note"));
 	lv_obj_set_state(album_view_switch, LV_STATE_CHECKED, navidromealbum_enabled());
 	lv_obj_set_state(auto_connect_switch, LV_STATE_CHECKED, config_get_bool("navidrome", "auto_connect", false));
-	nd_debug_state_t debug;
-	nd_debug_snapshot(&debug);
-	if (debug.enabled)
-		lv_obj_add_state(debug_switch, LV_STATE_CHECKED);
-	else
-		lv_obj_remove_state(debug_switch, LV_STATE_CHECKED);
-	lv_label_set_text(debug_note, debug.enabled ? debug.pending ? tr("nd_working") : debug.recording ? debug.path : tr(debug.error ? debug.error : "nd_debug_storage") : tr("nd_debug_off"));
+	lv_label_set_text_fmt(logging_note, "%s → %s\n%s", tr("developer_options"), tr("devoptions_log_to_microsd"), logging_path());
 	sync_actions();
 }
 
@@ -692,17 +686,6 @@ static void settings_loaded_cb(lv_event_t *e) {
 	cache_refresh();
 }
 
-static void debug_cb(lv_event_t *e) {
-	(void)e;
-	if (!gesture()) {
-		bool enabled = lv_obj_has_state(debug_switch, LV_STATE_CHECKED);
-		config_set_bool("navidrome", "debug", enabled);
-		config_save();
-		nd_debug_enable(enabled);
-	}
-	actions();
-}
-
 static void album_view_cb(lv_event_t *e) {
 	(void)e;
 	if (!gesture() && !player_sheet_drag_active())
@@ -770,13 +753,11 @@ void navidromesettings_init(gui_config_t *cfg) {
 	sync_button = action(&settings_form, "nd_sync_library", sync_cb);
 	sync_cancel_button = action(&settings_form, "nd_sync_cancel", sync_cancel_cb);
 	cache_card_build();
-	settingsrow_toggle(settings_form.body, "nd_debug_mode", &debug_switch, debug_cb);
-	debug_note = lv_label_create(settings_form.body);
-	lv_obj_set_width(debug_note, lv_pct(100));
-	lv_label_set_long_mode(debug_note, LV_LABEL_LONG_WRAP);
-	lv_obj_add_style(debug_note, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(debug_note, &font_ui_18, 0);
-	nd_debug_enable(config_get_bool("navidrome", "debug", false));
+	logging_note = lv_label_create(settings_form.body);
+	lv_obj_set_width(logging_note, lv_pct(100));
+	lv_label_set_long_mode(logging_note, LV_LABEL_LONG_WRAP);
+	lv_obj_add_style(logging_note, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(logging_note, &font_ui_18, 0);
 	main_form.keyboard = keyboard_create(main_form.screen, cfg->screen_width, ui_px(316), main_form.fields[0], NULL, "ok", save_cb, NULL);
 	keyboard_visible(&main_form, false);
 	lv_obj_add_event_cb(main_form.screen, main_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);

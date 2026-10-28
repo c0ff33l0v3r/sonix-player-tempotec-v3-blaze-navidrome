@@ -5,6 +5,7 @@
 #include "navidromeplaycatalog.h"
 #include "navidromeplayliststore.h"
 #include "src/gui/shell/gui.h"
+#include "src/system/core/diagnostic.h"
 #include "src/system/core/md5.h"
 #include "src/system/core/sha256.h"
 #include "src/system/core/utils.h"
@@ -32,6 +33,7 @@ static unsigned serial;
 static unsigned admissions;
 static work_activity_t batch_activity, command_activity;
 static nd_dl_request_t command;
+static diagnostic_t command_diagnostic, active_diagnostic;
 static nd_context_t command_context, active_context;
 static nd_library_t active_library;
 static bool saved_pending;
@@ -46,6 +48,7 @@ static struct {
 static unsigned retired_next;
 static nd_dl_view_t view;
 static struct {
+	diagnostic_t diagnostic;
 	bool pending, ok;
 	int added, skipped;
 	char error[64];
@@ -140,6 +143,7 @@ static void deliver(void *unused) {
 		pthread_mutex_unlock(&mutex);
 		return;
 	}
+	diagnostic_t delivered_diagnostic = delivery.diagnostic;
 	nd_dl_captured_cb callback = delivery.callback;
 	void *user = delivery.user;
 	bool ok = delivery.ok;
@@ -156,6 +160,8 @@ static void deliver(void *unused) {
 		ok = false;
 		snprintf(error, sizeof(error), "nd_dl_unavailable");
 	}
+	DIAGNOSTIC_ATTACH(delivered_diagnostic);
+	DIAG(delivered_diagnostic, D_DELIVER, !eligible ? D_SUPERSEDED : ok ? D_OK : D_FAILED, DV(D_COUNT, added));
 	if (callback)
 		callback(ok, error[0] ? error : NULL, added, skipped, user);
 }
@@ -595,6 +601,7 @@ static void *manage(void *unused) {
 		}
 		work_activity_t operation = command_activity;
 		command_activity.mask = 0;
+		diagnostic_t operation_diagnostic = command_diagnostic;
 		nd_dl_request_t q = command;
 		command.captured = NULL;
 		nd_context_t owned_context = command_context;
@@ -603,6 +610,8 @@ static void *manage(void *unused) {
 		void *user = command_user;
 		pending = false;
 		pthread_mutex_unlock(&mutex);
+		DIAGNOSTIC_ATTACH(operation_diagnostic);
+		DIAG(operation_diagnostic, D_WORK, D_PENDING);
 		run_t r = {.library = q.library, .context = owned_context};
 		nd_wipe(&owned_context, sizeof(owned_context));
 		const char *error = NULL;
@@ -689,6 +698,7 @@ static void *manage(void *unused) {
 		pthread_mutex_lock(&mutex);
 		view.busy = false;
 		if (!error && (q.action == NDDL_CAPTURE || q.action == NDDL_RESUME || q.action == NDDL_RETRY)) {
+			active_diagnostic = operation_diagnostic;
 			active_library = q.library;
 			active_context = r.context;
 			admissions++;
@@ -696,6 +706,7 @@ static void *manage(void *unused) {
 			pthread_cond_broadcast(&changed);
 		}
 		if (callback) {
+			delivery.diagnostic = operation_diagnostic;
 			delivery.pending = true;
 			delivery.callback = callback;
 			delivery.user = user;
@@ -707,6 +718,7 @@ static void *manage(void *unused) {
 			snprintf(delivery.error, sizeof(delivery.error), "%s", error ? error : "");
 		}
 		pthread_mutex_unlock(&mutex);
+		DIAG(operation_diagnostic, D_END, diagnostic_error_outcome(error), DV(D_COUNT, added), DV(D_TOTAL, added + skipped));
 		gui_post_signal(view_notice, NULL);
 		work_activity_end(&operation);
 		nd_wipe(&r.context, sizeof(r.context));
@@ -715,10 +727,12 @@ static void *manage(void *unused) {
 }
 
 static const char *enrich(run_t *r, nd_dl_job_t *j, const char *cached) {
+	DIAGNOSTIC_SCOPE(D_DOWNLOAD);
 	// A saved playlist may contain exact IDs absent from any synced library.
 	// Resolve structure here, outside every card/SQL lease and only on transfer.
 	if (!j->source.album_id[0]) {
-		if (!navidrome_playback_current(&r->context, true)) return "nd_dl_album_context";
+		if (!navidrome_playback_current(&r->context, true))
+			DIAGNOSTIC_RETURN_ERROR("nd_dl_album_context");
 		char encoded[ND_ID_MAX * 3 + 1], query[ND_ID_MAX * 3 + 8];
 		http_url_encode(j->source.row.id, encoded, sizeof(encoded));
 		snprintf(query, sizeof(query), "id=%s", encoded);
@@ -730,14 +744,16 @@ static const char *enrich(run_t *r, nd_dl_job_t *j, const char *cached) {
 		nd_document_t doc;
 		const char *error = nd_api_finite_json(r->context.host, r->context.user, r->context.password, "getSong", query, ND_API_BYTES, current, r, &doc);
 		r->network = old;
-		if (error) return error;
+		if (error)
+			DIAGNOSTIC_RETURN_ERROR(error);
 		nd_playrow_t row;
 		int song = json_get(&doc.doc, doc.response, "song");
 		bool valid = nd_api_field_unique(&doc.doc, doc.response, "song", true) &&
 			nd_metadata_row(&doc.doc, song, ND_TRACKS, &row) && !strcmp(row.row.id, j->source.row.id) && row.album_id[0];
 		if (valid) j->source = row;
 		nd_api_free(&doc);
-		if (!valid) return "nd_response_error";
+		if (!valid)
+			DIAGNOSTIC_RETURN_ERROR("nd_response_error");
 	}
 	nd_dl_store_t store;
 	if (open_store(r, &store, false)) {
@@ -774,7 +790,7 @@ static const char *enrich(run_t *r, nd_dl_job_t *j, const char *cached) {
 		const char *error = nd_api_finite_json(r->context.host, r->context.user, r->context.password, "getAlbum", query, ND_API_BYTES, current, r, &doc);
 		r->network = old;
 		if (error)
-			return error;
+			DIAGNOSTIC_RETURN_ERROR(error);
 		int album = json_get(&doc.doc, doc.response, "album"), songs = json_get(&doc.doc, album, "song");
 		char id[ND_ID_MAX];
 		bool valid = nd_pl_field(&doc.doc, album, "id", id, sizeof(id), true, false) && !strcmp(id, j->source.album_id);
@@ -802,13 +818,13 @@ static const char *enrich(run_t *r, nd_dl_job_t *j, const char *cached) {
 		}
 		nd_api_free(&doc);
 		if (!valid)
-			return "nd_response_error";
+			DIAGNOSTIC_RETURN_ERROR("nd_response_error");
 	}
 	if (j->multi < 0)
-		return "nd_dl_album_context";
+		DIAGNOSTIC_RETURN_ERROR("nd_dl_album_context");
 	if (!j->album_artist[0])
 		snprintf(j->album_artist, sizeof(j->album_artist), "Unknown Album Artist");
-	return NULL;
+	DIAGNOSTIC_RETURN_ERROR(NULL);
 }
 
 static int case_name(int directory, const char *name, char actual[256]) {
@@ -997,10 +1013,11 @@ static bool publish(void *data) {
 }
 
 static const char *probe_publication(run_t *r) {
+	DIAGNOSTIC_SCOPE(D_DOWNLOAD);
 	// Probe the actual selected filesystem before fetching a potentially large
 	// original. Both probe names live beneath the hidden feature directory.
 	if (!navidrome_playback_begin(&r->context))
-		return "nd_audio_cancelled";
+		DIAGNOSTIC_RETURN_ERROR("nd_audio_cancelled");
 	char root[512], db[1200], part[80], leaf[80], nonce[33];
 	uint8_t random[16];
 	int dir = nd_dl_paths(&r->library, root, db) ? nd_dl_directory(root, ".local/navidrome", false) : -1;
@@ -1026,7 +1043,7 @@ static const char *probe_publication(run_t *r) {
 	if (dir >= 0)
 		close(dir);
 	navidrome_cache_end();
-	return error;
+	DIAGNOSTIC_RETURN_ERROR(error);
 }
 static void remove_partial(run_t *r, const nd_dl_job_t *j) {
 	if (!j->partial[0] || j->inode <= 0 || j->state == NDDL_INTENT || !navidrome_playback_begin(&r->context))
@@ -1048,19 +1065,22 @@ static void remove_partial(run_t *r, const nd_dl_job_t *j) {
 }
 
 static const char *transfer(run_t *r, nd_dl_job_t *j) {
+	DIAGNOSTIC_SCOPE(D_DOWNLOAD);
+	uint64_t transfer_start = diagnostic_clock(), storage_us = 0;
 	if (!nd_dl_destination(j->destination))
-		return "nd_dl_path_error";
+		DIAGNOSTIC_RETURN_ERROR("nd_dl_path_error");
 	remove_partial(r, j);
 	j->state = NDDL_WAITING;
 	if (!save_job(r, j))
-		return "nd_dl_store_error";
+		DIAGNOSTIC_RETURN_ERROR("nd_dl_store_error");
 	const char *probe = probe_publication(r);
 	if (probe)
-		return probe;
+		DIAGNOSTIC_RETURN_ERROR(probe);
 	if (!streamturn_acquire_background(current, r))
-		return "nd_audio_cancelled";
+		DIAGNOSTIC_RETURN_ERROR("nd_audio_cancelled");
 	char cached[512] = "", root[512], db[1200];
 	bool copying = nd_audio_copy_acquire(&r->library, &r->context, j->source.row.id, cached);
+	DIAG(_diagnostic_scope.context, D_ADMISSION, D_OK, DV(D_SOURCE, copying ? 1 : 2));
 	const char *error = enrich(r, j, copying ? cached : NULL);
 	http_session_t *stream = NULL;
 	if (!error && !copying) {
@@ -1176,6 +1196,7 @@ static const char *transfer(run_t *r, nd_dl_job_t *j) {
 			break;
 		}
 		int directory = nd_dl_paths(&r->library, root, db) ? nd_dl_directory(root, relative, false) : -1;
+		uint64_t write_start = diagnostic_clock();
 		int out = directory >= 0 ? openat(directory, part, O_WRONLY | O_NOFOLLOW | (j->bytes ? O_APPEND : O_CREAT | O_EXCL), 0600) : -1;
 		struct stat st;
 		bool ok = out >= 0 && !fstat(out, &st) && S_ISREG(st.st_mode) && st.st_size == j->bytes && (!j->bytes || (int64_t)st.st_ino == j->inode) && room(directory, n);
@@ -1192,6 +1213,9 @@ static const char *transfer(run_t *r, nd_dl_job_t *j) {
 			error = "nd_dl_storage";
 			break;
 		}
+		int64_t write_elapsed = diagnostic_since(write_start);
+		if (write_elapsed >= 0)
+			storage_us += write_elapsed;
 		j->bytes += n;
 		sha256_update(&incoming, buffer, (size_t)n);
 		source_offset += n;
@@ -1218,6 +1242,7 @@ static const char *transfer(run_t *r, nd_dl_job_t *j) {
 	if (!error && !current(r))
 		error = "nd_audio_cancelled";
 	char transferred[65];
+	DIAG(_diagnostic_scope.context, D_RESPONSE, diagnostic_error_outcome(error), DV(D_BYTES, j->bytes), DV(D_DURATION_US, diagnostic_since(transfer_start)), DV(D_EXECUTE_US, storage_us));
 	if (!error)
 		sha256_final_hex(&incoming, transferred);
 	if (!error) {
@@ -1230,13 +1255,16 @@ static const char *transfer(run_t *r, nd_dl_job_t *j) {
 			int n = snprintf(path, sizeof(path), "%s/%s", root, j->partial);
 			struct stat st;
 			int fd = directory >= 0 ? openat(directory, part, O_WRONLY | O_NOFOLLOW) : -1;
+			uint64_t flush_start = diagnostic_clock();
 			bool ok = fd >= 0 && !fsync(fd);
 			if (fd >= 0 && close(fd))
 				ok = false;
+			DIAG(_diagnostic_scope.context, D_FLUSH, ok ? D_OK : D_FAILED, DV(D_DURATION_US, diagnostic_since(flush_start)), DV(D_ERRNO, ok ? 0 : errno));
 			if (!ok)
 				error = "nd_dl_storage";
 			if (ok)
 				ok = n > 0 && n < (int)sizeof(path) && nd_audio_valid(path) && nd_dl_fingerprint(directory, part, j->digest, &st, current, r) && st.st_size == j->bytes && !strcmp(j->digest, transferred);
+			DIAG(_diagnostic_scope.context, D_VALIDATE, ok ? D_OK : D_FAILED, DV(D_BYTES, j->bytes));
 			if (directory >= 0)
 				close(directory);
 			navidrome_cache_end();
@@ -1270,7 +1298,9 @@ static const char *transfer(run_t *r, nd_dl_job_t *j) {
 		if (ok) {
 			j->state = NDDL_COMPLETE;
 			j->error[0] = 0;
-			if (!save_job(r, j)) {
+			bool registered = save_job(r, j);
+			DIAG(_diagnostic_scope.context, D_REGISTER, registered ? D_OK : D_UNCERTAIN);
+			if (!registered) {
 				j->state = NDDL_INTENT;
 				error = "nd_dl_registration_pending";
 			} else {
@@ -1287,7 +1317,7 @@ static const char *transfer(run_t *r, nd_dl_job_t *j) {
 	view.active_key = 0;
 	pthread_mutex_unlock(&mutex);
 	streamturn_release();
-	return error;
+	DIAGNOSTIC_RETURN_ERROR(error);
 }
 
 static void reconcile(run_t *r) {
@@ -1355,6 +1385,7 @@ static void *download(void *unused) {
 			pthread_mutex_unlock(&mutex);
 			continue;
 		}
+		DIAGNOSTIC_ATTACH(active_diagnostic);
 		run_t r = {.library = active_library, .context = active_context, .serial = serial};
 		unsigned admission = admissions;
 		pthread_mutex_unlock(&mutex);
@@ -1473,6 +1504,8 @@ bool navidromedownloads_request(const nd_dl_request_t *q, nd_dl_captured_cb call
 			armed = network_wanted = false;
 			work_activity_end(&batch_activity);
 		}
+		command_diagnostic = diagnostic_begin(D_DOWNLOAD, diagnostic_current().id);
+		DIAG(command_diagnostic, D_QUEUED, D_PENDING, DV(D_KIND, q->action), DV(D_OFFSET, q->offset));
 		command = *q;
 		command.captured = nd_owned_retain(q->captured);
 		command_context = context;

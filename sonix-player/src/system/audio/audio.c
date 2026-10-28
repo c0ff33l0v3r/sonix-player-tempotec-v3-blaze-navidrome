@@ -14,14 +14,15 @@
 #include "src/system/device/power.h"
 #include "src/system/core/utils.h"
 
+#include "src/system/core/diagnostic.h"
+#include <errno.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdarg.h>
-#include <errno.h>
 #include <unistd.h>
 
 #include <sched.h>
@@ -248,6 +249,12 @@ static pthread_cond_t audio_cond = PTHREAD_COND_INITIALIZER;
 
 static audio_command_t audio_command = AUDIO_CMD_NONE;
 static audio_status_t playback_status = AUDIO_STATUS_STOPPED;
+static diagnostic_t requested_diagnostic; // owned by audio_mutex, copied at dequeue
+static __thread bool diagnostic_first_write;
+static __thread diagnostic_outcome_t diagnostic_terminal;
+static __thread uint64_t diagnostic_frames;
+static __thread unsigned diagnostic_errors;
+static __thread uint64_t diagnostic_next_summary;
 static char current_filepath[512] = {0};
 static bool play_request = false;
 // When the pending play request was made. The playback thread clears it as it
@@ -683,7 +690,7 @@ static uint32_t le32(const unsigned char *p) {
 static int parse_wav(const char *filepath, wav_info_t *info, FILE **file_out) {
 	FILE *f = fopen(filepath, "rb");
 	if (!f) {
-		fprintf(stderr, "Audio: Failed to open file: %s\n", filepath);
+		fprintf(stderr, "Audio: Failed to open file: %s\n", "media");
 		return WAV_BAD;
 	}
 
@@ -771,8 +778,7 @@ static int parse_wav(const char *filepath, wav_info_t *info, FILE **file_out) {
 	} else if (tag == WAVE_FORMAT_IEEE_FLOAT && bits == 64) {
 		info->sample = WAV_FLOAT64;
 	} else {
-		fprintf(stderr, "audio: '%s' is WAV format 0x%04x at %d bits, not read by the WAV path\n", filepath, tag,
-				bits);
+		fprintf(stderr, "audio: '%s' is WAV format 0x%04x at %d bits, not read by the WAV path\n", "media", tag, bits);
 		fclose(f);
 		return WAV_UNSUPPORTED;
 	}
@@ -1870,6 +1876,7 @@ static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_pe
 // Every PCM this player opens goes through here, so that audio_quiet_ms() knows
 // when one is being opened and when the last one was.
 static snd_pcm_t *open_pcm_device(int channels, int sample_rate, int bits_per_sample, snd_pcm_uframes_t *period_size_out) {
+	uint64_t diagnostic_opened = diagnostic_clock();
 	pcm_opening = true;
 	last_open_err = 0;
 	snd_pcm_t *pcm = open_pcm_device_now(channels, sample_rate, bits_per_sample, period_size_out);
@@ -1878,6 +1885,7 @@ static snd_pcm_t *open_pcm_device(int channels, int sample_rate, int bits_per_sa
 	}
 	quiet_since_ms = log_ms();
 	pcm_opening = false;
+	DIAG(diagnostic_current(), D_PCM, pcm ? D_OK : D_FAILED, DV(D_DURATION_US, diagnostic_since(diagnostic_opened)), DV(D_ERRNO, last_open_err), DV(D_RATE, sample_rate), DV(D_BITS, bits_per_sample));
 	return pcm;
 }
 
@@ -2652,16 +2660,31 @@ static snd_pcm_sframes_t pcm_write_recover(snd_pcm_t **pcm, const void *buf, snd
 			written = snd_pcm_writei(*pcm, buf, frames);
 		}
 		if (written >= 0) {
+			diagnostic_frames += written;
+			if (diagnostic_enabled()) {
+				uint64_t now = diagnostic_clock();
+				if (now >= diagnostic_next_summary) {
+					diagnostic_next_summary = now + 1000000;
+					DIAG(diagnostic_current(), D_PROGRESS, D_PENDING, DV(D_COUNT, diagnostic_frames), DV(D_RETRIES, diagnostic_errors), DV(D_RATE, rate), DV(D_BITS, bits));
+				}
+			}
+			if (written > 0 && !diagnostic_first_write) {
+				diagnostic_first_write = true;
+				DIAG(diagnostic_current(), D_FIRST_WRITE, D_OK, DV(D_RATE, rate), DV(D_BITS, bits));
+			}
 			playback_wrote(*pcm, (snd_pcm_uframes_t)written);
 			return written;
 		}
 
+		diagnostic_errors++;
+		DIAG(diagnostic_current(), D_UNDERRUN, D_FAILED, DV(D_ERRNO, -written), DV(D_COUNT, diagnostic_frames), DV(D_RETRIES, diagnostic_errors));
 		write_recoveries++;
 		fprintf(stderr, "audio[%ld]: write error: %s (recovery %d)\n", log_ms(), snd_strerror((int)written),
 				attempt + 1);
 
 		if (written == -EPIPE) {
-			snd_pcm_prepare(*pcm);
+			int recovered = snd_pcm_prepare(*pcm);
+			DIAG(diagnostic_current(), D_RECOVERY, recovered < 0 ? D_FAILED : D_OK, DV(D_STATUS, recovered));
 			continue;
 		}
 		if (written == -ESTRPIPE) {
@@ -2853,7 +2876,7 @@ static bool retry_track_once(const char *filepath, const char *reason) {
 	pthread_cond_signal(&audio_cond);
 	playback_wake(); // and out of a pause, if it sits in one
 	pthread_mutex_unlock(&audio_mutex);
-	fprintf(stderr, "audio[%ld]: retrying '%s' (%s)\n", log_ms(), filepath, reason);
+	fprintf(stderr, "audio[%ld]: retrying '%s' (%s)\n", log_ms(), "media", reason);
 	return true;
 }
 
@@ -3025,7 +3048,7 @@ static void play_wav_file(const char *filepath) {
 		return;
 	}
 	if (parsed != WAV_OK) {
-		fprintf(stderr, "Audio: Failed to parse WAV metadata: %s\n", filepath);
+		fprintf(stderr, "Audio: Failed to parse WAV metadata: %s\n", "media");
 		pthread_mutex_lock(&audio_mutex);
 		audio_command = AUDIO_CMD_STOP;
 		playback_status = AUDIO_STATUS_STOPPED;
@@ -3373,7 +3396,7 @@ static void play_wav_file(const char *filepath) {
 			// As in the decoded path: a file that gave nothing has not been
 			// played, and must not be reported as finished.
 			if (bytes_played == 0) {
-				fprintf(stderr, "audio[%ld]: '%s' returned no audio at all\n", log_ms(), filepath);
+				fprintf(stderr, "audio[%ld]: '%s' returned no audio at all\n", log_ms(), "media");
 				if (retry_track_once(filepath, "nothing read")) {
 					break;
 				}
@@ -3611,15 +3634,16 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			break;
 		}
 		if (wait == 0) {
-			fprintf(stderr, "audio[%ld]: '%s' is still downloading, waiting instead of giving up\n", log_ms(),
-					filepath);
+			fprintf(stderr, "audio[%ld]: '%s' is still downloading, waiting instead of giving up\n", log_ms(), "media");
 		}
 		usleep(DECODER_GROW_RETRY_MS * 1000);
 		dec = decoder_open(filepath, format);
 	}
 
+	DIAG(diagnostic_current(), D_DECODE, dec ? D_OK : D_FAILED, DV(D_KIND, format));
 	if (!dec) {
-		fprintf(stderr, "Audio: Failed to open decoder for: %s\n", filepath);
+		diagnostic_terminal = D_FAILED;
+		fprintf(stderr, "Audio: Failed to open decoder\n");
 		pthread_mutex_lock(&audio_mutex);
 		audio_command = AUDIO_CMD_STOP;
 		playback_status = AUDIO_STATUS_STOPPED;
@@ -4251,7 +4275,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			// already retries), so the track gets one retry and then stops
 			// WITHOUT claiming it played.
 			if (bytes_played == 0) {
-				fprintf(stderr, "audio[%ld]: '%s' returned no audio at all\n", log_ms(), filepath);
+				fprintf(stderr, "audio[%ld]: '%s' returned no audio at all\n", log_ms(), "media");
 				if (retry_track_once(filepath, "nothing decoded")) {
 					break;
 				}
@@ -4295,8 +4319,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			}
 
 			if (cut_short) {
-				fprintf(stderr, "audio[%ld]: '%s' stopped at %.1f s of %.1f: cut short, the queue stays put\n", log_ms(),
-						filepath, (double)reached / sample_rate, (double)declared / sample_rate);
+				fprintf(stderr, "audio[%ld]: '%s' stopped at %.1f s of %.1f: cut short, the queue stays put\n", log_ms(), "media", (double)reached / sample_rate, (double)declared / sample_rate);
 			}
 			break;
 		}
@@ -4493,13 +4516,13 @@ static void play_file(const char *filepath) {
 	// One line in, one line out: with these, the log answers by itself
 	// whether a track that "never started" was never picked up, failed to
 	// open, or started and ended at once.
-	fprintf(stderr, "audio[%ld]: starting '%s'\n", log_ms(), filepath);
+	fprintf(stderr, "audio[%ld]: starting media\n", log_ms());
 
 	// And where the crash handler can reach it: a log ends at whatever was
 	// flushed, and a process killed rather than faulting writes nothing at all,
 	// so the name of the track has to be somewhere a signal handler can read it
 	// without going through a stream.
-	crumb_set_track(filepath);
+	crumb_set_track("media");
 
 	decode_format_t format = decode_detect_format(filepath);
 	// The route, applied here: no PCM exists in this thread right now, so
@@ -4535,9 +4558,10 @@ static void play_file(const char *filepath) {
 
 	pthread_mutex_lock(&audio_mutex);
 	bool replaced = play_request;
+	if (diagnostic_terminal != D_FAILED)
+		diagnostic_terminal = replaced ? D_SUPERSEDED : track_completed ? D_OK : audio_command == AUDIO_CMD_STOP ? D_CANCELLED : D_UNKNOWN;
 	pthread_mutex_unlock(&audio_mutex);
-	fprintf(stderr, "audio[%ld]: '%s' ended (%s)\n", log_ms(), filepath,
-			replaced ? "replaced by a new track" : "stop or end of track");
+	fprintf(stderr, "audio[%ld]: media ended (%s)\n", log_ms(), replaced ? "replaced by a new track" : "stop or end of track");
 }
 
 static void *playback_thread_func(void *arg) {
@@ -4638,6 +4662,11 @@ static void *playback_thread_func(void *arg) {
 			break;
 		}
 
+		DIAGNOSTIC_ATTACH(requested_diagnostic);
+		diagnostic_first_write = false;
+		diagnostic_terminal = D_UNKNOWN;
+		diagnostic_frames = diagnostic_errors = 0;
+		diagnostic_next_summary = 0;
 		char filepath[512];
 		strncpy(filepath, current_filepath, sizeof(filepath));
 		play_request = false;
@@ -4646,7 +4675,9 @@ static void *playback_thread_func(void *arg) {
 		playback_context_active = true;
 		pthread_mutex_unlock(&audio_mutex);
 
+		DIAG(diagnostic_current(), D_WORK, D_PENDING);
 		play_file(filepath);
+		DIAG(diagnostic_current(), D_END, diagnostic_terminal, DV(D_COUNT, diagnostic_frames), DV(D_RETRIES, diagnostic_errors));
 		track_started(); // a track that never reached its open
 
 		pthread_mutex_lock(&audio_mutex);
@@ -4705,7 +4736,7 @@ int audio_init(void) {
 }
 
 int audio_play(const char *filepath) {
-	fprintf(stderr, "audio[%ld]: play requested '%s'\n", log_ms(), filepath);
+	fprintf(stderr, "audio[%ld]: play requested\n", log_ms());
 
 	// NO route write here: this runs on the UI thread while the previous
 	// track's PCM may still be open, and poking "Output Port Switch" with a
@@ -4714,6 +4745,8 @@ int audio_play(const char *filepath) {
 
 	pthread_mutex_lock(&audio_mutex);
 	observation_serial++;
+	requested_diagnostic = diagnostic_begin(D_AUDIO, diagnostic_current().id);
+	DIAG(requested_diagnostic, D_INTENT, D_PENDING, DV(D_SOURCE, diagnostic_current().component == D_PLAY && diagnostic_current().id ? 1 : 0));
 	restart_fresh_pending = false; // an explicit play beats the armed restart
 	strncpy(current_filepath, filepath, sizeof(current_filepath) - 1);
 	play_request = true;
@@ -4753,10 +4786,12 @@ int audio_play(const char *filepath) {
 // mutex: otherwise the playback thread could open the file and push its first
 // second out of the speakers before the seek reached it.
 static int play_at(const char *filepath, double start_secs, bool continuation) {
-	fprintf(stderr, "audio[%ld]: play requested '%s' from %.1f s\n", log_ms(), filepath, start_secs);
+	fprintf(stderr, "audio[%ld]: play requested from %.1f s\n", log_ms(), start_secs);
 
 	pthread_mutex_lock(&audio_mutex);
 	if (!continuation) observation_serial++;
+	requested_diagnostic = diagnostic_begin(D_AUDIO, diagnostic_current().id);
+	DIAG(requested_diagnostic, D_INTENT, D_PENDING, DV(D_SOURCE, diagnostic_current().component == D_PLAY && diagnostic_current().id ? 1 : 0));
 	restart_fresh_pending = false; // an explicit play beats the armed restart
 	strncpy(current_filepath, filepath, sizeof(current_filepath) - 1);
 	current_filepath[sizeof(current_filepath) - 1] = '\0';
@@ -4782,10 +4817,12 @@ static int play_at(const char *filepath, double start_secs, bool continuation) {
 int audio_play_at(const char *filepath, double start_secs) { return play_at(filepath, start_secs, false); }
 
 int audio_play_paused(const char *filepath, double start_secs) {
-	fprintf(stderr, "audio[%ld]: restore requested '%s' at %.1f s (paused)\n", log_ms(), filepath, start_secs);
+	fprintf(stderr, "audio[%ld]: restore requested at %.1f s (paused)\n", log_ms(), start_secs);
 
 	pthread_mutex_lock(&audio_mutex);
 	observation_serial++;
+	requested_diagnostic = diagnostic_begin(D_AUDIO, diagnostic_current().id);
+	DIAG(requested_diagnostic, D_INTENT, D_PENDING, DV(D_SOURCE, diagnostic_current().component == D_PLAY && diagnostic_current().id ? 1 : 0));
 	restart_fresh_pending = false; // an explicit play beats the armed restart
 	strncpy(current_filepath, filepath, sizeof(current_filepath) - 1);
 	current_filepath[sizeof(current_filepath) - 1] = '\0';
@@ -4930,16 +4967,19 @@ bool audio_suspend_freeze(int timeout_ms) {
 		progress_current_secs = pos;
 		progress_total_secs = total;
 		pthread_mutex_unlock(&audio_mutex);
-		fprintf(stderr, "audio: frozen while paused: '%s' at %.1f s, fresh restart armed\n", path, pos);
+		fprintf(stderr, "audio: frozen while paused at %.1f s, fresh restart armed\n", pos);
 	} else {
 		fprintf(stderr, "audio: frozen while stopped\n");
 	}
 	return true;
 }
 
-void audio_pause(void) {
+void audio_pause(void) { audio_pause_reason(AUDIO_PAUSE_UNKNOWN); }
+
+void audio_pause_reason(audio_pause_reason_t reason) {
 	printf("pausing\n");
 	pthread_mutex_lock(&audio_mutex);
+	DIAG(requested_diagnostic, D_PAUSE, D_OK, DV(D_REASON, reason));
 	observation_discontinuity++;
 	audio_command = AUDIO_CMD_PAUSE;
 
@@ -4966,7 +5006,7 @@ void audio_resume(void) {
 		double pos = restart_fresh_pos;
 		restart_fresh_pending = false;
 		pthread_mutex_unlock(&audio_mutex);
-		fprintf(stderr, "audio: resume after mem -> fresh start of '%s' at %.1f s\n", path, pos);
+		fprintf(stderr, "audio: resume after mem -> fresh start at %.1f s\n", pos);
 		play_at(path, pos, true);
 		return;
 	}
@@ -4986,9 +5026,12 @@ void audio_resume(void) {
 	playback_wake(); // the paused loop waits on it (paused_wait_released)
 }
 
-void audio_stop(void) {
+void audio_stop(void) { audio_stop_reason(AUDIO_STOP_UNKNOWN); }
+
+void audio_stop_reason(audio_stop_reason_t reason) {
 	printf("stopping\n");
 	pthread_mutex_lock(&audio_mutex);
+	DIAG(requested_diagnostic, D_STOP, reason == AUDIO_STOP_FAILURE ? D_FAILED : D_CANCELLED, DV(D_REASON, reason));
 	observation_discontinuity++;
 	audio_command = AUDIO_CMD_STOP;
 	playback_status = AUDIO_STATUS_STOPPED;

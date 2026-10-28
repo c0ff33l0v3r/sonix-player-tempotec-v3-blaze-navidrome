@@ -1,4 +1,5 @@
 #include "decode.h"
+#include "src/system/core/diagnostic.h"
 
 #include "src/system/library/cue.h"
 
@@ -1997,21 +1998,25 @@ static decoder_t *decoder_open_cue(const char *sheet_path, int track, decode_for
 }
 
 decoder_t *decoder_open(const char *filepath, decode_format_t format) {
+	DIAGNOSTIC_SCOPE(D_AUDIO);
+	uint64_t started = diagnostic_clock();
 	char sheet[512];
 	int track = cue_split_path(filepath, sheet, sizeof(sheet));
-	if (track > 0) {
-		return decoder_open_cue(sheet, track, format, true);
-	}
-	return decoder_open_file(filepath, format);
+	decoder_t *decoder = track > 0 ? decoder_open_cue(sheet, track, format, true) : decoder_open_file(filepath, format);
+	_diagnostic_scope.outcome = decoder ? D_OK : D_FAILED;
+	DIAG(_diagnostic_scope.context, D_DECODE, _diagnostic_scope.outcome, DV(D_KIND, format), DV(D_DURATION_US, diagnostic_since(started)));
+	return decoder;
 }
 
 decoder_t *decoder_open_info(const char *filepath, decode_format_t format) {
+	DIAGNOSTIC_SCOPE(D_AUDIO);
+	uint64_t started = diagnostic_clock();
 	char sheet[512];
 	int track = cue_split_path(filepath, sheet, sizeof(sheet));
-	if (track > 0) {
-		return decoder_open_cue(sheet, track, format, false);
-	}
-	return decoder_open_file(filepath, format);
+	decoder_t *decoder = track > 0 ? decoder_open_cue(sheet, track, format, false) : decoder_open_file(filepath, format);
+	_diagnostic_scope.outcome = decoder ? D_OK : D_FAILED;
+	DIAG(_diagnostic_scope.context, D_DECODE, _diagnostic_scope.outcome, DV(D_KIND, format), DV(D_DURATION_US, diagnostic_since(started)));
+	return decoder;
 }
 
 static decoder_t *decoder_open_file(const char *filepath, decode_format_t format) {
@@ -2234,7 +2239,7 @@ static decoder_t *decoder_open_file(const char *filepath, decode_format_t format
 		// only place that says which.
 		mp4_file_t *mp4 = mp4_open(filepath);
 		if (!mp4) {
-			fprintf(stderr, "decode: %s is not an MP4 with audio we know how to play\n", filepath);
+			fprintf(stderr, "decode: %s is not an MP4 with audio we know how to play\n", "media");
 			free(dec);
 			return NULL;
 		}
@@ -2316,7 +2321,7 @@ static decoder_t *decoder_open_file(const char *filepath, decode_format_t format
 		// parametric stereo turns a mono core into two channels. What comes
 		// back is kept, not thrown away -- it is the start of the book.
 		if (!aac_fill(dec)) {
-			fprintf(stderr, "decode: no decodable audio in %s\n", filepath);
+			fprintf(stderr, "decode: no decodable audio in %s\n", "media");
 			aac_state_free(s);
 			free(dec);
 			return NULL;

@@ -1,4 +1,5 @@
 #include "navidromecrypto.h"
+#include "src/system/core/diagnostic.h"
 
 #include <dlfcn.h>
 #include <limits.h>
@@ -67,13 +68,14 @@ bool nd_random(void *data, size_t size) {
 }
 
 bool nd_derive(const char *passphrase, const uint8_t salt[16], unsigned iterations, uint8_t key[32]) {
+	DIAGNOSTIC_SCOPE(D_VAULT);
 	pthread_once(&once, load_crypto);
 	if (!available || !passphrase || strlen(passphrase) > INT_MAX || !iterations || iterations > INT_MAX)
-		return false;
+		DIAGNOSTIC_RETURN_BOOL(false);
 	bool ok = api.PKCS5_PBKDF2_HMAC(passphrase, (int)strlen(passphrase), salt, 16, (int)iterations, api.EVP_sha256(), 32, key) == 1;
 	if (!ok)
 		nd_wipe(key, 32);
-	return ok;
+	DIAGNOSTIC_RETURN_BOOL(ok);
 }
 
 static bool crypt(bool encrypt, const uint8_t key[32], const uint8_t nonce[12], const void *aad, size_t aad_len, const void *in, size_t size, void *out, uint8_t tag[16]) {

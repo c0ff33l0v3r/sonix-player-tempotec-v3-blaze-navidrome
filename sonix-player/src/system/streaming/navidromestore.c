@@ -1,6 +1,7 @@
 #include "navidromestore.h"
 #include "navidromebatch.h"
 #include "navidromedebug.h"
+#include "src/system/core/diagnostic.h"
 #include "src/system/library/library.h"
 #include <fcntl.h>
 #include <limits.h>
@@ -17,14 +18,23 @@ static bool album_display_put(nd_store_t *s, int64_t handle, int year, const cha
 static void album_display_read(nd_store_t *s, int64_t handle, nd_playrow_t *out);
 
 static bool sql(nd_store_t *s, const char *text) {
+	bool commit = diagnostic_enabled() && !strcmp(text, "COMMIT");
+	uint64_t started = commit ? diagnostic_clock() : 0;
 	int rc = sqlite3_exec(s->db, text, NULL, NULL, NULL);
+	if (commit)
+		DIAG(diagnostic_current(), D_COMMIT, rc == SQLITE_OK ? D_OK : D_FAILED, DV(D_DURATION_US, diagnostic_clock() - started), DV(D_STATUS, rc));
 	if (rc != SQLITE_OK)
 		s->error = "nd_cache_error";
 	return rc == SQLITE_OK;
 }
 
 static bool prepare(nd_store_t *s, sqlite3_stmt **stmt, const char *text) {
-	if (sqlite3_prepare_v2(s->db, text, -1, stmt, NULL) == SQLITE_OK)
+	uint64_t started = diagnostic_clock();
+	int rc = sqlite3_prepare_v2(s->db, text, -1, stmt, NULL);
+	int64_t elapsed = diagnostic_since(started);
+	if (elapsed >= 0)
+		s->diagnostic_prepare_us += elapsed;
+	if (rc == SQLITE_OK)
 		return true;
 	s->error = "nd_cache_error";
 	return false;
@@ -680,8 +690,9 @@ bool nd_store_validate(nd_store_t *s) {
 }
 
 bool nd_store_publish(nd_store_t *s) {
+	DIAGNOSTIC_SCOPE(D_STORE);
 	if (!sql(s, "BEGIN IMMEDIATE"))
-		return false;
+		DIAGNOSTIC_RETURN_BOOL(false);
 	sqlite3_stmt *st = NULL;
 	bool ok = prepare(s, &st, "UPDATE snapshot SET complete=1,finished=? WHERE id=? AND scope=?");
 	if (ok) {
@@ -746,9 +757,9 @@ bool nd_store_publish(nd_store_t *s) {
 		}
 	}
 	if (ok && sql(s, "COMMIT"))
-		return true;
+		DIAGNOSTIC_RETURN_BOOL(true);
 	sql(s, "ROLLBACK");
-	return false;
+	DIAGNOSTIC_RETURN_BOOL(false);
 }
 
 #define PIN_CONTEXTS 9
@@ -1549,12 +1560,15 @@ bool nd_batch_add(nd_batch_t *b, const json_doc_t *d, int obj) {
 	return !b->error;
 }
 bool nd_store_import_batch(nd_store_t *s, const nd_batch_t *b) {
+	DIAGNOSTIC_SCOPE(D_STORE);
+	uint64_t prepare_before = s->diagnostic_prepare_us;
 	if (s->favorites != b->favorites || (s->favorites && b->kind != ND_TRACKS && b->kind != ND_ALBUMS))
-		return false;
+		DIAGNOSTIC_RETURN_BOOL(false);
 	if (!s->insert && !prepare(s, &s->insert, "INSERT INTO entity VALUES(?,?,?,?,?,?,?,?,?,?,?)"))
-		return false;
+		DIAGNOSTIC_RETURN_BOOL(false);
 	if (!sql(s, "BEGIN"))
-		return false;
+		DIAGNOSTIC_RETURN_BOOL(false);
+	uint64_t execution_start = diagnostic_clock(), execution_prepare = s->diagnostic_prepare_us, relationship_us = 0;
 	bool ok = true;
 	int item = 0;
 	for (uint32_t at = b->first; at && ok; item++) {
@@ -1598,6 +1612,7 @@ bool nd_store_import_batch(nd_store_t *s, const nd_batch_t *b) {
 				nd_log("navidrome: sync insert kind=%d item=%d reason=%s code=%d\n", b->kind, item, rc == SQLITE_CONSTRAINT ? "duplicate_entity" : "database_error", rc);
 				s->error = rc == SQLITE_CONSTRAINT ? "nd_sync_inconsistent" : "nd_cache_error";
 			}
+			uint64_t relation_start = diagnostic_clock(), relation_prepare = s->diagnostic_prepare_us;
 			if (ok && b->kind == ND_ALBUMS)
 				ok = album_display_put(s, sqlite3_last_insert_rowid(s->db), r->year, (const char *)b->arena + r->genre, (const char *)b->arena + r->album_artist);
 			if (ok && b->kind == ND_TRACKS)
@@ -1608,15 +1623,23 @@ bool nd_store_import_batch(nd_store_t *s, const nd_batch_t *b) {
 				ok = v->kind == ND_GENRES ? genre(s, album, name) : relation(s, album, v->kind, name);
 				rel = v->next;
 			}
+			int64_t relation_elapsed = diagnostic_since(relation_start);
+			uint64_t prep = s->diagnostic_prepare_us - relation_prepare;
+			if (relation_elapsed >= 0 && (uint64_t)relation_elapsed >= prep)
+				relationship_us += relation_elapsed - prep;
 		}
 		at = r->next;
 	}
+	int64_t execution_us = diagnostic_since(execution_start);
+	uint64_t preparation_us = s->diagnostic_prepare_us - execution_prepare;
+	int64_t entity_us = execution_us >= 0 && (uint64_t)execution_us >= preparation_us + relationship_us ? (int64_t)(execution_us - preparation_us - relationship_us) : -1;
+	DIAG(_diagnostic_scope.context, D_EXECUTE, ok ? D_OK : D_FAILED, DV(D_KIND, b->kind), DV(D_COUNT, item), DV(D_PREPARE_US, s->diagnostic_prepare_us - prepare_before), DV(D_ENTITY_US, entity_us), DV(D_RELATION_US, relationship_us));
 	if (ok && sql(s, "COMMIT"))
-		return true;
+		DIAGNOSTIC_RETURN_BOOL(true);
 	sql(s, "ROLLBACK");
 	if (!s->error)
 		s->error = "nd_cache_error";
-	return false;
+	DIAGNOSTIC_RETURN_BOOL(false);
 }
 
 bool nd_store_track(nd_store_t *s, int64_t generation, const char *id, nd_row_t *out) {

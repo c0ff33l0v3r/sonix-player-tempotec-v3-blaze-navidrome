@@ -7,6 +7,7 @@
 #include "navidromeplay.h"
 #include "navidromeplayliststore.h"
 #include "src/gui/shell/gui.h"
+#include "src/system/core/diagnostic.h"
 #include "streamturn.h"
 #include <errno.h>
 #include <pthread.h>
@@ -20,6 +21,7 @@
 #define OFF_CACHE 128
 #define OFF_STACK (256 * 1024)
 typedef struct {
+	diagnostic_t diagnostic;
 	nd_off_request_t request;
 	nd_context_t context; // epoch fields only; no credentials
 	unsigned token, revision;
@@ -244,6 +246,8 @@ static void *off_run(void *unused) {
 		}
 		if (!j)
 			continue;
+		DIAGNOSTIC_ATTACH(j->diagnostic);
+		DIAG(j->diagnostic, D_WORK, D_PENDING);
 		if (*j->request.header.id && j->rows[ND_OFF_HEADER].finished)
 			off_publish(j, ND_OFF_HEADER, j->rows[ND_OFF_HEADER].state);
 		bool remaining = true;
@@ -268,6 +272,7 @@ static void *off_run(void *unused) {
 				nanosleep(&pause, NULL);
 			}
 		}
+		DIAG(j->diagnostic, D_END, remaining ? D_SUPERSEDED : D_OK);
 		pthread_mutex_lock(&off_lock);
 		if (j->token == off_serial)
 			off_active = false;
@@ -288,6 +293,8 @@ unsigned nd_offline_submit(const nd_off_request_t *q, nd_off_done_cb done, void 
 	}
 	off_job_t *j = calloc(1, sizeof(*j));
 	if (j) {
+		j->diagnostic = diagnostic_begin(D_OFFLINE, diagnostic_current().id);
+		DIAG(j->diagnostic, D_QUEUED, D_PENDING, DV(D_COUNT, q->count));
 		j->request = *q;
 		j->request.header.members = nd_album_membership_retain(q->header.members);
 		j->revision = nd_dl_availability_revision();

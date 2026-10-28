@@ -29,6 +29,7 @@
 
 typedef enum { JOB_SAVE, JOB_UNLOCK, JOB_CHANGE, JOB_CONNECT, JOB_FORGET, JOB_CACHE, JOB_SYNC, JOB_ENCRYPT, JOB_PLAIN, JOB_FAVORITES } job_kind_t;
 typedef struct {
+	diagnostic_t diagnostic;
 	job_kind_t kind;
 	work_activity_t activity;
 	unsigned generation, card_epoch, local_epoch, auto_session;
@@ -327,6 +328,7 @@ static void *sync_fetch(void *arg) {
 		if (atomic_load(&p->stop))
 			break;
 		pthread_mutex_unlock(&p->mutex);
+		DIAGNOSTIC_ATTACH(p->job->diagnostic);
 		bool initialized = nd_batch_init(&slot->batch, slot->kind);
 		slot->batch.favorites = p->job->kind == JOB_FAVORITES;
 		slot->error = initialized ? nd_api_page(slot->session, p->record->host, p->record->user, p->password, slot->kind, slot->offset, slot->amount, p->gzip, p->reuse, &slot->batch) : "nd_json_memory";
@@ -629,16 +631,20 @@ static void sync_run(const job_t *job, const nd_record_t *record, const char *pa
 		if (!nd_store_validate(&store))
 			error = store.error ? store.error : "nd_sync_inconsistent";
 		validation_seconds = sync_now() - phase;
+		DIAG(job->diagnostic, D_VALIDATE, error ? D_FAILED : D_OK, DV(D_DURATION_US, validation_seconds * 1000000));
 	}
 	bool valid = sync_current(job) && nd_cache_card_same(job->root, card.st_dev, card.st_ino);
+	uint64_t admission_start = diagnostic_clock();
 	pthread_mutex_lock(&publication);
 	pthread_mutex_lock(&lock);
 	if (!error && (!valid || !current(job) || job->card_epoch != g.card_epoch || g.sync_cancel))
 		error = "nd_sync_cancelled";
 	pthread_mutex_unlock(&lock);
+	DIAG(job->diagnostic, D_ADMISSION, error ? D_CANCELLED : D_OK, DV(D_WAIT_US, diagnostic_since(admission_start)));
 	double phase = sync_now();
 	bool published = !error && nd_store_publish(&store);
 	publish_seconds = sync_now() - phase;
+	DIAG(job->diagnostic, D_PUBLISH, published ? D_OK : D_FAILED, DV(D_DURATION_US, publish_seconds * 1000000));
 	if (!error && !published)
 		error = "nd_cache_error";
 	pthread_mutex_lock(&lock);
@@ -655,6 +661,7 @@ static void sync_run(const job_t *job, const nd_record_t *record, const char *pa
 		nd_store_cleanup(&store);
 	nd_store_close(&store);
 	cleanup_seconds = sync_now() - phase;
+	DIAG(job->diagnostic, D_CLEANUP, D_UNKNOWN, DV(D_DURATION_US, cleanup_seconds * 1000000));
 	if (leased)
 		navidrome_cache_end();
 	if (favorites && error) {
@@ -684,8 +691,9 @@ static void sync_run(const job_t *job, const nd_record_t *record, const char *pa
 	pthread_mutex_unlock(&lock);
 	if (initialized) {
 		nd_log("navidrome: %s metrics requests=%zu reductions=%zu discarded=%zu commits=%zu opens=%zu reuses=%zu encoded_bytes=%zu decoded_bytes=%zu slot_peak=%d buffer_peak=%zu album_pages=%zu track_pages=%zu artist_pages=%zu genre_pages=%zu accepted_rows=%zu\n", operation, pool.requests, pool.reductions, pool.discarded, pool.commits, pool.opens, pool.reuses, pool.encoded, pool.decoded, pool.workers, pool.buffer_peak * pool.workers, pool.accepted_pages[0], pool.accepted_pages[1], pool.accepted_pages[2], pool.accepted_pages[3], pool.accepted_rows);
-		nd_log("navidrome: %s timing elapsed_ms=%.3f connect_worker_ms=%.3f transfer_decode_worker_ms=%.3f parse_worker_ms=%.3f wait_ms=%.3f import_ms=%.3f validation_ms=%.3f publication_ms=%.3f cleanup_ms=%.3f tls_separate=unavailable commit_separate=unavailable\n", operation, (sync_now() - start) * 1000, pool.connect_seconds * 1000, pool.transfer_seconds * 1000, pool.parse_seconds * 1000, pool.wait_seconds * 1000, pool.import_seconds * 1000, validation_seconds * 1000, publish_seconds * 1000, cleanup_seconds * 1000);
+		nd_log("navidrome: %s timing elapsed_ms=%.3f connect_worker_ms=%.3f transfer_decode_worker_ms=%.3f parse_worker_ms=%.3f wait_ms=%.3f import_ms=%.3f validation_ms=%.3f publication_ms=%.3f cleanup_ms=%.3f tls_separate=unavailable commit_detail=structured\n", operation, (sync_now() - start) * 1000, pool.connect_seconds * 1000, pool.transfer_seconds * 1000, pool.parse_seconds * 1000, pool.wait_seconds * 1000, pool.import_seconds * 1000, validation_seconds * 1000, publish_seconds * 1000, cleanup_seconds * 1000);
 	}
+	DIAG(job->diagnostic, D_END, error ? (strstr(error, "cancelled") ? D_CANCELLED : D_FAILED) : D_OK, DV(D_FLAGS, published), DV(D_DURATION_US, (sync_now() - start) * 1000000));
 	nd_log("navidrome: %s finish published=%d result=%s\n", operation, published, error ? error : "ok");
 }
 
@@ -735,6 +743,10 @@ static void *work(void *unused) {
 		memcpy(password, g.password, sizeof(password));
 		bool configured = g.configured;
 		pthread_mutex_unlock(&lock);
+		if (!job.diagnostic.id)
+			job.diagnostic = diagnostic_begin(D_CACHE, 0);
+		DIAGNOSTIC_ATTACH(job.diagnostic);
+		DIAG(job.diagnostic, D_WORK, D_PENDING, DV(D_KIND, job.kind));
 		if (job.kind == JOB_CACHE || job.kind == JOB_SYNC || job.kind == JOB_FAVORITES) {
 			if (job.kind == JOB_CACHE)
 				cache_refresh(&job, &r);
@@ -742,6 +754,8 @@ static void *work(void *unused) {
 				sync_run(&job, &r, password);
 			else
 				sync_run(&job, &r, password);
+			if (job.kind == JOB_CACHE)
+				DIAG(job.diagnostic, D_END, D_UNKNOWN);
 			work_activity_end(&job.activity);
 			nd_wipe(&job, sizeof(job));
 			nd_wipe(&r, sizeof(r));
@@ -909,6 +923,7 @@ static void *work(void *unused) {
 			}
 		}
 		pthread_mutex_unlock(&lock);
+		DIAG(job.diagnostic, D_END, !accepted ? D_SUPERSEDED : error ? D_FAILED : D_OK);
 		nd_log("navidrome: operation finish kind=%s generation=%u accepted=%d result=%s\n", job.automatic ? "automatic_entry" : operations[job.kind], job.generation, accepted, error ? error : "ok");
 		work_activity_end(&job.activity);
 		nd_wipe(&job, sizeof(job));
@@ -1004,6 +1019,8 @@ static bool submit(job_t *job) {
 	if (job->kind == JOB_CONNECT || job->kind == JOB_SAVE || job->kind == JOB_UNLOCK)
 		g.search_network_epoch++;
 	job->generation = ++g.generation;
+	job->diagnostic = diagnostic_begin(job->kind == JOB_SYNC || job->kind == JOB_FAVORITES ? D_SYNC : D_SERVICE, diagnostic_current().id);
+	DIAG(job->diagnostic, D_QUEUED, D_PENDING, DV(D_KIND, job->kind), DV(D_FLAGS, job->automatic));
 	g.job = *job;
 	job->activity.mask = 0; // ownership moves into the pending slot
 	g.pending = true;
@@ -1180,6 +1197,9 @@ static void clear_secrets(void) {
 }
 
 void navidrome_lock(void) {
+	DIAGNOSTIC_SCOPE(D_SERVICE);
+	DIAG(_diagnostic_scope.context, D_INTENT, D_PENDING, DV(D_KIND, 100));
+	_diagnostic_scope.outcome = D_OK;
 	pthread_mutex_lock(&lock);
 	if (g.record.plain) {
 		pthread_mutex_unlock(&lock);
@@ -1227,6 +1247,8 @@ void navidrome_poll_network(void) {
 }
 
 void navidrome_reset(void) {
+	DIAGNOSTIC_SCOPE(D_SERVICE);
+	DIAG(_diagnostic_scope.context, D_INTENT, D_PENDING, DV(D_KIND, 101));
 	char root[sizeof(g.root)];
 	pthread_mutex_lock(&lock);
 	unsigned card_epoch = g.card_epoch;
@@ -1248,6 +1270,7 @@ void navidrome_reset(void) {
 		cache_users++;
 	pthread_mutex_unlock(&lock);
 	bool removed = nd_vault_remove(g.path);
+	_diagnostic_scope.outcome = removed ? D_OK : D_FAILED;
 	if (removed) {
 		nd_vault_sync(g.path);
 		nd_cache_retire(held ? root : NULL, g.path);
@@ -1294,7 +1317,6 @@ void navidrome_shutdown(void) {
 	while (cache_users || sync_owners || external_users)
 		pthread_cond_wait(&io_drained, &lock);
 	pthread_mutex_unlock(&lock);
-	nd_debug_shutdown();
 }
 
 const char *navidrome_feedback(const navidrome_snapshot_t *s) {
@@ -1316,7 +1338,9 @@ const char *navidrome_feedback(const navidrome_snapshot_t *s) {
 }
 
 void navidrome_set_root(const char *root) {
-	nd_debug_card(root);
+	DIAGNOSTIC_SCOPE(D_SERVICE);
+	DIAG(_diagnostic_scope.context, D_INTENT, D_PENDING, DV(D_KIND, 102), DV(D_FLAGS, root && *root));
+	_diagnostic_scope.outcome = D_OK;
 	pthread_mutex_lock(&lock);
 	if (root && strlen(root) < sizeof(g.root))
 		snprintf(g.root, sizeof(g.root), "%s", root);
@@ -1620,14 +1644,21 @@ void navidrome_external_end(void) {
 		nd_reports_wake();
 }
 bool navidrome_context_commit(const nd_context_t *context, sqlite3 *db) {
+	DIAGNOSTIC_SCOPE(D_STORE);
+	uint64_t wait = diagnostic_clock();
 	pthread_mutex_lock(&publication);
 	bool admitted = navidrome_cache_begin(context->epoch, context->card_epoch);
-	bool ok = admitted && sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK;
+	DIAG(_diagnostic_scope.context, D_ADMISSION, admitted ? D_OK : D_SUPERSEDED, DV(D_WAIT_US, diagnostic_since(wait)));
+	uint64_t start = diagnostic_clock();
+	int status = admitted ? sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) : SQLITE_ABORT;
+	bool ok = admitted && status == SQLITE_OK;
+	DIAG(_diagnostic_scope.context, D_COMMIT, !admitted ? D_SUPERSEDED : ok ? D_OK : D_FAILED, DV(D_STATUS, status), DV(D_COMMIT_US, admitted ? diagnostic_since(start) : -1));
 	if (admitted) {
 		ok = ok && navidrome_context_current(context, false);
 		navidrome_cache_end();
 	}
 	pthread_mutex_unlock(&publication);
+	_diagnostic_scope.outcome = ok ? D_OK : !admitted ? D_SUPERSEDED : D_FAILED;
 	return ok;
 }
 

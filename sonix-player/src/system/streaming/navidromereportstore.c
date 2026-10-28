@@ -161,6 +161,7 @@ bool nd_report_store_put(nd_report_store_t *s, const nd_listen_t *e, const char 
 	return ok;
 }
 int64_t nd_report_store_take(nd_report_store_t *s, int64_t now, nd_listen_t *e) {
+	e->diagnostic = (diagnostic_t){0}; // durable work has no earlier process context
 	if (now <= 0 || !sql(s, "BEGIN IMMEDIATE"))
 		return 0;
 	bool ok = expire(s, now);

@@ -1,4 +1,3 @@
-#include "src/system/playback/session.h"
 #include "navidromeplay.h"
 #include "navidromeplaycatalog.h"
 #include "navidromeplayliststore.h"
@@ -11,11 +10,13 @@
 #include "src/gui/shell/toast.h"
 #include "src/gui/streaming/navidromeart.h"
 #include "src/system/core/config.h"
+#include "src/system/core/diagnostic.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
 #include "src/system/decode/growfile.h"
 #include "src/system/playback/device_state.h"
 #include "src/system/playback/playlist.h"
+#include "src/system/playback/session.h"
 #include "src/system/streaming/streamturn.h"
 #include <limits.h>
 #include <pthread.h>
@@ -71,6 +72,7 @@ static metadata_result_t *metadata_fallback;
 static unsigned metadata_outstanding;
 #define METADATA_PENDING_MAX 64
 typedef struct {
+	diagnostic_t diagnostic;
 	source_t *source;
 	unsigned serial, queue_identity;
 	int entry;
@@ -85,6 +87,7 @@ typedef struct {
 	song_metadata_t metadata;
 	const char *error;
 	bool metadata_only, chain_fallback;
+	uint64_t delivery_us;
 } result_t;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t wake = PTHREAD_COND_INITIALIZER, meta_wake = PTHREAD_COND_INITIALIZER;
@@ -100,6 +103,8 @@ static sqlite3 *addition_db; // Only sqlite3_interrupt() may touch this from ano
 static result_t *fallback_result, *addition_fallback;
 static source_t *addition_failed;
 #define SOURCE_CONTEXTS 8
+static char diagnostic_ref[80];
+static diagnostic_t current_diagnostic; // GUI-owned, bound with current_track.
 static source_t *queue_source, *album_owner, *sources[SOURCE_CONTEXTS];
 static unsigned album_queue_identity;
 static char album_first_ref[80];
@@ -323,20 +328,25 @@ static void addition_error(source_t *s, const char *error) {
 static void result_done(void *user) {
 	result_t *r = user;
 	job_t *job = &r->job;
+	DIAGNOSTIC_ATTACH(job->diagnostic);
+	bool accepted = current(job);
+	diagnostic_outcome_t terminal = !accepted ? D_SUPERSEDED : r->error ? diagnostic_error_outcome(r->error) : D_UNAVAILABLE;
+	DIAG(job->diagnostic, D_DELIVER, accepted ? (r->error ? D_FAILED : D_OK) : D_SUPERSEDED, DV(D_DELIVERY_US, diagnostic_since(r->delivery_us)), DV(D_FLAGS, r->metadata_only));
 	source_t *s = job->source;
-	if (!current(job))
+	if (!accepted)
 		goto done;
 	if (job->chain) {
 		if (r->chain_fallback) {
 			pthread_mutex_lock(&lock); waiting = false; pthread_mutex_unlock(&lock);
 			char ref[512];
 			bool stepped = job->backward ? playlist_prev(ref,sizeof(ref)) : job->automatic ? playlist_advance_auto(ref,sizeof(ref)) : playlist_next(ref,sizeof(ref));
+			terminal = stepped ? D_OK : D_UNAVAILABLE;
 			if (stepped) device_state_play_queue_index(playlist_current_index());
 			goto done;
 		}
 		if (r->error) {
 			navidromeplay_stop();
-			audio_stop();
+			audio_stop_reason(AUDIO_STOP_FAILURE);
 			gui_notify_popup(r->error);
 			goto done;
 		}
@@ -349,6 +359,7 @@ static void result_done(void *user) {
 		char ref[80];
 		source_path(s, (size_t)s->start, ref, sizeof(ref));
 		navidromeplay_prepare(ref);
+		terminal = D_OK;
 		goto done;
 	}
 	if (job->enqueue) {
@@ -387,10 +398,13 @@ static void result_done(void *user) {
 			addition_error(s, "nd_queue_limit");
 			goto done;
 		}
+		terminal = D_OK;
 		s->album_committed = true;
 		if (empty) {
 			queue_source = owner;
 			current_track = r->row;
+			current_diagnostic = job->diagnostic;
+			snprintf(diagnostic_ref, sizeof(diagnostic_ref), "%s", job->ref);
 			source_path(owner, (size_t)first, current_ref, sizeof(current_ref));
 			current_path[0] = 0;
 			song_metadata_t meta = {0};
@@ -405,7 +419,10 @@ static void result_done(void *user) {
 		goto done;
 	if (r->metadata_only && !job->initial) {
 		if (!strcmp(current_ref, job->ref) && r->row.row.id[0]) {
+			terminal = D_OK;
 			current_track = r->row;
+			current_diagnostic = job->diagnostic;
+			snprintf(diagnostic_ref, sizeof(diagnostic_ref), "%s", job->ref);
 			song_metadata_t meta = {0};
 			metadata(&r->row, &meta);
 			device_state_represent_source(job->ref, &meta, r->row.row.duration);
@@ -417,6 +434,8 @@ static void result_done(void *user) {
 		bool represented = !job->initial || (installed(s) && queue_source == s && !strcmp(current_ref, job->ref));
 		if (represented && job->foreground && !strcmp(current_ref, job->ref) && r->row.row.id[0]) {
 			current_track = r->row;
+			current_diagnostic = job->diagnostic;
+			snprintf(diagnostic_ref, sizeof(diagnostic_ref), "%s", job->ref);
 			current_path[0] = 0;
 			song_metadata_t meta = {0};
 			metadata(&r->row, &meta);
@@ -435,13 +454,14 @@ static void result_done(void *user) {
 			device_state_t state;
 			device_state_get(&state);
 			if (represented && nd_audio_source(state.current_file))
-				audio_stop();
+				audio_stop_reason(AUDIO_STOP_FAILURE);
 			if (strcmp(r->error, "nd_audio_cancelled"))
 				gui_notify_popup(r->error);
 		}
 		goto done;
 	}
 	if (!job->foreground) {
+		terminal = D_OK;
 		for (int i = 0; i < 2; i++)
 			if (!strcmp(ahead_refs[i], job->ref))
 				snprintf(ahead_paths[i], sizeof(ahead_paths[i]), "%s", r->path);
@@ -457,6 +477,7 @@ static void result_done(void *user) {
 			gui_notify_popup("nd_worker_error");
 			goto done;
 		}
+		terminal = D_OK;
 		s->album_committed = true;
 		install(s); // Replacement has released all prior providers.
 		album_origin(s);
@@ -473,6 +494,8 @@ static void result_done(void *user) {
 	snprintf(current_path, sizeof(current_path), "%s", r->path);
 	snprintf(current_ref, sizeof(current_ref), "%s", job->ref);
 	current_track = r->row;
+	current_diagnostic = job->diagnostic;
+	snprintf(diagnostic_ref, sizeof(diagnostic_ref), "%s", job->ref);
 	annotation_revision = -1;
 	protections();
 	song_metadata_t meta = r->metadata;
@@ -481,6 +504,8 @@ static void result_done(void *user) {
 	bool paused = !desired_play;
 	waiting = false;
 	pthread_mutex_unlock(&lock);
+	terminal = D_OK;
+	DIAG(job->diagnostic, D_PREPARE, D_OK, DV(D_FLAGS, paused));
 	nd_audio_set_source(r->path);
 	device_state_play_prepared_at(r->path, &meta, paused, r->row.row.duration, device_state_resume_position(job->ref));
 	nd_reports_start(&s->context, &s->library, r->row.row.id, r->path, r->row.row.duration);
@@ -489,11 +514,13 @@ static void result_done(void *user) {
 		config_get_bool("player", "open_player_on_tap", true) && lv_obj_is_valid(s->origin) && lv_screen_active() == s->origin)
 		player_sheet_open(true);
 done:
+	DIAG(job->diagnostic, D_END, terminal);
 	if (job->enqueue) { pthread_mutex_lock(&lock); adding = false; pthread_mutex_unlock(&lock); }
 	release(s);
 	free(r);
 }
 static void deliver_result(result_t *r) {
+	r->delivery_us = diagnostic_clock();
 	if (gui_post(result_done, r))
 		return;
 	pthread_mutex_lock(&lock);
@@ -502,6 +529,7 @@ static void deliver_result(result_t *r) {
 	*slot = r;
 	pthread_mutex_unlock(&lock);
 	if (old) {
+		DIAG(old->job.diagnostic, D_RETIRED, D_SUPERSEDED);
 		release(old->job.source);
 		free(old);
 	}
@@ -697,6 +725,8 @@ static void *work(void *unused) {
 			break;
 		}
 		job_t job = next_job;
+		DIAGNOSTIC_ATTACH(job.diagnostic);
+		DIAG(job.diagnostic, D_WORK, D_PENDING);
 		pending = false;
 		running = true;
 		pthread_mutex_unlock(&lock);
@@ -882,6 +912,8 @@ static void *metadata_work(void *unused) {
 		}
 		if (addition_pending) {
 			job_t job = addition_job;
+			DIAGNOSTIC_ATTACH(job.diagnostic);
+			DIAG(job.diagnostic, D_WORK, D_PENDING);
 			addition_pending = false;
 			pthread_mutex_unlock(&lock);
 			source_t *s = job.source;
@@ -994,6 +1026,7 @@ void navidromeplay_other(const char *path) {
 		queue_source = NULL;
 		current_ref[0] = current_path[0] = 0;
 		memset(&current_track, 0, sizeof(current_track));
+		current_diagnostic = (diagnostic_t){0};
 	}
 }
 static bool submit(source_t *s, int entry, bool initial, bool foreground, const char *ref, const char *failure) {
@@ -1012,6 +1045,7 @@ static bool submit(source_t *s, int entry, bool initial, bool foreground, const 
 	}
 	nd_audio_set_network_wanted(true);
 	if (pending) {
+		DIAG(next_job.diagnostic, D_END, D_SUPERSEDED);
 		if (next_job.enqueue) adding = false;
 		release(next_job.source);
 	}
@@ -1021,6 +1055,8 @@ static bool submit(source_t *s, int entry, bool initial, bool foreground, const 
 		desired_play = true;
 	}
 	next_job = (job_t){.source = s, .serial = serial, .entry = entry, .initial = initial, .foreground = foreground, .failure = failure};
+	next_job.diagnostic = diagnostic_begin(D_PLAY, diagnostic_current().id);
+	DIAG(next_job.diagnostic, D_QUEUED, D_PENDING, DV(D_FLAGS, next_job.foreground | (next_job.enqueue << 1) | (next_job.automatic << 2)), DV(D_SOURCE, s->saved.playlist ? 4 : s->discovery ? 3 : s->capture ? 2 : 1));
 	if (ref)
 		snprintf(next_job.ref, sizeof(next_job.ref), "%s", ref);
 	retain(s);
@@ -1058,6 +1094,8 @@ bool navidromeplay_chain_boundary(bool forward, bool automatic) {
 	s->token = ++next_token;
 	serial++;
 	next_job = (job_t){.source = s, .serial = serial, .chain = true, .backward = !forward, .automatic = automatic};
+	next_job.diagnostic = diagnostic_begin(D_PLAY, diagnostic_current().id);
+	DIAG(next_job.diagnostic, D_QUEUED, D_PENDING, DV(D_FLAGS, next_job.foreground | (next_job.enqueue << 1) | (next_job.automatic << 2)), DV(D_SOURCE, s->saved.playlist ? 4 : s->discovery ? 3 : s->capture ? 2 : 1));
 	retain(s);
 	pending = true;
 	waiting = true;
@@ -1097,6 +1135,8 @@ bool navidromeplay_enqueue_captured(nd_owned_rows_t *rows, unsigned queue_identi
 		s->addition_origin_serial = ++addition_origin_serial;
 		adding = true;
 		addition_job = (job_t){.source = s, .serial = serial, .queue_identity = queue_identity, .enqueue = true};
+		addition_job.diagnostic = diagnostic_begin(D_PLAY, diagnostic_current().id);
+		DIAG(addition_job.diagnostic, D_QUEUED, D_PENDING, DV(D_FLAGS, addition_job.foreground | (addition_job.enqueue << 1) | (addition_job.automatic << 2)), DV(D_SOURCE, s->saved.playlist ? 4 : s->discovery ? 3 : s->capture ? 2 : 1));
 		retain(s);
 		addition_pending = true;
 		pthread_cond_signal(&meta_wake);
@@ -1123,6 +1163,8 @@ bool navidromeplay_enqueue(const nd_library_t *lib, nd_kind_t kind, const char *
 		s->token = ++next_token;
 		adding = true;
 		addition_job = (job_t){.source = s, .serial = serial, .queue_identity = playlist_identity(), .enqueue = true};
+		addition_job.diagnostic = diagnostic_begin(D_PLAY, diagnostic_current().id);
+		DIAG(addition_job.diagnostic, D_QUEUED, D_PENDING, DV(D_FLAGS, addition_job.foreground | (addition_job.enqueue << 1) | (addition_job.automatic << 2)), DV(D_SOURCE, s->saved.playlist ? 4 : s->discovery ? 3 : s->capture ? 2 : 1));
 		retain(s);
 		addition_pending = true;
 		pthread_cond_signal(&meta_wake);
@@ -1304,6 +1346,8 @@ bool navidromeplay_playlist_enqueue(const nd_library_t *lib, const nd_playlist_c
 		s->addition_origin_serial = ++addition_origin_serial;
 		adding = true;
 		addition_job = (job_t){.source = s, .serial = serial, .queue_identity = playlist_identity(), .enqueue = true};
+		addition_job.diagnostic = diagnostic_begin(D_PLAY, diagnostic_current().id);
+		DIAG(addition_job.diagnostic, D_QUEUED, D_PENDING, DV(D_FLAGS, addition_job.foreground | (addition_job.enqueue << 1) | (addition_job.automatic << 2)), DV(D_SOURCE, s->saved.playlist ? 4 : s->discovery ? 3 : s->capture ? 2 : 1));
 		retain(s); addition_pending = true; pthread_cond_signal(&meta_wake);
 	}
 	pthread_mutex_unlock(&lock);
@@ -1391,6 +1435,7 @@ static bool prepare_selection(const char *ref, const char *failure) {
 		snprintf(current_ref, sizeof(current_ref), "%s", ref);
 		current_path[0] = 0;
 		memset(&current_track, 0, sizeof(current_track));
+		current_diagnostic = (diagnostic_t){0};
 		song_metadata_t meta = {0};
 		snprintf(meta.title, sizeof(meta.title), "%s", tr("nd_working"));
 		nd_playrow_t shown;
@@ -1451,6 +1496,13 @@ bool navidromeplay_next_ready(char *path, size_t cap) {
 		return snprintf(path, cap, "%s", ahead_paths[i]) < (int)cap;
 	}
 	return false;
+}
+diagnostic_t navidromeplay_diagnostic(const char *path, int *source) {
+	*source = 0;
+	if (!navidromeplay_track(path, NULL, NULL))
+		return (diagnostic_t){0};
+	*source = queue_source->saved.playlist ? 4 : queue_source->discovery ? 3 : queue_source->capture ? 2 : 1;
+	return !strcmp(diagnostic_ref, current_ref) ? current_diagnostic : (diagnostic_t){0};
 }
 bool navidromeplay_track(const char *path, nd_playrow_t *track, nd_library_t *library) {
 	if (!path || !current_track.row.id[0] || (strcmp(path, current_path) && strcmp(path, current_ref)) || !queue_source || !navidrome_playback_current(&queue_source->context, false))
@@ -1539,6 +1591,7 @@ void navidromeplay_tick(void) {
 		playlist_drop_sources();
 		current_path[0] = current_ref[0] = 0;
 		memset(&current_track, 0, sizeof(current_track));
+		current_diagnostic = (diagnostic_t){0};
 		memset(ahead_refs, 0, sizeof(ahead_refs));
 		memset(ahead_paths, 0, sizeof(ahead_paths));
 		protections();
@@ -1635,6 +1688,7 @@ void navidromeplay_shutdown(void) {
 	pthread_join(worker, NULL);
 	pthread_join(meta_worker, NULL);
 	if (pending) {
+		DIAG(next_job.diagnostic, D_END, D_SUPERSEDED);
 		if (next_job.enqueue) adding = false;
 		release(next_job.source);
 	}
@@ -1729,6 +1783,8 @@ static bool album_submit(source_t *s) {
 				s->album_intent = ++album_intent;
 				adding = true;
 				addition_job = (job_t){.source = s, .serial = serial, .queue_identity = playlist_identity(), .enqueue = true};
+				addition_job.diagnostic = diagnostic_begin(D_PLAY, diagnostic_current().id);
+				DIAG(addition_job.diagnostic, D_QUEUED, D_PENDING, DV(D_FLAGS, addition_job.foreground | (addition_job.enqueue << 1) | (addition_job.automatic << 2)), DV(D_SOURCE, s->saved.playlist ? 4 : s->discovery ? 3 : s->capture ? 2 : 1));
 				retain(s);
 				addition_pending = true;
 				pthread_cond_signal(&meta_wake);
@@ -1793,6 +1849,7 @@ bool navidromeplay_restore(const char *path, const session_header_t *h, const ui
 		playlist_current_path(current, sizeof(current));
 		current_ref[0] = 0;
 		memset(&current_track, 0, sizeof(current_track));
+		current_diagnostic = (diagnostic_t){0};
 		device_state_restore_representation(current, &meta, h->position, selected->track.row.duration);
 	} else {
 		source_path(s, (size_t)s->start, current_ref, sizeof(current_ref));

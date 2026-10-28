@@ -1,4 +1,5 @@
 #include "player.h"
+#include "src/system/core/diagnostic.h"
 
 #include <pthread.h>
 #include <stdint.h>
@@ -975,6 +976,17 @@ static void set_progress_label(double current_secs, double total_secs) {
 
 // True while a decode is in flight at the worker.
 static bool cover_request_outstanding;
+static diagnostic_t cover_diagnostic;
+static bool cover_diagnostic_pending;
+
+static void cover_trace_begin(bool remote) {
+	if (cover_diagnostic_pending)
+		DIAG(cover_diagnostic, D_END, D_SUPERSEDED);
+	cover_diagnostic = diagnostic_begin(D_ART, diagnostic_current().id);
+	cover_diagnostic_pending = true;
+	DIAG(cover_diagnostic, D_BIND, D_PENDING, DV(D_SOURCE, remote), DV(D_FLAGS, current_cover.pixels != NULL));
+}
+
 // When the track last changed, for the log line that says how long its
 // picture took to be on screen -- the delay a skip is felt by.
 static uint32_t track_change_tick;
@@ -3793,6 +3805,8 @@ static void cover_drop_current(bool placeholder) {
 }
 
 static void reload_cover(const char *filepath) {
+	cover_trace_begin(false);
+	DIAGNOSTIC_ATTACH(cover_diagnostic);
 	// The blur of the picture going away goes with it, from behind the words
 	// too: until the new one is made they are on a plain dark page.
 	lyrics_bg_forget();
@@ -3860,6 +3874,8 @@ static void refresh_cover(const char *filepath) {
 	nd_playrow_t track;
 	nd_library_t library;
 	if (navidromeplay_track(filepath, &track, &library)) {
+		int trace_source;
+		diagnostic_scope_t trace_parent __attribute__((cleanup(diagnostic_scope_end))) = navidromeplay_trace_attach(filepath, &trace_source);
 		int w, h;
 		cover_request_size(&w, &h);
 		int size = LV_MIN(w, 512);
@@ -3877,6 +3893,8 @@ static void refresh_cover(const char *filepath) {
 		snprintf(cover_shown_path, sizeof(cover_shown_path), "%s", filepath);
 		if (same && (current_cover.pixels || cover_request_outstanding || !track.row.cover[0]))
 			return; // Keep valid pixels/pending work, but reconsider a settled miss.
+		cover_trace_begin(true);
+		DIAGNOSTIC_ATTACH(cover_diagnostic);
 		navidromeart_release(ND_ART_PLAYER_SLOT);
 		navidrome_cover_key.bound = true;
 		navidrome_cover_key.epoch = library.epoch;
@@ -4292,6 +4310,9 @@ static void apply_cover_result(void) {
 	if (layout_studio_now) {
 		studio_refresh_cover();
 	}
+	DIAG(cover_diagnostic, D_DISPLAY, has_cover ? D_OK : D_UNAVAILABLE, DV(D_FLAGS, has_cover));
+	DIAG(cover_diagnostic, D_END, has_cover ? D_OK : D_UNAVAILABLE);
+	cover_diagnostic_pending = false;
 	// No artwork: the placeholder is already showing.
 	// Upstream's prefetch_next_cover() is not called: warm_next_cover() above
 	// already decodes the next track (and the previous) into both caches, and a
@@ -5654,7 +5675,7 @@ void player_output_unplugged(const char *what) {
 		return;
 	}
 	printf("player: %s unplugged; pausing\n", what ? what : "the output");
-	audio_pause();
+	audio_pause_reason(AUDIO_PAUSE_OUTPUT_REMOVED);
 	apply_playback_status(AUDIO_STATUS_PAUSED);
 }
 
@@ -5678,13 +5699,13 @@ static void sleep_timer_cb(lv_timer_t *timer) {
 		device_state_t state;
 		device_state_get(&state);
 		audiobook_suppress_rewind_once();
-		audio_pause();
+		audio_pause_reason(AUDIO_PAUSE_SLEEP);
 		apply_playback_status(AUDIO_STATUS_PAUSED);
 		audiobook_note_position(state.progress_current_secs, 0, true);
 		return;
 	}
 
-	audio_pause();
+	audio_pause_reason(AUDIO_PAUSE_SLEEP);
 	apply_playback_status(AUDIO_STATUS_PAUSED);
 }
 

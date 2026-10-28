@@ -2,6 +2,7 @@
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/toast.h"
 #include "src/system/core/config.h"
+#include "src/system/core/diagnostic.h"
 #include "src/system/core/lang.h"
 #include "src/system/playback/device_state.h"
 #include "src/system/streaming/navidromedownloads.h"
@@ -31,18 +32,30 @@ static void captured(bool ok, const char *error, int added, int skipped, void *u
 	toast_success(text);
 }
 void navidromedownloadmenu_activate(void *unused) {
+	device_state_t state;
+	device_state_get(&state);
+	int trace_source;
+	diagnostic_scope_t trace_parent __attribute__((cleanup(diagnostic_scope_end))) = navidromeplay_trace_attach(state.current_file, &trace_source);
+	DIAGNOSTIC_SCOPE(D_ACTION);
+	_diagnostic_scope.outcome = D_UNAVAILABLE;
+	DIAG(_diagnostic_scope.context, D_INTENT, D_PENDING, DV(D_KIND, 3), DV(D_SOURCE, trace_source), DV(D_FLAGS, target.id[0] != 0));
 	(void)unused;
 	if (!target_current()) {
+		DIAG(_diagnostic_scope.context, D_ADMISSION, D_UNAVAILABLE, DV(D_REASON, 1));
 		gui_notify_popup("nd_dl_unavailable");
 		return;
 	}
 	const char *folder = config_get("navidrome", "download_folder", "Music/Navidrome");
 	if (!nd_dl_destination(folder)) {
+		DIAG(_diagnostic_scope.context, D_ADMISSION, D_UNAVAILABLE, DV(D_REASON, 4));
 		gui_notify_popup("nd_dl_path_error");
 		return;
 	}
 	snprintf(target.destination, sizeof(target.destination), "%s", folder);
-	if (!navidromedownloads_request(&target, captured, (void *)(uintptr_t)menu_serial))
+	bool admitted = navidromedownloads_request(&target, captured, (void *)(uintptr_t)menu_serial);
+	_diagnostic_scope.outcome = admitted ? D_OK : D_UNAVAILABLE;
+	DIAG(_diagnostic_scope.context, D_ADMISSION, _diagnostic_scope.outcome, DV(D_REASON, admitted ? 0 : 5));
+	if (!admitted)
 		gui_notify_popup("nd_working");
 }
 bool navidromedownloadmenu_bind(const char *path) {

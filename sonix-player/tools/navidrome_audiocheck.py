@@ -25,6 +25,8 @@ class Fixture(BaseHTTPRequestHandler):
         assert q['t'] == [hashlib.md5(('synthetic-server-password' + q['s'][0]).encode()).hexdigest()]
         route = parsed.path.split('/')[1]
         body = self.audio.get(route, self.audio['flac'])
+        if route == 'decodefail':
+            body = b'fLaC' + bytes(100)
         if route == 'invalid':
             body = b'<subsonic-response status="failed">synthetic-server-password</subsonic-response>'
         self.send_response(200)
@@ -65,7 +67,7 @@ def main():
         with ThreadingHTTPServer(('127.0.0.1',0),Fixture) as server:
             threading.Thread(target=server.serve_forever,daemon=True).start()
             for route, mode in [('flac','progressive'),('mp3','progressive'),('wav','complete'),
-                                ('unknown','progressive'),('cut','cut'),('invalid','invalid'),('cancel','cancel'),
+                                ('decodefail','decodefail'),('unknown','progressive'),('cut','cut'),('invalid','invalid'),('cancel','cancel'),
                                 ('protected','protected'),('evict','evict'),('detach','detach'),
                                 ('publish','publish'),('network','network'),('prefetch','prefetch'),
                                 ('switch','switch'),('unknownswitch','switch'),('turn','turn'),

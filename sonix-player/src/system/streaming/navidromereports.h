@@ -2,6 +2,7 @@
 #define NAVIDROMEREPORTS_H
 #include "navidrome.h"
 #include "src/system/audio/audio.h"
+#include "src/system/core/diagnostic.h"
 
 // GUI-owned observation only. Never waits for the reporter worker or performs I/O.
 void nd_reports_init(void);
@@ -11,6 +12,7 @@ void nd_reports_defer(void);	// advisory demand; atomic, callable from any threa
 void nd_reports_shutdown(void); // process teardown only; never flushes the network
 
 typedef struct {
+	diagnostic_t diagnostic; // process-only, never serialized to report storage
 	char scope[33], id[ND_ID_MAX];
 	unsigned profile, card, session;
 	int64_t when;

@@ -1,4 +1,5 @@
 #include "growfile.h"
+#include "src/system/core/diagnostic.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -69,15 +70,14 @@ void growfile_announce(const char *path, long total) {
 		slot->total = total;
 		slot->active = true;
 		slot->failed = false;
-		// Log the exact path being tracked: it is the reference when a caller
-		// asks whether a file is growing and gets told no for a file that is
-		// very much downloading.
-		fprintf(stderr, "growfile: following '%s' (%ld bytes)\n", path, total);
+		// Keep media identity out of shared logs. Owned reader diagnostics
+		// carry the local playback operation instead.
+		fprintf(stderr, "growfile: following media (%ld bytes)\n", total);
 	} else {
 		// No free slot: the file still grows, but readers will not know and
 		// will stop at whatever is already on disk. Logged because the symptom
 		// -- a track ending early -- points nowhere on its own.
-		fprintf(stderr, "growfile: no slot for %s; its reader will not wait\n", path);
+		fprintf(stderr, "growfile: no slot; reader will not wait\n");
 	}
 
 	pthread_mutex_unlock(&lock);
@@ -133,6 +133,9 @@ bool growfile_is_growing(const char *path) {
 // ---------------------------------------------------------------------------
 
 struct growfile {
+	diagnostic_t diagnostic;
+	uint64_t wait_us;
+	unsigned waits;
 	FILE *f;
 	char path[512];
 	long pos;
@@ -160,6 +163,7 @@ growfile_t *growfile_open(const char *path) {
 		return NULL;
 	}
 	g->f = f;
+	g->diagnostic = diagnostic_current();
 	snprintf(g->path, sizeof(g->path), "%s", path);
 	return g;
 }
@@ -168,6 +172,7 @@ void growfile_close(growfile_t *g) {
 	if (!g) {
 		return;
 	}
+	DIAG(g->diagnostic, D_RELEASE, D_OK, DV(D_WAIT_US, g->wait_us), DV(D_COUNT, g->waits));
 	fclose(g->f);
 	free(g);
 }
@@ -185,6 +190,7 @@ static long wait_for_bytes_timeout(growfile_t *g, long need, int timeout_ms) {
 		return -1;
 	}
 
+	uint64_t started = diagnostic_clock();
 	int waited_ms = 0;
 	while (slot->active && slot->done < need) {
 		// A pending command -- stop, pause, another track -- outranks any
@@ -205,8 +211,7 @@ static long wait_for_bytes_timeout(growfile_t *g, long need, int timeout_ms) {
 		waited_ms += 100;
 		if (waited_ms >= timeout_ms) {
 			if (timeout_ms >= 1000) {
-				fprintf(stderr, "growfile: %s stalled for %d s at %ld bytes; giving up waiting\n", g->path,
-						waited_ms / 1000, slot->done);
+				fprintf(stderr, "growfile: media stalled for %d s at %ld bytes; giving up waiting\n", waited_ms / 1000, slot->done);
 			}
 			break;
 		}
@@ -220,6 +225,13 @@ static long wait_for_bytes_timeout(growfile_t *g, long need, int timeout_ms) {
 	}
 
 	long available = slot ? slot->done : -1;
+	if (waited_ms && started) {
+		int64_t elapsed = diagnostic_since(started);
+		if (elapsed >= 0)
+			g->wait_us += elapsed;
+		g->waits++;
+		DIAG(g->diagnostic, D_PROGRESS, D_PENDING, DV(D_WAIT_US, g->wait_us), DV(D_COUNT, g->waits), DV(D_BUFFERED, available));
+	}
 	pthread_mutex_unlock(&lock);
 	return available;
 }

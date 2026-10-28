@@ -54,6 +54,10 @@ void config_set_int(const char *section, const char *key, long value) {
 bool config_save(void) { return true; }
 void device_state_get(device_state_t *out) { *out = playback; }
 void audio_get_current_file(char *out, size_t size) { snprintf(out,size,"%s",playback.current_file); }
+void audio_stop_reason(audio_stop_reason_t reason) {
+	(void)reason;
+	audio_stop();
+}
 void audio_stop(void) {
 	stops++;
 	playback.status = AUDIO_STATUS_STOPPED;

@@ -1,5 +1,6 @@
 #define _GNU_SOURCE 1
 #include "navidromevault.h"
+#include "src/system/core/diagnostic.h"
 #include "src/system/core/json.h"
 
 #include <errno.h>
@@ -156,11 +157,12 @@ bool nd_passphrase_valid(const char *text) {
 }
 
 bool nd_vault_prepare(nd_record_t *r, const char *passphrase, uint8_t key[32]) {
+	DIAGNOSTIC_SCOPE(D_VAULT);
 	r->version = 2;
 	r->plain = false;
 	nd_wipe(r->cipher, sizeof(r->cipher));
 	r->iterations = ND_KDF_ITERATIONS;
-	return nd_passphrase_valid(passphrase) && nd_random(r->salt, sizeof(r->salt)) && nd_derive(passphrase, r->salt, r->iterations, key);
+	DIAGNOSTIC_RETURN_BOOL(nd_passphrase_valid(passphrase) && nd_random(r->salt, sizeof(r->salt)) && nd_derive(passphrase, r->salt, r->iterations, key));
 }
 
 static size_t associated(const nd_record_t *r, char *out, size_t size) {
@@ -233,21 +235,22 @@ static void quoted(FILE *f, const char *s) {
 }
 
 bool nd_vault_stage(const char *path, const nd_record_t *r) {
+	DIAGNOSTIC_SCOPE(D_VAULT);
 	char tmp[1024], value[ND_SECRET_MAX * 2 + 1];
 	if (!r->size || r->size >= ND_SECRET_MAX || (r->version != 1 && r->version != 2) || (r->plain && (r->version != 2 || strnlen((const char *)r->cipher, sizeof(r->cipher)) != r->size)) || (!r->plain && (r->iterations < ND_KDF_ITERATIONS || r->iterations > ND_KDF_MAX_ITERATIONS)) || strnlen(r->host, sizeof(r->host)) >= sizeof(r->host) || strnlen(r->user, sizeof(r->user)) >= sizeof(r->user))
-		return 0;
+		DIAGNOSTIC_RETURN_BOOL(0);
 	if (!path || !*path || snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp))
-		return 0;
+		DIAGNOSTIC_RETURN_BOOL(0);
 	if (unlink(tmp) && errno != ENOENT)
-		return 0;
+		DIAGNOSTIC_RETURN_BOOL(0);
 	int fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
 	if (fd < 0)
-		return 0;
+		DIAGNOSTIC_RETURN_BOOL(0);
 	FILE *f = fdopen(fd, "w");
 	if (!f) {
 		close(fd);
 		unlink(tmp);
-		return 0;
+		DIAGNOSTIC_RETURN_BOOL(0);
 	}
 	fprintf(f, "{\n\"version\":%u,", r->version);
 	if (r->version == 2)
@@ -278,14 +281,15 @@ bool nd_vault_stage(const char *path, const nd_record_t *r) {
 		ok = false;
 	if (!ok) {
 		unlink(tmp);
-		return false;
+		DIAGNOSTIC_RETURN_BOOL(false);
 	}
-	return true;
+	DIAGNOSTIC_RETURN_BOOL(true);
 }
 
 bool nd_vault_commit(const char *path) {
+	DIAGNOSTIC_SCOPE(D_VAULT);
 	char tmp[1024];
-	return path && *path && snprintf(tmp, sizeof(tmp), "%s.tmp", path) < (int)sizeof(tmp) && rename(tmp, path) == 0;
+	DIAGNOSTIC_RETURN_BOOL(path && *path && snprintf(tmp, sizeof(tmp), "%s.tmp", path) < (int)sizeof(tmp) && rename(tmp, path) == 0);
 }
 
 void nd_vault_discard(const char *path) {
@@ -295,6 +299,7 @@ void nd_vault_discard(const char *path) {
 }
 
 bool nd_vault_sync(const char *path) {
+	DIAGNOSTIC_SCOPE(D_VAULT);
 	char dir[1024];
 	snprintf(dir, sizeof(dir), "%s", path);
 	char *slash = strrchr(dir, '/');
@@ -306,10 +311,10 @@ bool nd_vault_sync(const char *path) {
 		*slash = 0;
 	int fd = open(dir, O_RDONLY | O_DIRECTORY);
 	if (fd < 0)
-		return false;
+		DIAGNOSTIC_RETURN_BOOL(false);
 	bool ok = fsync(fd) == 0 || errno == EINVAL || errno == EROFS;
 	close(fd);
-	return ok;
+	DIAGNOSTIC_RETURN_BOOL(ok);
 }
 
 int nd_vault_save(const char *path, const nd_record_t *r) {
@@ -323,11 +328,12 @@ int nd_vault_save(const char *path, const nd_record_t *r) {
 }
 
 bool nd_vault_remove(const char *path) {
+	DIAGNOSTIC_SCOPE(D_VAULT);
 	char tmp[1024];
 	if (!path || !*path || snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp))
-		return false;
+		DIAGNOSTIC_RETURN_BOOL(false);
 	bool ok = unlink(tmp) == 0 || errno == ENOENT;
 	if (unlink(path) && errno != ENOENT)
 		ok = false;
-	return ok;
+	DIAGNOSTIC_RETURN_BOOL(ok);
 }

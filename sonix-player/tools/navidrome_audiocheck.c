@@ -278,7 +278,7 @@ int main(int argc, char **argv) {
 	if (storage_fault) {
 		assert(fault_used && error && !strcmp(error,!strcmp(fault_mode,"free-loss") ? "nd_audio_space" : "nd_cache_storage") && !deliveries);
 		assert(!nd_audio_cached(&lib,&ctx,track.row.id));
-	} else if (!strcmp(argv[3], "invalid"))
+	} else if (!strcmp(argv[3], "invalid") || !strcmp(argv[3], "decodefail"))
 		assert(error && !strcmp(error, "nd_audio_invalid") && !deliveries);
 	else if (!strcmp(argv[3], "publish"))
 		assert(error && !strcmp(error, "nd_cache_storage") && !deliveries);

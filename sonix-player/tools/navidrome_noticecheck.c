@@ -8,6 +8,7 @@ void wakeprof_note_post(void *cb, const char *thread) {
 	(void)thread;
 }
 static unsigned ordinary, noticed;
+static diagnostic_t fixture_context;
 static void normal(void *unused) {
 	(void)unused;
 	ordinary++;
@@ -17,12 +18,16 @@ static void notice(void *unused) {
 	noticed++;
 }
 static void *notify(void *unused) {
+	DIAGNOSTIC_ATTACH(fixture_context);
 	(void)unused;
 	for (int i = 0; i < 10000; i++)
 		assert(gui_post_signal(notice, NULL));
 	return NULL;
 }
 int main(void) {
+	DIAGNOSTIC_SCOPE(D_GUI);
+	fixture_context = _diagnostic_scope.context;
+	_diagnostic_scope.outcome = D_OK;
 	post_wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
 	assert(post_wake_fd >= 0);
 	for (int i = 0; i < GUI_POST_MAX; i++)
@@ -33,6 +38,7 @@ int main(void) {
 	pthread_join(thread, NULL);
 	struct pollfd fd = {.fd = post_wake_fd, .events = POLLIN};
 	assert(poll(&fd, 1, 0) == 1);
+	usleep(25000); // delayed GUI delivery must be measured by the actual bridge
 	post_drain_cb(NULL);
 	assert(ordinary == GUI_POST_MAX && noticed == 1 && !post_count);
 	assert(poll(&fd, 1, 0) == 0);

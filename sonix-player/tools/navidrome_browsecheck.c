@@ -18,7 +18,19 @@ extern const lv_image_dsc_t fixture_download_stub;
 #ifndef NAVIDROME_BROWSE_SOURCE
 #define NAVIDROME_BROWSE_SOURCE "src/gui/streaming/navidromebrowse.c"
 #endif
+#ifdef NAVIDROME_TRACE_QUERY_DELAY
+static bool delayed_trace_query(nd_store_t *store, int64_t generation, const nd_query_t *query,
+ int offset, nd_row_t rows[ND_WINDOW], int *count, int *total, bool writable) {
+ static bool delayed;
+ if (!delayed) { delayed = true; usleep(25000); }
+ return nd_store_query_cached(store, generation, query, offset, rows, count, total, writable);
+}
+#define nd_store_query_cached delayed_trace_query
+#endif
 #include NAVIDROME_BROWSE_SOURCE
+#ifdef NAVIDROME_TRACE_QUERY_DELAY
+#undef nd_store_query_cached
+#endif
 #if defined(NAVIDROME_OFFLINE_UI) || defined(NAVIDROME_DISCOVERY_OFFLINE_UI)
 #undef icon_download
 #include "src/gui/streaming/navidromealbum.c"

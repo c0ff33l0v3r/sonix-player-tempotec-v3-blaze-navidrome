@@ -46,7 +46,9 @@ int audio_play_paused(const char *filepath, double start_secs);
 // resumed where it was left.
 int audio_play_at(const char *filepath, double start_secs);
 
+typedef enum { AUDIO_PAUSE_UNKNOWN, AUDIO_PAUSE_USER, AUDIO_PAUSE_OUTPUT_REMOVED, AUDIO_PAUSE_SLEEP, AUDIO_PAUSE_REMOTE } audio_pause_reason_t;
 void audio_pause();
+void audio_pause_reason(audio_pause_reason_t reason);
 
 // Call when the system has just resumed from suspend: an open stream is left
 // SND_PCM_STATE_SUSPENDED behind a paused track, and the playback thread has
@@ -137,7 +139,9 @@ void audio_set_fade(bool enabled, int seconds);
 
 void audio_resume();
 
+typedef enum { AUDIO_STOP_UNKNOWN, AUDIO_STOP_USER, AUDIO_STOP_USB, AUDIO_STOP_FAILURE } audio_stop_reason_t;
 void audio_stop();
+void audio_stop_reason(audio_stop_reason_t reason);
 
 audio_status_t audio_get_status(void);
 

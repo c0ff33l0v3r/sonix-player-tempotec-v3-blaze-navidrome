@@ -196,12 +196,27 @@ Ordinary Music sorting remains independent. On the host simulator, set
 `SONIX_CONFIG` to retain browse preferences across launches, as with other host
 settings. Playlist view preferences live with the saved playlist database.
 
-**Debug mode** records redacted Navidrome diagnostics to
-`.local/navidrome-debug-YYYYMMDD-HHMMSS-NNN.log` on the selected card. Settings
-shows the path or unavailable-storage reason. Files rotate at 2 MiB with at most
-five retained; disabling stops recording and keeps the files. Passwords, usernames,
-tokens, full request URLs, and raw responses are excluded. It operates independently
-of the debug launcher's full-player `navidrome.log`.
+Navidrome diagnostics use the existing **Developer options → Log to microSD**
+setting and the shared `.local/sonix_player.log` on the selected card. The
+Navidrome settings page shows that control's location and the current log path,
+disabled state, or unavailable-card status; there is no separate debug switch.
+An enabled legacy Navidrome debug preference enables the general setting once.
+After migration, turning the general setting off stays respected across restarts.
+Existing `navidrome-debug-*.log` files are left untouched.
+The shared writer rotates during recording: keep both `sonix_player.log` and
+`sonix_player.log.old` (up to 4 MiB each) when reporting a problem. Structured
+records cover service/sync, playback and decoder/output, artwork, list windows,
+actions, downloads/offline work, lyrics, reports and session restoration.
+See the [capture and comparison runbook](sonix-player/tools/navidrome-diagnostics.md)
+for event fields, loss/unknown timing, privacy boundaries and paired recording-off/on
+tests. Focused host checks do not establish Blaze timing or resolve the reported
+functional defects.
+
+The general log also contains other player diagnostics; treat collected files as
+private. New structured Navidrome events contain fixed classifications and local
+numeric measurements rather than credentials, media names or server payloads.
+The explicit host `SONIX_LOG` destination (including the debug launcher below)
+continues to override card logging.
 
 Tap a track to play it in the existing Now Playing screen. Album selections
 queue the complete album in disc/track order; Tracks selections queue the whole
@@ -742,7 +757,7 @@ The baseline option reads pre-optimization sources from committed revision
 mode reports five-run medians and whether the synthetic 3x target is met when a
 baseline report is supplied through the commands above. Ordinary checks gate
 correctness and resource/request bounds, not noisy wall-clock results. These
-host measurements do not establish real-server or Blaze timing. Debug mode adds
+host measurements do not establish real-server or Blaze timing. Shared logging includes
 redacted phase timings, encoded/decoded bytes, connection reuse, and conservative
 buffer allocation high-water diagnostics without collecting server payloads.
 Reports keep SQLite allocations, configured worker/resolver stacks, and process

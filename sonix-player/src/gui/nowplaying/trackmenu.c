@@ -1,4 +1,5 @@
 #include "trackmenu.h"
+#include "src/gui/streaming/navidromediagnostic.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -106,6 +107,7 @@ static lv_obj_t *queue_empty;
 static lv_obj_t *queue_history_header;
 static lv_obj_t *queue_now_header;
 static queue_row_t queue_rows[QUEUE_ROW_POOL];
+static nd_view_diagnostic_t queue_diagnostic;
 static int queue_total;	  // how many tracks the queue holds, from its first
 static int queue_current; // the track playing, as the rows were laid out for it
 static int queue_view_h;  // the height of the viewport
@@ -605,6 +607,12 @@ static void queue_window_update(void) {
 	for (int i = 0; i < QUEUE_ROW_POOL; i++) {
 		int vindex = first + i;
 		queue_row_bind(&queue_rows[vindex % QUEUE_ROW_POOL], vindex < count ? vindex : -1);
+	}
+	if (diagnostic_enabled()) {
+		lv_obj_t *rows[QUEUE_ROW_POOL];
+		for (int i = 0; i < QUEUE_ROW_POOL; i++)
+			rows[i] = queue_rows[i].button;
+		nd_view_observe(&queue_diagnostic, queue_list, rows, QUEUE_ROW_POOL, count, false);
 	}
 }
 
@@ -1813,7 +1821,13 @@ static void open_album_cb(void *user) {
 	nd_playrow_t navidrome;
 	if (navidromeplay_track(state.current_file, &navidrome, NULL)) {
 		player_sheet_close(false);
-		if (!navidromebrowse_album(navidrome.album_id, navidrome.album))
+		int trace_source;
+		diagnostic_scope_t trace_parent __attribute__((cleanup(diagnostic_scope_end))) = navidromeplay_trace_attach(state.current_file, &trace_source);
+		DIAGNOSTIC_SCOPE(D_ACTION);
+		bool opened = navidromebrowse_album(navidrome.album_id, navidrome.album);
+		_diagnostic_scope.outcome = opened ? D_OK : D_UNAVAILABLE;
+		DIAG(_diagnostic_scope.context, D_DELIVER, _diagnostic_scope.outcome, DV(D_KIND, 2), DV(D_SOURCE, trace_source), DV(D_FLAGS, navidrome.album_id[0] != 0), DV(D_REASON, opened ? 0 : 3));
+		if (!opened)
 			gui_notify_popup("nd_audio_unavailable");
 		else
 			switcher_set_player_return(lv_screen_active());
@@ -1903,13 +1917,24 @@ static void open_artist_cb(void *user) {
 	device_state_t state;
 	device_state_get(&state);
 	if (nd_audio_source(state.current_file)) {
-		nd_playrow_t track;
-		if (!navidromeplay_track(state.current_file, &track, NULL) || !track.artist_id[0]) {
+		int trace_source;
+		diagnostic_scope_t trace_parent __attribute__((cleanup(diagnostic_scope_end))) = navidromeplay_trace_attach(state.current_file, &trace_source);
+		DIAGNOSTIC_SCOPE(D_ACTION);
+		nd_playrow_t track = {0};
+		bool ready = navidromeplay_track(state.current_file, &track, NULL);
+		DIAG(_diagnostic_scope.context, D_INTENT, D_PENDING, DV(D_KIND, 1), DV(D_SOURCE, trace_source), DV(D_FLAGS, (ready ? 1 : 0) | (track.artist_id[0] ? 2 : 0) | (track.row.artist[0] ? 4 : 0)));
+		if (!ready || !track.artist_id[0]) {
+			_diagnostic_scope.outcome = D_UNAVAILABLE;
+			DIAG(_diagnostic_scope.context, D_ADMISSION, D_UNAVAILABLE, DV(D_REASON, ready ? 2 : 1));
 			gui_notify_popup("nd_audio_unavailable");
 			return;
 		}
 		player_sheet_close(false);
-		if (!navidromebrowse_artist(track.artist_id, track.row.artist)) gui_notify_popup("nd_audio_unavailable");
+		bool opened = navidromebrowse_artist(track.artist_id, track.row.artist);
+		_diagnostic_scope.outcome = opened ? D_OK : D_UNAVAILABLE;
+		DIAG(_diagnostic_scope.context, D_DELIVER, _diagnostic_scope.outcome, DV(D_REASON, opened ? 0 : 3));
+		if (!opened)
+			gui_notify_popup("nd_audio_unavailable");
 		else switcher_set_player_return(lv_screen_active());
 		return;
 	}

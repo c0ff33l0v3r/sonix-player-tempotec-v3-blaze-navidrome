@@ -143,10 +143,10 @@ def main():
                         env.pop('ND_TEST_PLAIN', None)
                     subprocess.run([binary, f'http://127.0.0.1:{server.server_port}/loginredirect', 'nd_web_page'],
                                    check=True, timeout=20, capture_output=True, env=env)
-                    files = list((Path(folder) / '.local').glob('navidrome-debug-*.log'))
+                    files = list((Path(folder) / '.local').glob('sonix_player.log'))
                     assert len(files) == 1
                     output = files[0].read_text()
-                    assert output.count('http: protected response') == 2 and 'reason=web_page' in output
+                    assert output.count('http: protected response') == 3 and 'reason=web_page' in output
                     check_redaction(output)
                     env.pop('ND_DEBUG_CARD', None)
             subprocess.run([binary, f'http://127.0.0.1:{server.server_port}/legacy/rest/ping.view', 'legacy'], check=True, timeout=20, capture_output=True)

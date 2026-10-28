@@ -3,6 +3,7 @@
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/switcher.h"
+#include "src/system/core/diagnostic.h"
 #include "src/system/playback/device_state.h"
 #include "src/system/streaming/navidromeplay.h"
 #include "src/system/streaming/navidromestars.h"
@@ -50,12 +51,21 @@ static void player_done(nd_star_result_t *r, void *user) {
 	free(r);
 }
 bool navidromestar_player_toggle_owned(const char *reference, void (*refresh)(void), navidromestar_owner_t owner) {
+	int trace_source;
+	diagnostic_scope_t trace_parent __attribute__((cleanup(diagnostic_scope_end))) = navidromeplay_trace_attach(reference, &trace_source);
+	DIAGNOSTIC_SCOPE(D_ACTION);
+	_diagnostic_scope.outcome = D_UNAVAILABLE;
+	DIAG(_diagnostic_scope.context, D_INTENT, D_PENDING, DV(D_KIND, 4), DV(D_SOURCE, trace_source));
 	if (!nd_audio_source(reference))
 		return false;
-	if ((owner.current && !owner.current(owner.visit)) || player_sheet_drag_active() || switcher_back_drag_active() || coverflow_drag_active())
+	if ((owner.current && !owner.current(owner.visit)) || player_sheet_drag_active() || switcher_back_drag_active() || coverflow_drag_active()) {
+		DIAG(_diagnostic_scope.context, D_ADMISSION, D_SUPERSEDED, DV(D_REASON, 6));
+		_diagnostic_scope.outcome = D_SUPERSEDED;
 		return true;
+	}
 	nd_context_t captured;
 	if (!navidrome_context(&captured, false)) {
+		DIAG(_diagnostic_scope.context, D_ADMISSION, D_UNAVAILABLE, DV(D_REASON, 5));
 		navidrome_snapshot_t snapshot;
 		navidrome_snapshot(&snapshot);
 		gui_notify_popup(navidrome_feedback(&snapshot));
@@ -65,11 +75,14 @@ bool navidromestar_player_toggle_owned(const char *reference, void (*refresh)(vo
 	nd_wipe(&captured, sizeof(captured));
 	nd_playrow_t track;
 	if (!navidromeplay_track(reference, &track, NULL)) {
+		DIAG(_diagnostic_scope.context, D_ADMISSION, D_UNAVAILABLE, DV(D_REASON, 2));
 		gui_notify_popup("nd_audio_unavailable");
 		return true;
 	}
+	DIAG(_diagnostic_scope.context, D_ADMISSION, D_PENDING, DV(D_FLAGS, 1 | (track.row.id[0] ? 2 : 0)));
 	player_action_t *action = malloc(sizeof(*action));
 	if (!action) {
+		DIAG(_diagnostic_scope.context, D_ADMISSION, D_FAILED, DV(D_REASON, 7));
 		gui_notify_popup("nd_worker_error");
 		return true;
 	}
@@ -78,10 +91,12 @@ bool navidromestar_player_toggle_owned(const char *reference, void (*refresh)(vo
 	snprintf(q.id, sizeof(q.id), "%s", track.row.id);
 	if (!navidrome_star_submit(&q, player_done, action)) {
 		free(action);
+		DIAG(_diagnostic_scope.context, D_ADMISSION, D_UNAVAILABLE, DV(D_REASON, 5));
 		navidrome_snapshot_t snapshot;
 		navidrome_snapshot(&snapshot);
 		gui_notify_popup(snapshot.state == ND_CONNECTED ? "nd_working" : navidrome_feedback(&snapshot));
-	}
+	} else
+		_diagnostic_scope.outcome = D_OK;
 	if (refresh)
 		refresh();
 	return true;

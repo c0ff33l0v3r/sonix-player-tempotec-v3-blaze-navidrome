@@ -13,6 +13,10 @@ void audio_get_progress(double *position, double *duration) {
 	*duration = 300;
 }
 void audio_get_stream_info(int *rate, int *channels) { *rate = *channels = 0; }
+void audio_stop_reason(audio_stop_reason_t reason) {
+	(void)reason;
+	audio_stop();
+}
 void audio_stop(void) {}
 int audio_play(const char *path) {
 	(void)path;

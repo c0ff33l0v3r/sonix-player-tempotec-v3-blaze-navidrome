@@ -2,6 +2,7 @@
 #include "navidromecrypto.h"
 #include "navidromeplay.h"
 #include "src/gui/shell/gui.h"
+#include "src/system/core/diagnostic.h"
 #include "src/system/playback/playlist.h"
 #include "streamturn.h"
 #include <pthread.h>
@@ -10,6 +11,8 @@
 #include <string.h>
 
 typedef struct {
+	diagnostic_t diagnostic;
+	diagnostic_outcome_t diagnostic_outcome;
 	nd_lyric_result_t result;
 	nd_lyric_done_cb done;
 	void *user;
@@ -53,6 +56,7 @@ bool nd_lyrics_target(const char *ref, nd_lyric_target_t *out) {
 static void release(lyric_job_t *j) {
 	if (!j)
 		return;
+	DIAG(j->diagnostic, D_END, j->result.error ? diagnostic_error_outcome(j->result.error) : j->diagnostic_outcome);
 	nd_lyrics_free(&j->result.set);
 	lrclib_free(j->result.records, j->result.count);
 	free(j->text);
@@ -84,6 +88,9 @@ static const char *store(lyric_job_t *j, nd_lyric_action_t action) {
 	return error;
 }
 static void process(lyric_job_t *j) {
+	DIAGNOSTIC_ATTACH(j->diagnostic);
+	DIAG(j->diagnostic, D_WORK, D_PENDING);
+	_diagnostic_scope.error = &j->result.error;
 	nd_lyric_result_t *r = &j->result;
 	if (!current(j)) {
 		r->error = "nd_sync_cancelled";
@@ -149,8 +156,12 @@ static void deliver(void *unused) {
 	bool valid = j && !stopped && j->token == serial;
 	pthread_mutex_unlock(&mutex);
 	if (j) {
-		if (valid && navidrome_playback_current(&j->result.target.context, false) && j->done)
+		if (valid && navidrome_playback_current(&j->result.target.context, false) && j->done) {
+			DIAGNOSTIC_ATTACH(j->diagnostic);
+			j->diagnostic_outcome = diagnostic_error_outcome(j->result.error);
+			DIAG(j->diagnostic, D_DELIVER, j->diagnostic_outcome);
 			j->done(&j->result, j->user);
+		}
 		release(j);
 	}
 }
@@ -170,6 +181,7 @@ static void *run(void *unused) {
 		saving = j->durable;
 		pthread_mutex_unlock(&mutex);
 		process(j);
+		DIAG(j->diagnostic, D_EXECUTE, j->result.error ? D_FAILED : D_OK);
 		pthread_mutex_lock(&mutex);
 		saving = false;
 		if (stopped || j->token != serial) {
@@ -190,6 +202,9 @@ unsigned nd_lyrics_submit(const nd_lyric_target_t *target, nd_lyric_action_t act
 	lyric_job_t *j = calloc(1, sizeof(*j));
 	if (!j)
 		return 0;
+	j->diagnostic = diagnostic_begin(D_LYRICS, diagnostic_current().id);
+	j->diagnostic_outcome = D_SUPERSEDED;
+	DIAG(j->diagnostic, D_QUEUED, D_PENDING, DV(D_KIND, action));
 	j->result.target = *target;
 	j->result.action = action;
 	j->done = done;

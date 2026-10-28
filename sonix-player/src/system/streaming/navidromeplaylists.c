@@ -1,6 +1,7 @@
 #include "navidromeplaylists.h"
 #include "navidromeplaycatalog.h"
 #include "src/gui/shell/gui.h"
+#include "src/system/core/diagnostic.h"
 #include "src/system/net/http.h"
 #include <pthread.h>
 #include <stdio.h>
@@ -563,6 +564,9 @@ static bool publish(nd_playlist_store_t *s, const nd_context_t *c, const nd_pl_r
 static bool remote_album_current(void *context) { return navidrome_context_current(context, false); }
 
 void nd_pl_execute(const nd_pl_request_t *q, const nd_context_t *c, const nd_library_t *lib, nd_pl_result_t *out) {
+	DIAGNOSTIC_SCOPE(D_PLAYLIST);
+	_diagnostic_scope.error = &out->error;
+	DIAG(_diagnostic_scope.context, D_INTENT, D_PENDING, DV(D_KIND, q->action), DV(D_OFFSET, q->first));
 	memset(out, 0, sizeof(*out));
 	out->request = *q;
 	out->context = *c;
@@ -826,6 +830,8 @@ done:
 }
 
 typedef struct {
+	diagnostic_t diagnostic;
+	uint64_t delivery_us;
 	nd_pl_request_t q;
 	nd_context_t c;
 	nd_library_t lib;
@@ -844,9 +850,12 @@ bool navidrome_playlists_busy(void) {
 }
 static void delivered(void *data) {
 	job_t *job = data;
+	DIAGNOSTIC_ATTACH(job->diagnostic);
+	DIAG(job->diagnostic, D_DELIVER, D_PENDING, DV(D_DELIVERY_US, diagnostic_since(job->delivery_us)));
 	nd_pl_result_t *result = job->result;
 	if (!navidrome_context_current(&result->context, false))
 		result->error = "nd_pl_stale";
+	DIAG(job->diagnostic, D_END, result->playlist.pending ? D_UNCERTAIN : diagnostic_error_outcome(result->error), DV(D_COUNT, result->count));
 	if (job->done)
 		job->done(result, job->user);
 	else
@@ -867,11 +876,14 @@ void navidrome_playlists_poll(void) {
 }
 static void *run_job(void *data) {
 	job_t *job = data;
+	DIAGNOSTIC_ATTACH(job->diagnostic);
+	DIAG(job->diagnostic, D_WORK, D_PENDING);
 	nd_pl_execute(&job->q, &job->c, &job->lib, job->result);
 	nd_owned_release(job->q.captured);
 	job->q.captured = job->result->request.captured = NULL;
 	nd_wipe(&job->c, sizeof(job->c));
 	navidrome_external_end();
+	job->delivery_us = diagnostic_clock();
 	bool posted = gui_post(delivered, job);
 	pthread_mutex_lock(&jobs_lock);
 	if (!posted)
@@ -912,6 +924,8 @@ bool navidrome_playlists_submit(const nd_pl_request_t *q, void (*done)(nd_pl_res
 		pthread_mutex_unlock(&jobs_lock);
 		return false;
 	}
+	job->diagnostic = diagnostic_begin(D_PLAYLIST, diagnostic_current().id);
+	DIAG(job->diagnostic, D_QUEUED, D_PENDING, DV(D_KIND, q->action), DV(D_OFFSET, q->first));
 	job->q = *q;
 	job->q.captured = nd_owned_retain(q->captured);
 	job->done = done;

@@ -2,6 +2,7 @@
 #include "navidromeapi.h"
 #include "navidromecache.h"
 #include "navidromedebug.h"
+#include "src/system/core/diagnostic.h"
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -137,6 +138,8 @@ static const char *adaptive(nd_discovery_t *s, int first, int maximum, nd_row_t 
 	}
 }
 void nd_discovery_read(nd_discovery_t *s, int first, nd_search_result_t *out) {
+	DIAGNOSTIC_SCOPE(D_DISCOVERY);
+	_diagnostic_scope.error = &out->error;
 	memset(out, 0, sizeof(*out));
 	out->kind = ND_ALBUMS;
 	out->source = ND_SEARCH_SERVER;
@@ -212,6 +215,8 @@ void nd_discovery_read(nd_discovery_t *s, int first, nd_search_result_t *out) {
 	free(rows);
 }
 void nd_discovery_album_open(nd_discovery_t *s, const char *id, nd_search_result_t *out) {
+	DIAGNOSTIC_SCOPE(D_DISCOVERY);
+	_diagnostic_scope.error = &out->error;
 	nd_album_reader_free(s->album);
 	s->album = nd_album_reader_create();
 	if (!s->album) {

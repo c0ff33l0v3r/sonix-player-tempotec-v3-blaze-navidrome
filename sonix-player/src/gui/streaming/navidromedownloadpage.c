@@ -1,4 +1,5 @@
 #include "navidromedownloadpage.h"
+#include "navidromediagnostic.h"
 #include "navidromepage.h"
 #include "navidromerow.h"
 #include "navidromethumb.h"
@@ -32,6 +33,7 @@ static lv_obj_t *name_layer, *name_field;
 static keyboard_t *name_keyboard;
 static lv_timer_t *timer;
 static nd_dl_view_t result;
+static nd_view_diagnostic_t diagnostic_view;
 static unsigned token, picker_profile, picker_card, manager_profile, manager_card;
 static bool loading, naming, folder_waiting, manager_waiting, painting, clearing, clear_pending;
 static unsigned clear_token;
@@ -325,6 +327,8 @@ static void manager_paint(void) {
 		lv_label_set_text(job_locations[i], location);
 	}
 	painting = false;
+
+	nd_view_observe(&diagnostic_view, job_list, jobs, ND_WINDOW, result.total, loading);
 }
 static void repaint(void) {
 	if (lv_screen_active() == picker) {
@@ -548,6 +552,8 @@ static void tab_cb(lv_event_t *e) {
 	request(NDDL_VIEW);
 }
 static void manager_scroll(lv_event_t *e) {
+	nd_view_observe(&diagnostic_view, job_list, jobs, ND_WINDOW, result.total, loading);
+
 	(void)e;
 	if (painting || clearing || lv_screen_active() != manager)
 		return;
@@ -574,6 +580,7 @@ static bool details_back(void) {
 	return true;
 }
 static void manager_unloaded(lv_event_t *e) {
+	nd_view_retire(&diagnostic_view);
 	(void)e;
 	clearing = clear_pending = false;
 	details_close(NULL);

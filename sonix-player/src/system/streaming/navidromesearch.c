@@ -1,6 +1,7 @@
 #include "navidromesearch.h"
 #include "navidromealbumreader.h"
 #include "navidromedebug.h"
+#include "src/system/core/diagnostic.h"
 #include "src/system/core/utils.h"
 #include "src/system/library/library.h"
 #include "src/system/net/http.h"
@@ -446,6 +447,8 @@ static void result(nd_search_t *s, nd_kind_t kind, nd_search_result_t *out) {
 }
 
 void nd_search_read(nd_search_t *s, nd_kind_t kind, int first, nd_search_result_t *out) {
+	DIAGNOSTIC_SCOPE(D_SEARCH);
+	_diagnostic_scope.error = &out->error;
 	memset(out, 0, sizeof(*out));
 	if (!s || (unsigned)kind > ND_ARTISTS || first < 0 || first > INT_MAX - ND_WINDOW) {
 		out->error = "nd_response_error";
@@ -591,6 +594,8 @@ static bool local_child(nd_search_t *s, child_t *c, nd_kind_t parent, const char
 	return true;
 }
 void nd_search_child(nd_search_t *s, int level, nd_kind_t parent, const char *id, nd_search_result_t *out) {
+	DIAGNOSTIC_SCOPE(D_SEARCH);
+	_diagnostic_scope.error = &out->error;
 	memset(out, 0, sizeof(*out));
 	if (!s || level < 1 || level > 2 || parent == ND_TRACKS || (unsigned)parent > ND_ARTISTS || !id || !*id || strlen(id) >= ND_ID_MAX) {
 		out->error = "nd_response_error";
@@ -674,6 +679,8 @@ void nd_search_child(nd_search_t *s, int level, nd_kind_t parent, const char *id
 	nd_search_child_read(s, level, 0, out);
 }
 void nd_search_child_read(nd_search_t *s, int level, int first, nd_search_result_t *out) {
+	DIAGNOSTIC_SCOPE(D_SEARCH);
+	_diagnostic_scope.error = &out->error;
 	memset(out, 0, sizeof(*out));
 	if (!s || level < 1 || level > 2 || first < 0 || !current(s)) {
 		out->error = "nd_sync_cancelled";

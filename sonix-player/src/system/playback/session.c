@@ -6,6 +6,7 @@
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/toast.h"
 #include "src/system/core/config.h"
+#include "src/system/core/diagnostic.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
 #include "src/system/device/power.h"
@@ -24,6 +25,8 @@
 #include <unistd.h>
 
 typedef struct job {
+	diagnostic_t diagnostic;
+	diagnostic_outcome_t diagnostic_outcome;
 	session_header_t header;
 	unsigned intent, serial, queue_revision, card_epoch, request;
 	int runtime_selected;
@@ -93,6 +96,8 @@ static unsigned now_ms(void) {
 static bool current(const job_t *j) { return j->serial == __atomic_load_n(&serial, __ATOMIC_ACQUIRE); }
 static void free_job(job_t *j) {
 	if (j) {
+		if (j->diagnostic.id)
+			DIAG(j->diagnostic, D_END, j->diagnostic_outcome);
 		playlist_checkpoint_free(j->capture);
 		session_music_free(j->music);
 		free(j);
@@ -110,6 +115,9 @@ static void free_result(result_t *r) {
 	free(r);
 }
 static void submit(job_t *j) {
+	j->diagnostic = diagnostic_begin(D_SESSION, diagnostic_current().id);
+	j->diagnostic_outcome = D_SUPERSEDED;
+	DIAG(j->diagnostic, D_QUEUED, D_PENDING, DV(D_SOURCE, j->header.owner), DV(D_FLAGS, j->load));
 	pthread_mutex_lock(&mutex);
 	if (quit || !current(j) || (j->flush && (j->barrier != request_sequence || observed_revision != j->queue_revision || observed_selected != j->runtime_selected))) {
 		pthread_mutex_unlock(&mutex);
@@ -133,10 +141,13 @@ static void pending_view(const char *reason) {
 static void delivered(void *user) {
 	result_t *r = user;
 	job_t *j = r->job;
+	DIAGNOSTIC_ATTACH(j->diagnostic);
+	DIAG(j->diagnostic, D_DELIVER, D_PENDING, DV(D_STATUS, r->state));
 	if (!started || !current(j) || !enabled || (int32_t)(j->request - latest_delivery) < 0) {
 		free_result(r);
 		return;
 	}
+	j->diagnostic_outcome = r->state < 0 ? D_FAILED : D_PENDING;
 	latest_delivery = j->request;
 	loading = false;
 	if (r->state == -2) {
@@ -147,6 +158,7 @@ static void delivered(void *user) {
 		return;
 	}
 	if (!j->load) {
+		j->diagnostic_outcome = D_OK;
 		active = r->header;
 		published_intent = j->intent;
 		published_queue_revision = j->queue_revision;
@@ -159,6 +171,7 @@ static void delivered(void *user) {
 	if (r->state == 0) {
 		installing = true;
 		bool restored = legacy && legacy();
+		j->diagnostic_outcome = restored ? D_OK : D_UNAVAILABLE;
 		installing = false;
 		if (restored) {
 			adopting = true;
@@ -217,6 +230,7 @@ static void delivered(void *user) {
 	tracked_owner = active.owner;
 	tracked_card = lib.card_epoch;
 	snprintf(tracked_scope, sizeof(tracked_scope), "%s", active.scope);
+	j->diagnostic_outcome = restored ? D_OK : D_UNAVAILABLE;
 	if (restored) {
 		published_queue_revision = playlist_revision();
 		identity = playlist_identity();
@@ -380,6 +394,8 @@ static void *run(void *unused) {
 			return NULL;
 		}
 		job_t *j = pending;
+		DIAGNOSTIC_ATTACH(j->diagnostic);
+		DIAG(j->diagnostic, D_WORK, D_PENDING);
 		pending = NULL;
 		working = true;
 		pthread_mutex_unlock(&mutex);

@@ -85,6 +85,9 @@ int main(void) {
 					usleep(100);
 				assert(!atomic_load(&cleanup_done));
 			}
+			// Make a measurable blocked-COMMIT interval for the optional production
+			// emission census; state/Lock above still execute before release.
+			usleep(25000);
 			assert(!atomic_load(&release_io));
 			atomic_store(&release_io, true);
 			pthread_join(thread, NULL);

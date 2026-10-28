@@ -1,5 +1,6 @@
 #include "navidromediscovery.h"
 #include "navidromealbum.h"
+#include "navidromediagnostic.h"
 #include "navidromeofflinebadge.h"
 #include "navidromepage.h"
 #include "navidromeplaylists.h"
@@ -30,6 +31,7 @@
 #include <string.h>
 
 typedef struct {
+	nd_view_diagnostic_t diagnostic_view;
 	lv_obj_t *screen, *list, *extent, *status, *reason, *title;
 	lv_obj_t *rows[ND_WINDOW], *names[ND_WINDOW], *details[ND_WINDOW], *images[ND_WINDOW];
 	cover_image_t art[ND_WINDOW];
@@ -58,6 +60,9 @@ static nd_discovery_mode_t discovery_mode;
 static unsigned discovery_visit, discovery_request, discovery_child_epoch;
 static const char *const discovery_labels[] = {"nd_discovery_newest", "nd_discovery_recent", "nd_discovery_frequent", "nd_discovery_random"};
 typedef struct {
+	diagnostic_t diagnostic;
+	diagnostic_outcome_t terminal;
+	uint64_t delivery_us;
 	unsigned visit, request, serial, layout_revision, network_epoch;
 	int page, first, pitch, disc_pitch;
 	bool child, refresh, alternate, restore;
@@ -219,6 +224,8 @@ static void discovery_paint_rows(discovery_page_t *p) {
 		}
 		navidromeofflinebadge_bind_album(&p->offline, p->screen, &q, p->details, p->album_view.active ? &p->album_view : NULL);
 	}
+
+	nd_view_observe(&p->diagnostic_view, p->list, p->rows, p->data.count, p->data.total, p->loading);
 }
 
 static void discovery_layout(discovery_page_t *p) {
@@ -267,11 +274,14 @@ static bool discovery_job_current(void *arg) {
 static void discovery_job_free(discovery_job_t *job) {
 	if (job) {
 		nd_album_membership_release(job->members);
+		DIAG(job->diagnostic, D_END, job->terminal);
 		free(job);
 	}
 }
 static void discovery_done(void *arg) {
 	discovery_job_t *job = arg;
+	DIAGNOSTIC_ATTACH(job->diagnostic);
+	DIAG(job->diagnostic, D_DELIVER, D_PENDING, DV(D_DELIVERY_US, diagnostic_since(job->delivery_us)));
 	discovery_page_t *p = &discovery_pages[job->page];
 	if (job->visit != discovery_visit || job->request != discovery_request || job->serial != p->serial || discovery_active_page() != job->page || !navidrome_search_current(&discovery_identity, false)) {
 		discovery_job_free(job);
@@ -296,6 +306,7 @@ static void discovery_done(void *arg) {
 		return;
 	}
 	if (job->result.error) {
+		job->terminal = diagnostic_error_outcome(job->result.error);
 		if (p->album_view.active)
 			gui_notify_popup(job->result.error);
 		discovery_retry = *job;
@@ -319,6 +330,7 @@ static void discovery_done(void *arg) {
 	nd_album_membership_release(p->members);
 	p->members = job->members;
 	job->members = NULL;
+	job->terminal = diagnostic_error_outcome(job->result.error);
 	p->data = job->result;
 	p->populated = true;
 	if (job->refresh || job->child)
@@ -350,6 +362,7 @@ static void *discovery_work(void *arg) {
 		if (job)
 			*job = discovery_pending;
 		else {
+			DIAG(discovery_pending.diagnostic, D_END, D_FAILED, DV(D_REASON, 7));
 			discovery_failed = true;
 			discovery_failed_request = discovery_pending.request;
 		}
@@ -357,6 +370,9 @@ static void *discovery_work(void *arg) {
 		pthread_mutex_unlock(&discovery_lock);
 		if (!job)
 			continue;
+		DIAGNOSTIC_ATTACH(job->diagnostic);
+		DIAG(job->diagnostic, D_WORK, D_PENDING);
+		uint64_t work_started = diagnostic_clock();
 		token = job->request;
 		if (visit != job->visit) {
 			nd_discovery_free(session);
@@ -397,6 +413,8 @@ static void *discovery_work(void *arg) {
 			} else
 				nd_discovery_free(next);
 		}
+		DIAG(job->diagnostic, D_QUERY, job->result.error ? D_FAILED : D_OK, DV(D_COUNT, job->result.count), DV(D_SOURCE, job->result.source), DV(D_DURATION_US, diagnostic_since(work_started)));
+		job->delivery_us = diagnostic_clock();
 		if (!gui_post(discovery_done, job)) {
 			pthread_mutex_lock(&discovery_lock);
 			discovery_job_free(discovery_undelivered);
@@ -411,7 +429,12 @@ static void discovery_send(discovery_page_t *p, int first, const char *id, bool 
 	p->requested_first = first;
 	p->serial++;
 	pthread_mutex_lock(&discovery_lock);
+	if (discovery_has_pending)
+		DIAG(discovery_pending.diagnostic, D_END, D_SUPERSEDED);
 	memset(&discovery_pending, 0, sizeof(discovery_pending));
+	discovery_pending.diagnostic = diagnostic_begin(D_DISCOVERY, diagnostic_current().id);
+	discovery_pending.terminal = D_SUPERSEDED;
+	DIAG(discovery_pending.diagnostic, D_QUEUED, D_PENDING, DV(D_OFFSET, first), DV(D_SERIAL, p->serial));
 	discovery_pending.visit = discovery_visit;
 	discovery_pending.request = discovery_live_request = ++discovery_request;
 	discovery_pending.serial = p->serial;
@@ -538,6 +561,7 @@ static void discovery_loaded(lv_event_t *e) {
 }
 static void discovery_unloaded(lv_event_t *e) {
 	discovery_page_t *p = lv_event_get_user_data(e);
+	nd_view_retire(&p->diagnostic_view);
 	navidromeplay_discovery_leave(p->screen);
 	navidromeofflinebadge_release(&p->offline);
 	if (p->loading) {
@@ -669,6 +693,8 @@ void navidromediscovery_open(void) { switch_screen(discovery_menu); }
 
 static void discovery_scroll(lv_event_t *e) {
 	discovery_page_t *p = lv_event_get_user_data(e);
+	nd_view_observe(&p->diagnostic_view, p->list, p->rows, p->data.count, p->data.total, p->loading);
+
 	if (discovery_gesture() || !p->populated || p->data.error)
 		return;
 

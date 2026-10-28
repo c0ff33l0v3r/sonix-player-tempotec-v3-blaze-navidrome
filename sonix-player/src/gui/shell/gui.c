@@ -1,4 +1,5 @@
 #include "gui.h"
+#include "src/system/core/diagnostic.h"
 
 #include <pthread.h>
 #include <stdint.h>
@@ -131,6 +132,8 @@ static lv_timer_t *popup_timer;
 
 
 typedef struct {
+	diagnostic_t diagnostic;
+	uint64_t queued_us;
 	void (*cb)(void *);
 	void *user;
 	char thread[16]; // the poster's name, kept only for wakeprof.c
@@ -184,7 +187,7 @@ bool gui_post(void (*cb)(void *), void *user) {
 		return false;
 	}
 	bool queued = false;
-	gui_post_t entry = {cb, user, ""};
+	gui_post_t entry = {.cb = cb, .user = user, .diagnostic = diagnostic_current(), .queued_us = diagnostic_clock()};
 	if (wakeprof_on) {
 		prctl(PR_GET_NAME, entry.thread, 0, 0, 0); // 16 bytes, as the field is
 	}
@@ -208,6 +211,8 @@ bool gui_post(void (*cb)(void *), void *user) {
 		ssize_t ignored = write(post_wake_fd, &one, sizeof(one));
 		(void)ignored;
 	}
+	if (!queued && entry.diagnostic.id)
+		DIAG(entry.diagnostic, D_ADMISSION, D_UNAVAILABLE, DV(D_REASON, 1));
 	return queued;
 }
 
@@ -227,7 +232,7 @@ bool gui_post_coalesced(void (*cb)(void *), void *user) {
 	}
 	if (slot >= 0) {
 		ring = !post_notices[slot].cb;
-		post_notices[slot] = (gui_post_t){cb, user, "notice"};
+		post_notices[slot] = (gui_post_t){.cb = cb, .user = user, .thread = "notice", .diagnostic = diagnostic_current(), .queued_us = diagnostic_clock()};
 		queued = true;
 	}
 	pthread_mutex_unlock(&post_lock);
@@ -280,6 +285,9 @@ static void post_drain_cb(lv_timer_t *timer) {
 		if (wakeprof_on) {
 			wakeprof_note_post((void *)entry.cb, entry.thread);
 		}
+		DIAGNOSTIC_ATTACH(entry.diagnostic);
+		if (entry.diagnostic.id)
+			DIAG(entry.diagnostic, D_DELIVER, D_OK, DV(D_DELIVERY_US, diagnostic_since(entry.queued_us)));
 		entry.cb(entry.user);
 	}
 }

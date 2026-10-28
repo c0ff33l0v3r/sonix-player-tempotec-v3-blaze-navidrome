@@ -33,6 +33,7 @@ typedef struct {
 } nd_library_t;
 typedef struct {
 	sqlite3 *db;
+	uint64_t diagnostic_prepare_us;
 	sqlite3_stmt *insert, *relationship, *genre;
 	sqlite3_stmt *favorite_album, *favorite_seen, *favorite_member, *favorite_song;
 	sqlite3_stmt *local_insert, *local_artist, *annotation;

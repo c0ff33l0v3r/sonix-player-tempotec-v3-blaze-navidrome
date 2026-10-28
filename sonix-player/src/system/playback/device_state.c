@@ -2027,7 +2027,7 @@ audio_status_t device_state_toggle_play_pause(void) {
 	bool playing;
 	if (navidromeplay_toggle_pending(&playing)) {
 		if (!playing)
-			audio_pause();
+			audio_pause_reason(AUDIO_PAUSE_USER);
 		return playing ? AUDIO_STATUS_PLAYING : AUDIO_STATUS_PAUSED;
 	}
 	// A live stream cannot be paused: there is no position to come back to,
@@ -2061,7 +2061,7 @@ audio_status_t device_state_toggle_play_pause(void) {
 	}
 	switch (audio_get_status()) {
 	case AUDIO_STATUS_PLAYING:
-		audio_pause();
+		audio_pause_reason(AUDIO_PAUSE_USER);
 		return AUDIO_STATUS_PAUSED;
 	case AUDIO_STATUS_PAUSED:
 		// Rewind after pause: on a book, resuming winds back a few seconds,
@@ -2218,7 +2218,7 @@ void device_state_seek(double seconds) {
 
 void device_state_stop(void) {
 	navidromeplay_stop();
-	audio_stop();
+	audio_stop_reason(AUDIO_STOP_USER);
 }
 
 void device_state_set_volume(long volume) { set_volume(volume); }

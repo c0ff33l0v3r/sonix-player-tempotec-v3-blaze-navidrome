@@ -1,6 +1,7 @@
 #include "navidromesearch.h"
 #include "navidromealbum.h"
 #include "navidromeart.h"
+#include "navidromediagnostic.h"
 #include "navidromeofflinebadge.h"
 #include "navidromepage.h"
 #include "navidromeplaylists.h"
@@ -34,6 +35,7 @@
 #include <string.h>
 
 typedef struct {
+	nd_view_diagnostic_t diagnostic_view;
 	lv_obj_t *screen, *list, *extent, *status, *reason, *title;
 	lv_obj_t *rows[ND_WINDOW], *names[ND_WINDOW], *details[ND_WINDOW], *images[ND_WINDOW];
 	cover_image_t art[ND_WINDOW];
@@ -71,6 +73,9 @@ static bool search_editing;
 static const nd_kind_t search_kinds[] = {ND_TRACKS, ND_ALBUMS, ND_ARTISTS};
 static const char *const search_labels[] = {"albums", "navidrome_tracks", "artists"};
 typedef struct {
+	diagnostic_t diagnostic;
+	diagnostic_outcome_t terminal;
+	uint64_t delivery_us;
 	unsigned generation, serial;
 	int page, first;
 	bool child, alternate, restore;
@@ -273,14 +278,20 @@ static void search_paint_rows(search_page_t *p) {
 			if (!p->album_view.active || !p->data.album.heading[i]) memcpy(q.items[i].id, p->data.rows[i].id, ND_ID_MAX);
 		navidromeofflinebadge_bind(&p->offline, p->screen, &q, p->details);
 	}
+
+	nd_view_observe(&p->diagnostic_view, p->list, p->rows, p->data.count, p->data.total, p->loading);
 }
 static void search_job_free(search_job_t *job) {
-	if (job)
+	if (job) {
 		nd_owned_release(job->child_rows);
-	free(job);
+		DIAG(job->diagnostic, D_END, job->terminal);
+		free(job);
+	}
 }
 static void search_done(void *value) {
 	search_job_t *job = value;
+	DIAGNOSTIC_ATTACH(job->diagnostic);
+	DIAG(job->diagnostic, D_DELIVER, D_PENDING, DV(D_DELIVERY_US, diagnostic_since(job->delivery_us)));
 	search_page_t *p = &search_pages[job->page];
 	if ((job->page && job->layout_revision != navidromealbum_revision()) || job->generation != search_generation || p->serial != job->serial || search_active_page() != job->page || !navidrome_search_current(&search_identity, false)) {
 		search_job_free(job);
@@ -301,6 +312,7 @@ static void search_done(void *value) {
 		}
 	}
 	if (job->page && job->result.error) {
+		job->terminal = diagnostic_error_outcome(job->result.error);
 		gui_notify_popup(job->result.error);
 		switch_screen_return_to(search_pages[job->page - 1].screen);
 		search_job_free(job);
@@ -344,6 +356,7 @@ static void search_done(void *value) {
 		job->child_rows = NULL;
 		snprintf(p->retained_album, sizeof(p->retained_album), "%s", job->result.album.info.row.id);
 	}
+	job->terminal = diagnostic_error_outcome(job->result.error);
 	p->data = job->result;
 	p->populated = true;
 	search_paint_rows(p);
@@ -392,6 +405,7 @@ static void *search_work(void *unused) {
 		if (job)
 			*job = search_pending;
 		else {
+			DIAG(search_pending.diagnostic, D_END, D_FAILED, DV(D_REASON, 7));
 			search_allocation_failed = true;
 			search_failed_generation = search_pending.generation;
 			search_failed_serial = search_pending.serial;
@@ -401,6 +415,9 @@ static void *search_work(void *unused) {
 		pthread_mutex_unlock(&search_lock);
 		if (!job)
 			continue;
+		DIAGNOSTIC_ATTACH(job->diagnostic);
+		DIAG(job->diagnostic, D_WORK, D_PENDING);
+		uint64_t work_started = diagnostic_clock();
 		if (generation != job->generation || !session) {
 			nd_search_destroy(session);
 			session = nd_search_create(job->query);
@@ -429,6 +446,8 @@ static void *search_work(void *unused) {
 		}
 		if (session && job->page && job->result.kind == ND_TRACKS && !job->result.error)
 			job->child_rows = nd_search_child_retain(session, job->page);
+		DIAG(job->diagnostic, D_QUERY, job->result.error ? D_FAILED : D_OK, DV(D_COUNT, job->result.count), DV(D_SOURCE, job->result.source), DV(D_DURATION_US, diagnostic_since(work_started)));
+		job->delivery_us = diagnostic_clock();
 		if (!gui_post(search_done, job)) {
 			pthread_mutex_lock(&search_lock);
 			search_job_free(search_undelivered);
@@ -444,7 +463,12 @@ static void search_submit(search_page_t *p, int first, const char *id, nd_kind_t
 	p->requested_first = first;
 	p->serial++;
 	pthread_mutex_lock(&search_lock);
+	if (search_has_pending)
+		DIAG(search_pending.diagnostic, D_END, D_SUPERSEDED);
 	memset(&search_pending, 0, sizeof(search_pending));
+	search_pending.diagnostic = diagnostic_begin(D_SEARCH, diagnostic_current().id);
+	search_pending.terminal = D_SUPERSEDED;
+	DIAG(search_pending.diagnostic, D_QUEUED, D_PENDING, DV(D_OFFSET, first), DV(D_SERIAL, p->serial));
 	search_pending.generation = search_generation;
 	search_pending.serial = p->serial;
 	search_pending.page = (int)(p - search_pages);
@@ -480,6 +504,8 @@ static void search_submit(search_page_t *p, int first, const char *id, nd_kind_t
 }
 static void search_scroll(lv_event_t *e) {
 	search_page_t *p = lv_event_get_user_data(e);
+	nd_view_observe(&p->diagnostic_view, p->list, p->rows, p->data.count, p->data.total, p->loading);
+
 	search_menu_token++;
 	popover_close();
 	if (search_gesture() || !p->populated || p->data.error || (p == search_pages && !*search_query))
@@ -678,6 +704,7 @@ static void search_loaded(lv_event_t *e) {
 }
 static void search_unloaded(lv_event_t *e) {
 	search_page_t *p = lv_event_get_user_data(e);
+	nd_view_retire(&p->diagnostic_view);
 	search_selection_clear(p);
 	navidromeplay_playlist_leave(p->screen);
 	navidromeofflinebadge_release(&p->offline);

@@ -2,6 +2,7 @@
 #include "navidromelibrary.h"
 #include "navidromeplayliststore.h"
 #include "src/gui/shell/gui.h"
+#include "src/system/core/diagnostic.h"
 #include <limits.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -19,6 +20,7 @@ typedef struct {
 	uint64_t used;
 } star_t;
 typedef struct job {
+	diagnostic_t diagnostic;
 	nd_star_request_t request;
 	nd_context_t context;
 	nd_star_result_t *result;
@@ -457,6 +459,9 @@ static const char *execute_item(const nd_star_request_t *q, const nd_context_t *
 }
 
 void nd_star_execute(const nd_star_request_t *q, const nd_context_t *c, nd_star_result_t *out) {
+	DIAGNOSTIC_SCOPE(D_STAR);
+	_diagnostic_scope.error = &out->error;
+	DIAG(_diagnostic_scope.context, D_INTENT, D_PENDING, DV(D_KIND, q->action));
 	memset(out, 0, sizeof(*out));
 	out->request = *q;
 	out->context = *c;
@@ -512,6 +517,7 @@ static void delivered(void *data) {
 	nd_star_result_t *result = job->result;
 	if (!navidrome_star_current(&result->context))
 		result->error = "nd_favorites_stale";
+	DIAG(job->diagnostic, D_END, diagnostic_error_outcome(result->error), DV(D_COUNT, result->total));
 	if (job->done)
 		job->done(result, job->user);
 	else
@@ -532,6 +538,8 @@ void navidrome_star_poll(void) {
 }
 static void *run(void *data) {
 	job_t *job = data;
+	DIAGNOSTIC_ATTACH(job->diagnostic);
+	DIAG(job->diagnostic, D_WORK, D_PENDING);
 	nd_star_execute(&job->request, &job->context, job->result);
 	nd_owned_release(job->request.captured);
 	job->request.captured = job->result->request.captured = NULL;
@@ -576,6 +584,8 @@ bool navidrome_star_submit(const nd_star_request_t *q, void (*done)(nd_star_resu
 		free(job);
 		return false;
 	}
+	job->diagnostic = diagnostic_begin(D_STAR, diagnostic_current().id);
+	DIAG(job->diagnostic, D_QUEUED, D_PENDING, DV(D_KIND, q->action));
 	job->request = *q;
 	job->request.captured = nd_owned_retain(q->captured);
 	job->done = done;

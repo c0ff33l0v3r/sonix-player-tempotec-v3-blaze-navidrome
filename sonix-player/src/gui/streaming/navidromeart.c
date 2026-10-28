@@ -1,4 +1,5 @@
 #include "navidromeart.h"
+#include "src/system/core/diagnostic.h"
 #include "src/system/core/md5.h"
 #include "src/system/core/utils.h"
 #include "src/system/image/stb_image_decl.h"
@@ -20,6 +21,8 @@
 
 #define ART_BUDGET ND_ART_BUDGET
 typedef struct {
+	diagnostic_t diagnostic;
+	bool delivered;
 	unsigned serial;
 	bool pending, done, found, player, playback, album;
 	bool audio_retried, local_only;
@@ -196,6 +199,7 @@ static bool source_read(const art_slot_t *job, const nd_context_t *context, cons
 }
 
 static bool source_decode(const art_slot_t *job, const nd_context_t *context, const art_source_t *source, cover_image_t *out) {
+	uint64_t wait_start = diagnostic_clock();
 	bool idle;
 	do {
 		streamturn_observe(&idle);
@@ -204,7 +208,11 @@ static bool source_decode(const art_slot_t *job, const nd_context_t *context, co
 		if (!idle)
 			usleep(10000);
 	} while (!idle);
-	return cover_load_image_memory(source->bytes, source->length, job->size, job->size, COVER_FIT_COVER, out);
+	DIAG(job->diagnostic, D_PRIORITY_WAIT, D_OK, DV(D_WAIT_US, diagnostic_since(wait_start)));
+	uint64_t started = diagnostic_clock();
+	bool ok = cover_load_image_memory(source->bytes, source->length, job->size, job->size, COVER_FIT_COVER, out);
+	DIAG(job->diagnostic, D_DECODE, ok ? D_OK : D_FAILED, DV(D_DURATION_US, diagnostic_since(started)), DV(D_WIDTH, source->w), DV(D_HEIGHT, source->h));
+	return ok;
 }
 
 static bool write_all(int fd, const void *data, size_t length) {
@@ -222,11 +230,12 @@ static bool write_all(int fd, const void *data, size_t length) {
 }
 
 static bool source_publish(const art_slot_t *job, const nd_context_t *context, char *dir, const char *path, const art_source_t *source) {
+	DIAGNOSTIC_SCOPE(D_ART);
 	if (!job->library.writable || !job_current(job, context, false))
-		return false;
+		DIAGNOSTIC_RETURN_BOOL(false);
 	bool lease = job->playback ? navidrome_playback_begin(context) : navidrome_cache_begin(context->epoch, context->card_epoch);
 	if (!lease)
-		return false;
+		DIAGNOSTIC_RETURN_BOOL(false);
 	bool ok = true;
 	// Match existing cache roots, but never follow a symlink component.
 	for (char *p = dir + 1;; p++) {
@@ -263,7 +272,7 @@ static bool source_publish(const art_slot_t *job, const nd_context_t *context, c
 	if (fd >= 0)
 		unlink(temp);
 	navidrome_cache_end();
-	return ok;
+	DIAGNOSTIC_RETURN_BOOL(ok);
 }
 
 static void prune_legacy(const art_slot_t *job, const nd_context_t *context, const char *dir) {
@@ -286,16 +295,17 @@ static void prune_legacy(const art_slot_t *job, const nd_context_t *context, con
 }
 
 static bool load(const art_slot_t *job, cover_image_t *out, bool *audio_interrupted) {
+	DIAGNOSTIC_SCOPE(D_ART);
 	nd_context_t context;
 	if (!navidrome_context(&context, false))
-		return false;
+		DIAGNOSTIC_RETURN_BOOL(false);
 	char dir[1100], path[1200], key[33];
 	snprintf(dir, sizeof(dir), "%s", job->library.path);
 	char *slash = strrchr(dir, '/');
 	bool valid = context.profile_epoch == job->profile_epoch && (job->playback || context.epoch == job->library.epoch) && context.card_epoch == job->library.card_epoch && job_current(job, &context, false);
 	if (!valid || !slash) {
 		nd_wipe(&context, sizeof(context));
-		return false;
+		DIAGNOSTIC_RETURN_BOOL(false);
 	}
 	strcpy(slash, "/art");
 	cache_key(job, 0, key);
@@ -311,6 +321,7 @@ static bool load(const art_slot_t *job, cover_image_t *out, bool *audio_interrup
 	if (!source.bytes)
 		canonical = source_read(job, &context, path, false, &source);
 	bool found = source.bytes && source_decode(job, &context, &source, out);
+	DIAG(_diagnostic_scope.context, found ? D_CACHE_HIT : D_CACHE_MISS, found ? D_OK : D_PENDING);
 	if (!found) {
 		source_free(&source);
 		canonical = false;
@@ -424,7 +435,7 @@ static bool load(const art_slot_t *job, cover_image_t *out, bool *audio_interrup
 	}
 	source_free(&source);
 	nd_wipe(&context, sizeof(context));
-	return found;
+	DIAGNOSTIC_RETURN_BOOL(found);
 }
 
 static void *art_worker(void *unused) {
@@ -442,6 +453,8 @@ static void *art_worker(void *unused) {
 		art_slot_t job = slots[i];
 		slots[i].pending = false;
 		pthread_mutex_unlock(&art_lock);
+		DIAGNOSTIC_ATTACH(job.diagnostic);
+		DIAG(job.diagnostic, D_WORK, D_PENDING, DV(D_RETRIES, job.audio_retried));
 		cover_image_t image = {0}, backdrop = {0};
 		bool admitted = nd_cache_io_begin(job.maintenance_epoch);
 		bool audio_interrupted = false;
@@ -457,6 +470,7 @@ static void *art_worker(void *unused) {
 			cover_blur_fill(&image, job.backdrop_w, job.backdrop_h, &backdrop);
 		pthread_mutex_lock(&art_lock);
 		if (job.serial != slots[i].serial || !nd_cache_io_current(job.maintenance_epoch)) {
+			DIAG(job.diagnostic, D_RETIRED, D_SUPERSEDED);
 			if (found)
 				cover_free(&image);
 			cover_free(&backdrop);
@@ -467,9 +481,11 @@ static void *art_worker(void *unused) {
 		} else if (!found && job.player && audio_interrupted && !job.audio_retried) {
 			// Resume a current player's canceled miss once after audio yields.
 			// load waits for admission; repeated interruptions terminate.
+			DIAG(job.diagnostic, D_RETRY, D_PENDING, DV(D_RETRIES, 1));
 			slots[i].audio_retried = true;
 			slots[i].pending = true;
 		} else {
+			DIAG(job.diagnostic, D_DECODE, found ? D_OK : D_FAILED, DV(D_REASON, audio_interrupted ? 1 : !admitted ? 2 : 0));
 			slots[i].image = image;
 			slots[i].backdrop = backdrop;
 			slots[i].found = found;
@@ -484,6 +500,9 @@ void navidromeart_release(int i) {
 		return;
 	pthread_mutex_lock(&art_lock);
 	art_slot_t *slot = &slots[i];
+	if (slot->diagnostic.id && !slot->delivered)
+		DIAG(slot->diagnostic, D_END, D_SUPERSEDED);
+	slot->diagnostic = (diagnostic_t){0};
 	slot->serial++;
 	slot->id[0] = 0;
 	slot->pending = slot->done = false;
@@ -500,6 +519,9 @@ static void request(int i, const nd_library_t *library, const char *id, int size
 	navidromeart_release(i);
 	pthread_mutex_lock(&art_lock);
 	art_slot_t *slot = &slots[i];
+	slot->diagnostic = diagnostic_begin(D_ART, diagnostic_current().id);
+	slot->delivered = false;
+	DIAG(slot->diagnostic, D_QUEUED, D_PENDING, DV(D_TARGET, i), DV(D_WIDTH, size), DV(D_FLAGS, local_only));
 	slot->library = *library;
 	slot->maintenance_epoch = nd_cache_epoch();
 	slot->player = i == ND_WINDOW;
@@ -545,6 +567,11 @@ bool navidromeart_take(int i, cover_image_t *out, bool *finished) {
 		cover_free(&slot->image);
 		cover_free(&slot->backdrop);
 		slot->found = false;
+	}
+	if (slot->done && !slot->delivered) {
+		DIAG(slot->diagnostic, D_DELIVER, !current ? D_SUPERSEDED : slot->found ? D_OK : D_UNAVAILABLE);
+		DIAG(slot->diagnostic, D_END, !current ? D_SUPERSEDED : slot->found ? D_OK : D_UNAVAILABLE);
+		slot->delivered = true;
 	}
 	*finished = slot->done;
 	bool found = slot->done && slot->found;

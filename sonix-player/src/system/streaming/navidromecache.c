@@ -1,5 +1,6 @@
 #include "navidromecache.h"
 #include "src/gui/shell/gui.h"
+#include "src/system/core/diagnostic.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -144,20 +145,21 @@ static bool clear_order(int parent) {
 	return ok;
 }
 static bool scan(const char *path, bool clear, nd_cache_usage_t *usage, const nd_context_t *context) {
+	DIAGNOSTIC_SCOPE(D_CACHE);
 	char base[1100];
 	if (!path || strlen(path) >= sizeof(base))
-		return false;
+		DIAGNOSTIC_RETURN_BOOL(false);
 	snprintf(base, sizeof(base), "%s", path);
 	char *slash = strrchr(base, '/');
 	if (!slash || (strcmp(slash, "/library.db") && strcmp(slash, "/favorites.db")))
-		return false;
+		DIAGNOSTIC_RETURN_BOOL(false);
 	*slash = 0;
 	const char *tail = "/.local/navidrome/.cache";
 	size_t size = strlen(base), n = strlen(tail);
 	bool current = size >= n && !strcmp(base + size - n, tail);
 	const char *old = "/.local/navidrome";
 	if (!current && (size < strlen(old) || strcmp(base + size - strlen(old), old)))
-		return false;
+		DIAGNOSTIC_RETURN_BOOL(false);
 	usage->audio = usage->art = 0;
 	bool ok = true, found = false;
 	// Always account for both supported layouts, without following migration links.
@@ -182,10 +184,11 @@ static bool scan(const char *path, bool clear, nd_cache_usage_t *usage, const nd
 		close(legacy);
 	}
 	usage->ready = found;
-	return found && ok;
+	DIAGNOSTIC_RETURN_BOOL(found && ok);
 }
 bool nd_cache_scan(const char *path, bool clear, nd_cache_usage_t *usage) { return scan(path, clear, usage, NULL); }
 typedef struct {
+	diagnostic_t diagnostic;
 	nd_library_t library;
 	nd_context_t context;
 	bool clear;
@@ -193,6 +196,9 @@ typedef struct {
 } request_t;
 static void *cache_worker(void *data) {
 	request_t *q = data;
+	DIAGNOSTIC_ATTACH(q->diagnostic);
+	DIAG(q->diagnostic, D_WORK, D_PENDING, DV(D_KIND, q->clear));
+	uint64_t wait = diagnostic_clock();
 	nd_cache_usage_t result = {.card_epoch = q->library.card_epoch, .clearing = q->clear};
 	const char *error = NULL;
 	if (q->clear) {
@@ -202,6 +208,7 @@ static void *cache_worker(void *data) {
 		if (nd_cache_io_count() || (q->reader_active && q->reader_active()))
 			error = "nd_cache_busy";
 	}
+	DIAG(q->diagnostic, D_ADMISSION, diagnostic_error_outcome(error), DV(D_WAIT_US, diagnostic_since(wait)));
 	if (!error && navidrome_playback_begin(&q->context)) {
 		if (!scan(q->library.path, q->clear, &result, &q->context))
 			error = result.ready ? "nd_cache_partial" : "nd_cache_storage";
@@ -222,6 +229,7 @@ static void *cache_worker(void *data) {
 	result.clearing = false;
 	saved = result;
 	pthread_mutex_unlock(&usage_lock);
+	DIAG(q->diagnostic, D_END, diagnostic_error_outcome(error));
 	nd_wipe(&q->context, sizeof(q->context));
 	free(q);
 	gui_post_signal(usage_notice, NULL);
@@ -255,10 +263,13 @@ static bool request(const nd_library_t *lib, bool clear, bool (*reader_active)(v
 		ok = false;
 	}
 	if (ok) {
+		q->diagnostic = diagnostic_begin(D_CACHE, diagnostic_current().id);
+		DIAG(q->diagnostic, D_QUEUED, D_PENDING, DV(D_KIND, clear));
 		saved.busy = true;
 		saved.clearing = clear;
 		pthread_t thread;
 		if (pthread_create(&thread, NULL, cache_worker, q)) {
+			DIAG(q->diagnostic, D_END, D_FAILED);
 			saved.busy = saved.clearing = false;
 			if (clear) {
 				nd_cache_maintenance_end();

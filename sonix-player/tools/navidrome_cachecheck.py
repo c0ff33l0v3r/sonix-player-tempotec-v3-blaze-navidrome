@@ -2,13 +2,14 @@
 """Synthetic cards only; build the production cache walker, never the player."""
 import pathlib
 import subprocess
+import shlex
 import tempfile
 import os
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix='sonix-polish-cache-') as temp:
     root = pathlib.Path(temp)
     binary = root / 'check'
-    subprocess.run([os.getenv('CC', 'cc'), '-std=gnu11', '-Wall', '-Wextra', '-Werror',
+    subprocess.run([os.getenv('CC', 'cc'), *shlex.split(os.getenv('NAVIDROME_CHECK_FLAGS', '')), '-std=gnu11', '-Wall', '-Wextra', '-Werror',
                     '-DHOST_BUILD', '-DLV_CONF_INCLUDE_SIMPLE', '-I.', '-Ilvgl',
                     '-ffunction-sections', '-fdata-sections', 'tools/navidrome_cachecheck.c',
                     '-Wl,--gc-sections,--wrap=unlinkat',

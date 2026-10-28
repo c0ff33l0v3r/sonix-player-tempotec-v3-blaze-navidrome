@@ -1,5 +1,14 @@
 #ifndef NAVIDROMEPLAY_H
 #define NAVIDROMEPLAY_H
+#include "src/system/core/diagnostic.h"
+// Optional diagnostic-only GUI boundary. Small UI fixtures can omit the playback
+// coordinator; source=0 and an empty context then explicitly mean unavailable.
+diagnostic_t navidromeplay_diagnostic(const char *path, int *source) __attribute__((weak));
+static inline diagnostic_scope_t navidromeplay_trace_attach(const char *path, int *source) {
+	*source = 0;
+	diagnostic_t context = navidromeplay_diagnostic ? navidromeplay_diagnostic(path, source) : (diagnostic_t){0};
+	return diagnostic_attach(context);
+}
 #include "src/system/playback/sessionstore.h"
 #include "navidromeaudio.h"
 #include "navidromeowned.h"
