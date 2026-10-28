@@ -1,15 +1,16 @@
 // Real HTTP + SQLite + vault/service integration. All data and secrets are fixtures.
 #include "src/gui/streaming/navidromeart.h"
+#include "src/system/core/md5.h"
+#include "src/system/device/workactivity.h"
 #include "src/system/net/http.h"
 #include "src/system/streaming/navidrome.h"
 #include "src/system/streaming/navidromelibrary.h"
 #include <assert.h>
-#include "src/system/core/md5.h"
 #include <dirent.h>
 #include <fcntl.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdatomic.h>
 #include <string.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
@@ -36,7 +37,7 @@ static navidrome_snapshot_t idle(void) {
 	navidrome_snapshot_t s;
 	for (int i = 0; i < 90000; i++) {
 		navidrome_snapshot(&s);
-		if (!s.busy)
+		if (!s.busy && !work_activity_busy())
 			return s;
 		usleep(1000);
 	}
@@ -74,6 +75,7 @@ static nd_library_t sync_ok(int tracks, int albums) {
 	nd_context_t playback_context;
 	bool retained = previous.ready && navidrome_context(&playback_context, true) && navidrome_playback_pin(&previous);
 	assert(navidrome_sync());
+	assert(work_activity_network() && work_activity_busy() && !work_activity_suspend_begin());
 	assert(!navidrome_reconnect()); // Conflicting operations cannot enter the worker.
 	idle();
 	nd_library_t result = library();

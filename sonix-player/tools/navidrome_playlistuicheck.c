@@ -17,6 +17,36 @@ extern const lv_image_dsc_t icon_shuffle;
 #else
 #define fixture_browse_slot(page, row) ((page)->art_slots[(row)])
 #endif
+#ifndef NAVIDROME_OFFLINE_UI
+#include "lvgl/src/misc/lv_timer_private.h"
+static bool fixture_panel_on = true;
+bool power_screen_is_on(void) { return fixture_panel_on; }
+static unsigned fixture_off_requests;
+static nd_off_done_cb fixture_off_done;
+static void *fixture_off_user;
+static int fixture_off_count;
+static bool fixture_off_pending;
+static nd_off_state_t fixture_off_state = ND_OFF_NONE;
+unsigned nd_offline_submit(const nd_off_request_t *q, nd_off_done_cb cb, void *user) {
+	fixture_off_done = cb;
+	fixture_off_user = user;
+	fixture_off_count = q->count;
+	fixture_off_pending = true;
+	return ++fixture_off_requests;
+}
+void nd_offline_cancel(unsigned token) {
+	if (token == fixture_off_requests)
+		fixture_off_pending = false;
+}
+bool nd_offline_busy(unsigned token) { return token == fixture_off_requests && fixture_off_pending; }
+void nd_offline_poll(void) {
+	if (!fixture_off_pending)
+		return;
+	fixture_off_pending = false;
+	for (int i = 0; i < fixture_off_count; i++)
+		fixture_off_done(fixture_off_requests, i, fixture_off_state, fixture_off_user);
+}
+#endif
 static nd_dl_request_t captured_download;
 static unsigned download_submissions;
 static nd_dl_captured_cb captured_download_cb;
@@ -236,6 +266,53 @@ static void pl_wait(int page) {
 	}
 	assert(!"playlist UI timeout");
 }
+#ifndef NAVIDROME_OFFLINE_UI
+static void playlist_idle_refresh_check(void) {
+	pl_page_t *p = &pl_pages[1];
+	assert(p->count && *p->entries[0].track.cover && !p->artwork[0].pixels);
+	fixture_art_ready = false;
+	for (int i = 0; i < 10; i++) {
+		lv_tick_inc(250);
+		lv_timer_handler();
+		drain();
+	}
+	assert(!p->artwork[0].pixels);
+	fixture_art_ready = true;
+	for (int i = 0; i < 10; i++) {
+		lv_tick_inc(50);
+		lv_timer_handler();
+		drain();
+	}
+	assert(p->art_finished[0] && p->artwork[0].pixels);
+	assert_cover_rendered(p->images[0]);
+	assert(pl_timer->period == PL_STATUS_POLL_MS);
+	fixture_panel_on = false;
+	pl_wake(); // New work while blank retains the standby period.
+	assert(pl_timer->period == PL_STATUS_POLL_MS);
+	fixture_panel_on = true;
+	unsigned submitted = fixture_off_requests;
+	nd_dl_availability_changed();
+	fixture_off_state = ND_OFF_COMPLETE;
+	for (int i = 0; i < 60; i++) {
+		lv_tick_inc(100);
+		lv_timer_handler();
+		drain();
+	}
+	assert(fixture_off_requests > submitted && p->offline.revision == nd_dl_availability_revision());
+	assert(p->offline.state[0] == ND_OFF_COMPLETE && !lv_obj_is_hidden(p->offline.icons[0]));
+	assert(!lv_timer_get_paused(pl_timer)); // visible offline revalidation still has a wake path
+	lv_screen_load(navidrome_screen);
+	for (int i = 0; i < 60; i++) {
+		lv_tick_inc(100);
+		lv_timer_handler();
+		drain();
+	}
+	assert(lv_timer_get_paused(pl_timer)); // leaving retires visual polling
+	lv_screen_load(p->screen);
+	pl_wait(1);
+	puts("saved-playlist delayed artwork and offline revision repaint through native timers; hidden timer retires: passed");
+}
+#endif
 static void selection_wait(void) {
 	for (int i = 0; i < 10000; i++) {
 		drain();
@@ -1069,6 +1146,9 @@ int main(int argc, char **argv) {
 	lv_obj_send_event(pages[0].select_add, LV_EVENT_CLICKED, NULL);
 	pl_wait(1);
 	assert(pl_pages[1].playlist.count == 10 && pl_pages[1].playlist.revision == rev);
+#ifndef NAVIDROME_OFFLINE_UI
+	playlist_idle_refresh_check();
+#endif
 	// Detail selection removes only chosen occurrences in a confirmed local batch.
 	lv_obj_send_event(pl_pages[1].rows[0], LV_EVENT_LONG_PRESSED, NULL);
 	pl_wait(1);

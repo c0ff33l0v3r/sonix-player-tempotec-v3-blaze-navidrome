@@ -79,7 +79,7 @@ def main():
         server.daemon_threads = True
         threading.Thread(target=server.serve_forever, daemon=True).start()
         cases = ["modern", "legacy", "auth", "malformed", "oversize", "redirect",
-                 "dns", "lost", "priority", "store-stall", "preempt", "overflow", "idle", "init-fail", "offline", "lifecycle", "undated", "auto-only", "auth-auto"]
+                 "dns", "lost", "priority", "store-stall", "preempt", "overflow", "idle", "init-fail", "offline", "lifecycle", "undated", "auto-only", "auth-auto", "external-release"]
         if os.environ.get("SONIX_REPORT_CASES"):
             cases = os.environ["SONIX_REPORT_CASES"].split(",")
         for route in cases:

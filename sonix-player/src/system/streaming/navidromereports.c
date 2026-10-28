@@ -4,11 +4,16 @@
 #include "navidromereportstore.h"
 #include "src/system/device/clock.h"
 #include "streamturn.h"
+#include <errno.h>
+#include <limits.h>
 #include <math.h>
+#include <poll.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/eventfd.h>
 #include <sys/resource.h>
 #include <time.h>
 #include <unistd.h>
@@ -28,16 +33,58 @@ static atomic_bool stopping;
 static pthread_t worker;
 static bool started;
 static lv_timer_t *timer;
+static atomic_int wake_fd = ATOMIC_VAR_INIT(-1);
+static atomic_uint wake_users;
+static void close_doorbell(void) {
+	int fd = atomic_exchange(&wake_fd, -1);
+	// Teardown only: prevent a notifier writing to a recycled descriptor.
+	while (atomic_load(&wake_users))
+		sched_yield();
+	if (fd >= 0)
+		close(fd);
+}
+void nd_reports_wake(void) {
+	atomic_fetch_add(&wake_users, 1);
+	int fd = atomic_load(&wake_fd);
+	if (fd >= 0) {
+		uint64_t one = 1;
+		ssize_t ignored = write(fd, &one, sizeof(one));
+		(void)ignored; // EAGAIN means an unread notification already exists.
+	}
+	atomic_fetch_sub(&wake_users, 1);
+}
+static void report_wait(double delay) {
+	int milliseconds = delay < 0 ? -1 : delay >= (INT_MAX - 1) / 1000.0 ? INT_MAX : (int)(delay * 1000) + 1;
+	struct pollfd fd = {.fd = wake_fd, .events = POLLIN};
+	int rc;
+	do {
+		rc = poll(&fd, 1, milliseconds);
+	} while (rc < 0 && errno == EINTR && !atomic_load(&stopping));
+	if (rc > 0) {
+		uint64_t notices;
+		ssize_t ignored = read(wake_fd, &notices, sizeof(notices));
+		(void)ignored;
+	}
+}
 // The tracker and path are GUI-owned; worker only sees copied mailboxes.
 static nd_listen_tracker_t tracker;
 static char tracked_path[512];
 static unsigned session;
 static void observe(void);
 #ifdef NAVIDROME_REPORT_TEST
-static atomic_uint test_clock;
+static atomic_uint test_clock, test_wakes, test_opens;
+unsigned nd_reports_test_wakes(void) { return atomic_load(&test_wakes); }
+unsigned nd_reports_test_opens(void) { return atomic_load(&test_opens); }
 static atomic_bool test_undated;
-void nd_reports_test_undated(bool undated) { atomic_store(&test_undated, undated); }
-void nd_reports_test_clock(unsigned milliseconds) { atomic_store(&test_clock, milliseconds); }
+void nd_reports_test_undated(bool undated) {
+	atomic_store(&test_undated, undated);
+	nd_reports_wake();
+}
+void nd_reports_test_clock_silent(unsigned milliseconds) { atomic_store(&test_clock, milliseconds); }
+void nd_reports_test_clock(unsigned milliseconds) {
+	nd_reports_test_clock_silent(milliseconds);
+	nd_reports_wake();
+}
 unsigned nd_reports_test_drops(void) { return atomic_load(&drops); }
 void nd_reports_test_observe(void) { observe(); }
 #endif
@@ -59,7 +106,10 @@ static int64_t wall_time(void) {
 	return now >= 1577836800 ? now * 1000 : 0; // same validated-clock baseline as Last.fm
 #endif
 }
-void nd_reports_defer(void) { atomic_fetch_add(&demand_epoch, 1); }
+void nd_reports_defer(void) {
+	atomic_fetch_add(&demand_epoch, 1);
+	nd_reports_wake();
+}
 static void observe(void) {
 	audio_observation_t sample;
 	if (!tracker.active || !audio_observe(&sample))
@@ -84,6 +134,9 @@ static void observe(void) {
 		nd_reports_defer();
 	latest = (presence_t){.event = tracker.event, .position = sample.position, .rate = sample.rate, .discontinuity = sample.discontinuity, .status = tracker.active ? sample.status : AUDIO_STATUS_STOPPED};
 	pthread_mutex_unlock(&mailbox);
+	nd_reports_wake();
+	if (!tracker.active && timer)
+		lv_timer_pause(timer);
 }
 void nd_reports_start(const nd_context_t *c, const nd_library_t *lib, const char *id, const char *path, double duration) {
 	nd_reports_defer();
@@ -99,6 +152,8 @@ void nd_reports_start(const nd_context_t *c, const nd_library_t *lib, const char
 	snprintf(e.id, sizeof(e.id), "%s", id);
 	snprintf(tracked_path, sizeof(tracked_path), "%s", path);
 	nd_listen_start(&tracker, &e, &sample, e.boot, duration);
+	if (timer)
+		lv_timer_resume(timer);
 	observe();
 }
 static void tick(lv_timer_t *unused) {
@@ -150,6 +205,9 @@ static bool persist(const nd_report_context_t *c, nd_listen_t *e, const char *ke
 	if (!navidrome_report_current(c, false, true))
 		return false;
 	nd_report_store_t store;
+#ifdef NAVIDROME_REPORT_TEST
+	atomic_fetch_add(&test_opens, 1);
+#endif
 	bool opened = nd_report_store_open(&store, c->path, c->scope, true);
 	if (opened) {
 		// Even a failed COMMIT is terminal for the volatile copy: it could
@@ -165,6 +223,9 @@ static bool take(const nd_report_context_t *c, int64_t now, nd_listen_t *e) {
 	if (!c->writable || !navidrome_report_current(c, false, true))
 		return false;
 	nd_report_store_t store;
+#ifdef NAVIDROME_REPORT_TEST
+	atomic_fetch_add(&test_opens, 1);
+#endif
 	bool ok = nd_report_store_open(&store, c->path, c->scope, false);
 	if (ok)
 		ok = nd_report_store_take(&store, now, e) > 0;
@@ -176,6 +237,9 @@ static bool history_ready(const nd_report_context_t *c, int64_t now) {
 	if (!c->writable || !navidrome_report_current(c, false, true))
 		return false;
 	nd_report_store_t store;
+#ifdef NAVIDROME_REPORT_TEST
+	atomic_fetch_add(&test_opens, 1);
+#endif
 	bool ok = nd_report_store_open(&store, c->path, c->scope, false);
 	if (ok)
 		ok = nd_report_store_ready(&store, now);
@@ -201,16 +265,21 @@ static void *work(void *unused) {
 	bool circuit = false, storage_failed = false, had_store = false, checked_store = false, need_state = false;
 	int mode = 0; // unknown, legacy, modern
 	presence_t sent = {0};
+	double delay = 0;
 	while (!atomic_load(&stopping)) {
-		struct timespec pause = {.tv_nsec = 100000000};
-		nanosleep(&pause, NULL);
+		report_wait(delay);
+#ifdef NAVIDROME_REPORT_TEST
+		atomic_fetch_add(&test_wakes, 1);
+#endif
+		if (atomic_load(&stopping))
+			break;
 		nd_report_context_t c;
 		nd_context_t secret;
 		bool available = navidrome_report_context(&c, &secret);
 		bool idle;
 		unsigned next_stream = streamturn_observe(&idle), next_demand = atomic_load(&demand_epoch);
 		double now = seconds();
-		if (!idle || c.busy || next_stream != stream || next_demand != demand)
+		if (!idle || c.busy || c.busy != previous.busy || next_stream != stream || next_demand != demand)
 			quiet = now;
 		stream = next_stream;
 		demand = next_demand;
@@ -350,6 +419,32 @@ static void *work(void *unused) {
 				}
 			}
 		}
+		// Sleep until useful work changes or its next actual deadline. Offline
+		// history and an empty/ineligible session do not create polling traffic.
+		delay = -1;
+		bool presence = matches(&p.event, &c) && p.event.id[0];
+		bool presence_due = presence && (p.status != AUDIO_STATUS_STOPPED || announced) && (mode == 0 || (mode == 1 ? p.status == AUDIO_STATUS_PLAYING && p.event.session != announced : need_state || p.event.session != announced || p.status != sent.status || p.discontinuity != sent.discontinuity || p.rate != sent.rate || now - last_presence >= 60));
+		bool storage_due = available && (!checked_store || (pending_count && ((!pending[0].when || pending[0].when < wall - ND_LISTEN_AGE || pending[0].when > wall + 300000) || (c.writable && !storage_failed))));
+		bool network_due = available && c.connected && !circuit && ((had_store && c.writable && !storage_failed) || pending_count || presence_due);
+		if ((storage_due || network_due) && idle && !c.busy) {
+			if (wall <= 0)
+				delay = 30; // clock eligibility recheck, not a 100-ms idle poll
+			else if (now - quiet < 2)
+				delay = 2 - (now - quiet);
+			else if (storage_due)
+				delay = 0;
+			else
+				delay = now - last_request < 5 ? 5 - (now - last_request) : 0;
+		} else if (available && c.connected && !circuit && mode == 2 && presence && announced && idle && !c.busy) {
+			delay = last_presence + 60 - now;
+			if (delay < 0)
+				delay = 0;
+		}
+		if (available && pending_count && wall > 0 && pending[0].when > 0) {
+			double expiry = (pending[0].when + ND_LISTEN_AGE - wall) / 1000.0;
+			if (expiry > 0 && (delay < 0 || expiry < delay))
+				delay = expiry;
+		}
 		nd_wipe(&secret, sizeof(secret));
 	}
 	nd_wipe(pending, sizeof(pending));
@@ -359,27 +454,41 @@ void nd_reports_init(void) {
 	if (started)
 		return;
 	atomic_store(&stopping, false);
-	pthread_attr_t attr;
-	if (pthread_attr_init(&attr))
+	atomic_store(&wake_fd, eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC));
+	if (wake_fd < 0)
 		return;
+	pthread_attr_t attr;
+	if (pthread_attr_init(&attr)) {
+		close_doorbell();
+		return;
+	}
 	int error = pthread_attr_setstacksize(&attr, 256 * 1024);
 	if (!error)
 		error = pthread_create(&worker, &attr, work, NULL);
 	pthread_attr_destroy(&attr);
-	if (error)
+	if (error) {
+		close_doorbell();
 		return;
+	}
 	started = true;
+	if (streamturn_set_observer)
+		streamturn_set_observer(nd_reports_wake);
 	timer = lv_timer_create(tick, 1000, NULL);
+	lv_timer_pause(timer);
 }
 void nd_reports_shutdown(void) {
 	if (!started)
 		return;
 	atomic_store(&stopping, true);
+	if (streamturn_set_observer)
+		streamturn_set_observer(NULL);
+	nd_reports_wake();
 	if (timer) {
 		lv_timer_delete(timer);
 		timer = NULL;
 	}
 	pthread_join(worker, NULL); // atexit only: no GUI action waits for delivery
+	close_doorbell();
 	started = false;
 	tracker.active = false;
 	pthread_mutex_lock(&mailbox);

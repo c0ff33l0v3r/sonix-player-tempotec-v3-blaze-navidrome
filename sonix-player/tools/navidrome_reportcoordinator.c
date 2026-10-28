@@ -49,6 +49,12 @@ static void dns_check(const char *url) {
 	puts("report DNS cancellation: one independent helper, bounded abandonment and ordinary request progress: passed");
 }
 
+static void *ring_reports(void *unused) {
+	(void)unused;
+	for (int i = 0; i < 10000; i++)
+		nd_reports_wake();
+	return NULL;
+}
 static unsigned discontinuity;
 bool audio_observe(audio_observation_t *out) {
 	*out = (audio_observation_t){.serial = (unsigned)starts, .discontinuity = discontinuity, .status = playback.status, .position = playback.progress_current_secs, .duration = 30, .rate = 1};
@@ -113,10 +119,55 @@ int main(int argc, char **argv) {
 		nd_reports_test_undated(true);
 	if (!strcmp(argv[2], "init-fail"))
 		atomic_store(&fail_thread_nth, 3);
+	if (!strcmp(argv[2], "external-release")) {
+		nd_context_t lease;
+		nd_report_context_t report;
+		assert(navidrome_context(&lease, false) && navidrome_report_context(&report, NULL));
+		nd_report_store_t store;
+		nd_listen_t event = {.profile = report.profile, .card = report.card, .session = 1, .when = 1700000100000LL, .boot = 100};
+		snprintf(event.scope, sizeof(event.scope), "%s", report.scope);
+		snprintf(event.id, sizeof(event.id), "song-00000");
+		assert(nd_report_store_open(&store, report.path, report.scope, true));
+		assert(nd_report_store_put(&store, &event, "external-release", event.when));
+		nd_report_store_close(&store);
+		assert(navidrome_external_begin(&lease, false));
+		nd_reports_init();
+		usleep(150000);
+		unsigned wakes = nd_reports_test_wakes();
+		assert(wakes && !nd_reports_test_opens());
+		usleep(150000);
+		assert(wakes == nd_reports_test_wakes());
+		navidrome_external_end();
+		double start = real_seconds();
+		while (nd_reports_test_opens() < 2 && real_seconds() - start < 12) {
+			// Time advances without unrelated audio, service or explicit wakeups.
+			nd_reports_test_clock_silent(test_ms + (unsigned)((real_seconds() - start) * 1000));
+			usleep(1000);
+		}
+		assert(nd_reports_test_wakes() > wakes && nd_reports_test_opens() >= 2);
+		usleep(150000); // finish the loopback response after store admission
+		nd_reports_shutdown();
+		navidrome_reset();
+		drain();
+		lv_display_delete(display);
+		lv_deinit();
+		puts("report external release: sleeping busy worker resumes store/network work without another notification");
+		return 0;
+	}
 	navidromeplay_init();
 	atomic_store(&allow_ready, true);
 	if (!strcmp(argv[2], "idle")) {
 		advance(30, false);
+		pthread_t ringers[3];
+		for (int i = 0; i < 3; i++)
+			assert(!pthread_create(&ringers[i], NULL, ring_reports, NULL));
+		for (int i = 0; i < 3; i++)
+			pthread_join(ringers[i], NULL);
+		usleep(100000); // settle the last synthetic eligibility notification
+		unsigned wakes = nd_reports_test_wakes(), opens = nd_reports_test_opens();
+		usleep(350000);
+		assert(wakes == nd_reports_test_wakes() && opens == nd_reports_test_opens());
+		puts("report idle: no worker wakeups or store opens after settling");
 		navidromeplay_shutdown();
 		navidrome_reset();
 		drain();

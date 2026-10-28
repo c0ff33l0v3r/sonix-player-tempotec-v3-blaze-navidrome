@@ -9,8 +9,23 @@ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
 static bool busy;
 static atomic_uint demand, demand_epoch;
-static void demand_begin(void) { atomic_fetch_add(&demand, 1); atomic_fetch_add(&demand_epoch, 1); }
-static void demand_end(void) { atomic_fetch_sub(&demand, 1); atomic_fetch_add(&demand_epoch, 1); }
+static _Atomic(void (*)(void)) observer;
+void streamturn_set_observer(void (*changed)(void)) { atomic_store(&observer, changed); }
+static void observe_change(void) {
+	void (*changed)(void) = atomic_load(&observer);
+	if (changed)
+		changed();
+}
+static void demand_begin(void) {
+	atomic_fetch_add(&demand, 1);
+	atomic_fetch_add(&demand_epoch, 1);
+	observe_change();
+}
+static void demand_end(void) {
+	atomic_fetch_sub(&demand, 1);
+	atomic_fetch_add(&demand_epoch, 1);
+	observe_change();
+}
 unsigned streamturn_observe(bool *idle) {
 	*idle = atomic_load(&demand) == 0;
 	return atomic_load(&demand_epoch);

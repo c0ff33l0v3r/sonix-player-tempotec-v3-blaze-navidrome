@@ -238,12 +238,18 @@ bool http_session_report(http_session_t *session, size_t max_bytes);
 bool http_session_lyrics(http_session_t *session);
 // Opt-in original binary transfers. Defaults for finite JSON remain unchanged.
 bool http_session_binary(http_session_t *session, size_t max_bytes, int deadline_seconds);
+// Playback separates finite setup from its longer original-audio body budget.
+bool http_session_audio(http_session_t *session, size_t max_bytes);
 // Protected finite artwork: no redirect replay; other binary callers retain behavior.
 bool http_session_artwork(http_session_t *session, size_t max_bytes);
 const char *http_session_content_type(const http_session_t *session);
 size_t http_session_length(const http_session_t *session); // zero when unknown
 void http_session_free(http_session_t *session);
 bool http_session_get(http_session_t *session, const char *url, bool gzip, bool reuse);
+bool http_session_form(http_session_t *session, const char *url, const char *form);
+// Protected complete finite JSON transport; reason is a fixed transport category.
+// Form is borrowed only until return. No mutation retry is performed.
+bool http_finite_request(const char *url, const char *form, bool (*current)(void *), void *user, char **out, size_t *size, size_t limit, int *status, const char **reason, bool *too_large, void (*diagnostic)(const char *));
 int http_session_read(http_session_t *session, void *out, size_t size);
 const char *http_session_error(const http_session_t *session); // fixed reason only
 int http_session_status(const http_session_t *session);

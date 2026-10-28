@@ -11,6 +11,6 @@ ${CC:-cc} -std=gnu11 -O1 -g -Wall -Wextra -Werror -Wno-unused-function \
     src/system/image/png_scaled.c src/system/image/art_shrink.c \
     src/gb/miniz/miniz.c src/system/streaming/navidromeapi.c \
     src/system/streaming/navidromecrypto.c src/system/core/md5.c \
-    src/system/net/http.c src/system/net/tls.c src/system/net/gzip.c \
+    src/system/device/workactivity.c src/system/net/http.c src/system/net/tls.c src/system/net/gzip.c \
     -Wl,--gc-sections,--wrap=cover_load_image_memory,--wrap=malloc,--wrap=write,--wrap=getaddrinfo -lm -pthread -ldl -lresolv -o "$check_binary"
 python3 tools/navidrome_artworkcheck.py "$check_binary"

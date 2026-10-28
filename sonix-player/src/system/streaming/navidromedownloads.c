@@ -2,12 +2,13 @@
 #include "navidromedownloads.h"
 #include "navidromeaudio.h"
 #include "navidromedownloadfile.h"
-#include "navidromeplayliststore.h"
 #include "navidromeplaycatalog.h"
+#include "navidromeplayliststore.h"
 #include "src/gui/shell/gui.h"
 #include "src/system/core/md5.h"
 #include "src/system/core/sha256.h"
 #include "src/system/core/utils.h"
+#include "src/system/device/workactivity.h"
 #include "src/system/library/library.h"
 #include "src/system/library/metadata.h"
 #include "streamturn.h"
@@ -29,6 +30,7 @@ static pthread_t manager_thread, transfer_thread;
 static bool started, stopping, pending, armed, network_wanted;
 static unsigned serial;
 static unsigned admissions;
+static work_activity_t batch_activity, command_activity;
 static nd_dl_request_t command;
 static nd_context_t command_context, active_context;
 static nd_library_t active_library;
@@ -157,6 +159,21 @@ static void deliver(void *unused) {
 	if (callback)
 		callback(ok, error[0] ? error : NULL, added, skipped, user);
 }
+static void (*view_listener)(void);
+void navidromedownloads_set_listener(void (*listener)(void)) {
+	pthread_mutex_lock(&mutex);
+	view_listener = listener;
+	pthread_mutex_unlock(&mutex);
+}
+static void view_notice(void *unused) {
+	(void)unused;
+	deliver(NULL);
+	pthread_mutex_lock(&mutex);
+	void (*listener)(void) = view_listener;
+	pthread_mutex_unlock(&mutex);
+	if (listener)
+		listener();
+}
 void navidromedownloads_poll(void) { deliver(NULL); }
 void navidromedownloads_view(nd_dl_view_t *out) {
 	pthread_mutex_lock(&mutex);
@@ -168,6 +185,7 @@ void navidromedownloads_cancel(void) {
 	pthread_mutex_lock(&mutex);
 	serial++;
 	armed = network_wanted = false;
+	work_activity_end(&batch_activity);
 	nd_wipe(&active_context, sizeof(active_context));
 	pthread_cond_broadcast(&changed);
 	pthread_mutex_unlock(&mutex);
@@ -575,6 +593,8 @@ static void *manage(void *unused) {
 			pthread_mutex_unlock(&mutex);
 			break;
 		}
+		work_activity_t operation = command_activity;
+		command_activity.mask = 0;
 		nd_dl_request_t q = command;
 		command.captured = NULL;
 		nd_context_t owned_context = command_context;
@@ -672,7 +692,7 @@ static void *manage(void *unused) {
 			active_library = q.library;
 			active_context = r.context;
 			admissions++;
-			armed = true;
+			armed = batch_activity.mask || work_activity_begin(&batch_activity, WORK_JOB);
 			pthread_cond_broadcast(&changed);
 		}
 		if (callback) {
@@ -687,8 +707,8 @@ static void *manage(void *unused) {
 			snprintf(delivery.error, sizeof(delivery.error), "%s", error ? error : "");
 		}
 		pthread_mutex_unlock(&mutex);
-		if (callback)
-			gui_post(deliver, NULL);
+		gui_post_signal(view_notice, NULL);
+		work_activity_end(&operation);
 		nd_wipe(&r.context, sizeof(r.context));
 	}
 	return NULL;
@@ -1328,11 +1348,19 @@ static void *download(void *unused) {
 			pthread_mutex_unlock(&mutex);
 			break;
 		}
+		work_activity_t iteration = {0};
+		if (!work_activity_begin(&iteration, WORK_JOB)) {
+			armed = false;
+			work_activity_end(&batch_activity);
+			pthread_mutex_unlock(&mutex);
+			continue;
+		}
 		run_t r = {.library = active_library, .context = active_context, .serial = serial};
 		unsigned admission = admissions;
 		pthread_mutex_unlock(&mutex);
 		if (!context_current(&r) || r.context.card_epoch != r.library.card_epoch) {
 			navidromedownloads_cancel();
+			work_activity_end(&iteration);
 			continue;
 		}
 		reconcile(&r);
@@ -1347,10 +1375,12 @@ static void *download(void *unused) {
 			pthread_mutex_lock(&mutex);
 			if (r.serial == serial && admission == admissions) {
 				armed = false;
+				work_activity_end(&batch_activity);
 				nd_wipe(&active_context, sizeof(active_context));
 			}
 			pthread_mutex_unlock(&mutex);
 			nd_wipe(&r.context, sizeof(r.context));
+			work_activity_end(&iteration);
 			continue;
 		}
 		const char *error = transfer(&r, &j);
@@ -1373,6 +1403,7 @@ static void *download(void *unused) {
 					navidrome_network_failed(&r.context);
 				pthread_mutex_lock(&mutex);
 				armed = false;
+				work_activity_end(&batch_activity);
 				nd_wipe(&active_context, sizeof(active_context));
 				pthread_mutex_unlock(&mutex);
 				if (open_store(&r, &s, true)) {
@@ -1384,6 +1415,8 @@ static void *download(void *unused) {
 			// playback transfer here with an uncancellable idle/join operation.
 		}
 		nd_wipe(&r.context, sizeof(r.context));
+		work_activity_end(&iteration);
+		gui_post_signal(view_notice, NULL);
 	}
 	return NULL;
 }
@@ -1433,11 +1466,12 @@ bool navidromedownloads_request(const nd_dl_request_t *q, nd_dl_captured_cb call
 		return false;
 	}
 	pthread_mutex_lock(&mutex);
-	bool ok = !pending && !view.busy && !delivery.pending && !stopping;
+	bool ok = !pending && !view.busy && !delivery.pending && !stopping && work_activity_begin(&command_activity, WORK_JOB);
 	if (ok) {
 		if (q->action == NDDL_PAUSE || q->action == NDDL_CANCEL) {
 			serial++;
 			armed = network_wanted = false;
+			work_activity_end(&batch_activity);
 		}
 		command = *q;
 		command.captured = nd_owned_retain(q->captured);
@@ -1463,6 +1497,7 @@ void navidromedownloads_shutdown(void) {
 	command.captured = NULL;
 	nd_library_t pinned = command.library;
 	pending = false;
+	work_activity_end(&command_activity);
 	started = false;
 	stopping = true;
 	pthread_cond_broadcast(&changed);

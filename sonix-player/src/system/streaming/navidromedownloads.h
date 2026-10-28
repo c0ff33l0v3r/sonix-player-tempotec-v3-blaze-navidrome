@@ -36,7 +36,8 @@ typedef struct {
 typedef void (*nd_dl_captured_cb)(bool ok, const char *error, int added, int skipped, void *user);
 // GUI thread admission; all filesystem/SQL work stays on owned workers.
 bool navidromedownloads_request(const nd_dl_request_t *request, nd_dl_captured_cb callback, void *user);
-void navidromedownloads_init(void); // after service initialization; no threads/I/O
+void navidromedownloads_init(void);
+void navidromedownloads_set_listener(void (*listener)(void)); // after service initialization; no threads/I/O
 void navidromedownloads_poll(void); // GUI fallback delivery only
 void navidromedownloads_view(nd_dl_view_t *out);
 void navidromedownloads_cancel(void); // service mutex-safe: wake only

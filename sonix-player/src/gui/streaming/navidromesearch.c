@@ -19,6 +19,7 @@
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
+#include "src/system/device/power.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/streaming/navidromeactions.h"
 #include "src/system/streaming/navidromedownloads.h"
@@ -366,6 +367,11 @@ static bool search_job_current(void *value) {
 	pthread_mutex_unlock(&search_lock);
 	return ok;
 }
+static void search_tick(lv_timer_t *timer);
+static void search_completion(void *unused) {
+	(void)unused;
+	search_tick(search_timer);
+}
 static void *search_work(void *unused) {
 	(void)unused;
 	thread_be_background("navidrome search");
@@ -428,6 +434,7 @@ static void *search_work(void *unused) {
 			search_job_free(search_undelivered);
 			search_undelivered = job;
 			pthread_mutex_unlock(&search_lock);
+			gui_post_signal(search_completion, NULL);
 		}
 	}
 	return NULL;
@@ -941,7 +948,7 @@ void navidromesearch_init(gui_config_t *cfg) {
 	}
 	search_keyboard = keyboard_create(screen, search_width, search_keyboard_height, search_field, &icon_search, NULL, search_accept, NULL);
 	search_timer = lv_timer_create(search_tick, 100, NULL);
-	lv_timer_create(search_actions_poll, 100, NULL);
+	power_pause_in_standby(search_timer);
 	lv_timer_pause(search_timer);
 	theme_register_refresh(search_paint_pills);
 	search_paint_pills();

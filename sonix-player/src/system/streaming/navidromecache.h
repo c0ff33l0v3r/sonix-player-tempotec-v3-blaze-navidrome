@@ -23,4 +23,6 @@ bool nd_cache_usage_request(const nd_library_t *library);
 // Caller first stops the Navidrome decoder on the GUI thread. reader_active is worker-safe.
 bool nd_cache_clear_request(const nd_library_t *library, bool (*reader_active)(void));
 void nd_cache_usage_snapshot(nd_cache_usage_t *usage);
+// GUI-owned listener; retained worker result has no callback-owned allocation.
+void nd_cache_set_listener(void (*listener)(void));
 #endif

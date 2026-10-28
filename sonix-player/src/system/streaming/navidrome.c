@@ -1,17 +1,19 @@
-#include "src/system/playback/session.h"
 #include "navidrome.h"
-#include "navidromeoffline.h"
-#include "navidromecache.h"
 #include "navidromeapi.h"
 #include "navidromebatch.h"
+#include "navidromecache.h"
 #include "navidromedebug.h"
 #include "navidromelibrary.h"
+#include "navidromeoffline.h"
+#include "navidromereports.h"
 #include "src/gui/shell/gui.h"
 #include "src/system/core/config.h"
 #include "src/system/core/json.h"
 #include "src/system/core/md5.h"
+#include "src/system/device/workactivity.h"
 #include "src/system/net/http.h"
 #include "src/system/net/wifi.h"
+#include "src/system/playback/session.h"
 #include <stdatomic.h>
 #include <time.h>
 
@@ -28,6 +30,7 @@
 typedef enum { JOB_SAVE, JOB_UNLOCK, JOB_CHANGE, JOB_CONNECT, JOB_FORGET, JOB_CACHE, JOB_SYNC, JOB_ENCRYPT, JOB_PLAIN, JOB_FAVORITES } job_kind_t;
 typedef struct {
 	job_kind_t kind;
+	work_activity_t activity;
 	unsigned generation, card_epoch, local_epoch, auto_session;
 	bool authenticate, automatic;
 	char root[1024];
@@ -36,6 +39,8 @@ typedef struct {
 } job_t;
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+// Worker-only I/O gate. Never acquire it while holding the state mutex.
+static pthread_mutex_t publication = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t ready = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t io_drained = PTHREAD_COND_INITIALIZER;
 static unsigned cache_users, sync_owners, external_users;
@@ -68,9 +73,15 @@ static void changed(void *unused) {
 	pthread_mutex_unlock(&lock);
 	if (cb)
 		cb();
+	if (playback_session_service_changed)
+		playback_session_service_changed();
 }
 
-static void notify(void) { gui_post(changed, NULL); }
+static void notify(void) {
+	if (nd_reports_wake)
+		nd_reports_wake();
+	gui_post_signal(changed, NULL);
+}
 
 #ifdef NAVIDROME_TEST
 static int test_online = -1;
@@ -147,16 +158,34 @@ const char *navidrome_ping(const char *host, const char *user, const char *passw
 }
 
 static bool current(const job_t *job) { return !g.stop && g.generation == job->generation; }
+static bool connection_current(void *data) {
+	pthread_mutex_lock(&lock);
+	bool valid = current(data);
+	pthread_mutex_unlock(&lock);
+	return valid;
+}
+static const char *ping_current(const nd_record_t *record, const char *password, job_t *job) {
+	nd_document_t doc;
+	const char *error = nd_api_json_current(record->host, record->user, password, "ping", NULL, 16384, connection_current, job, &doc);
+	if (!error)
+		nd_api_free(&doc);
+	return error;
+}
 
 // Expensive file writes/fsync do not hold the snapshot mutex. Only the rename
-// and in-memory adoption serialize with Lock/Forget and generation changes.
+// and in-memory adoption use the worker gate with brief epoch validation.
 static int commit(const job_t *job, const nd_record_t *r, const uint8_t key[32], const char *password) {
 	if (!nd_vault_stage(g.path, r)) {
 		nd_log("navidrome: vault stage failed errno=%d\n", errno);
 		return 0;
 	}
+	pthread_mutex_lock(&publication);
 	pthread_mutex_lock(&lock);
-	bool applied = current(job) && nd_vault_commit(g.path);
+	bool admitted = current(job);
+	pthread_mutex_unlock(&lock);
+	bool applied = admitted && nd_vault_commit(g.path);
+	pthread_mutex_lock(&lock);
+	applied = applied && current(job);
 	if (applied) {
 		if (strcmp(g.record.host, r->host) || strcmp(g.record.user, r->user) || strcmp(g.password, password)) {
 			g.profile_epoch++;
@@ -178,6 +207,7 @@ static int commit(const job_t *job, const nd_record_t *r, const uint8_t key[32],
 		g.revision++;
 	}
 	pthread_mutex_unlock(&lock);
+	pthread_mutex_unlock(&publication);
 	if (!applied) {
 		nd_log("navidrome: vault commit failed_or_cancelled generation=%u\n", job->generation);
 		nd_vault_discard(g.path);
@@ -601,17 +631,23 @@ static void sync_run(const job_t *job, const nd_record_t *record, const char *pa
 		validation_seconds = sync_now() - phase;
 	}
 	bool valid = sync_current(job) && nd_cache_card_same(job->root, card.st_dev, card.st_ino);
+	pthread_mutex_lock(&publication);
 	pthread_mutex_lock(&lock);
 	if (!error && (!valid || !current(job) || job->card_epoch != g.card_epoch || g.sync_cancel))
 		error = "nd_sync_cancelled";
+	pthread_mutex_unlock(&lock);
 	double phase = sync_now();
 	bool published = !error && nd_store_publish(&store);
 	publish_seconds = sync_now() - phase;
 	if (!error && !published)
 		error = "nd_cache_error";
-	if (published)
+	pthread_mutex_lock(&lock);
+	if (published && current(job) && job->card_epoch == g.card_epoch && !g.sync_cancel) {
+		nd_store_cancel_reads();
 		g.local_epoch++;
+	}
 	pthread_mutex_unlock(&lock);
+	pthread_mutex_unlock(&publication);
 	if (published && !nd_store_status(&store, &result))
 		error = "nd_cache_error";
 	phase = sync_now();
@@ -671,6 +707,20 @@ static void *work(void *unused) {
 			job = g.job;
 		else {
 			memset(&job, 0, sizeof(job));
+			if (!work_activity_begin(&job.activity, WORK_JOB)) {
+				// Only pending work retries admission across a suspend transition.
+				// The idle worker remains on its ordinary condition wait.
+				struct timespec until;
+				clock_gettime(CLOCK_REALTIME, &until);
+				until.tv_nsec += 100000000L;
+				if (until.tv_nsec >= 1000000000L) {
+					until.tv_sec++;
+					until.tv_nsec -= 1000000000L;
+				}
+				pthread_cond_timedwait(&ready, &lock, &until);
+				pthread_mutex_unlock(&lock);
+				continue;
+			}
 			job.kind = JOB_CACHE;
 			job.generation = g.generation;
 		}
@@ -692,6 +742,7 @@ static void *work(void *unused) {
 				sync_run(&job, &r, password);
 			else
 				sync_run(&job, &r, password);
+			work_activity_end(&job.activity);
 			nd_wipe(&job, sizeof(job));
 			nd_wipe(&r, sizeof(r));
 			nd_wipe(key, sizeof(key));
@@ -746,19 +797,28 @@ static void *work(void *unused) {
 					error = result == 2 ? "nd_durability_error" : "nd_save_error";
 			}
 		}
-		if (!error && job.kind == JOB_FORGET && !nd_cache_retire_scope(g.path))
-			error = "nd_remove_error";
+		bool removed = false, absent = false;
+		if (job.kind == JOB_FORGET) {
+			pthread_mutex_lock(&publication);
+			pthread_mutex_lock(&lock);
+			bool admitted = current(&job);
+			pthread_mutex_unlock(&lock);
+			if (admitted && !error && !nd_cache_retire_scope(g.path))
+				error = "nd_remove_error";
+			if (admitted && !error) {
+				removed = nd_vault_remove(g.path);
+				if (!removed)
+					error = "nd_remove_error";
+				absent = removed || (access(g.path, F_OK) != 0 && errno == ENOENT);
+			}
+			pthread_mutex_unlock(&publication);
+		}
 		pthread_mutex_lock(&lock);
 		bool valid = current(&job);
-		if (valid && !error && job.kind == JOB_FORGET) {
-			bool removed = nd_vault_remove(g.path);
-			if (!removed)
-				error = "nd_remove_error";
-			if (removed || (access(g.path, F_OK) != 0 && errno == ENOENT)) {
-				nd_wipe(&g.record, sizeof(g.record));
-				g.configured = g.invalid = false;
-				g.revision++;
-			}
+		if (valid && job.kind == JOB_FORGET && absent) {
+			nd_wipe(&g.record, sizeof(g.record));
+			g.configured = g.invalid = false;
+			g.revision++;
 		}
 		if (valid && !error && job.kind == JOB_UNLOCK) {
 			g.record = r;
@@ -791,7 +851,19 @@ static void *work(void *unused) {
 			nd_wipe(&surviving, sizeof(surviving));
 		}
 		if (valid && !error && job.kind == JOB_FORGET) {
-			if (!nd_cache_retire(job.root, g.path)) {
+			// Admission was revoked by Forget. Drain old local handles before
+			// deletion, without owning a gate those handles may need to leave.
+			pthread_mutex_lock(&lock);
+			while (!g.stop && (cache_users || external_users))
+				pthread_cond_wait(&io_drained, &lock);
+			pthread_mutex_unlock(&lock);
+			pthread_mutex_lock(&publication);
+			bool held = connection_current(&job) && navidrome_session_card_begin(job.card_epoch, job.root);
+			bool retired = nd_cache_retire(held ? job.root : NULL, g.path);
+			if (held)
+				navidrome_cache_end();
+			pthread_mutex_unlock(&publication);
+			if (!retired) {
 				pthread_mutex_lock(&lock);
 				g.library.error = "nd_cache_error";
 				pthread_mutex_unlock(&lock);
@@ -801,7 +873,7 @@ static void *work(void *unused) {
 			cache_refresh(&job, &r);
 		if (valid && !error && check) {
 			notify();
-			error = online() ? navidrome_ping(r.host, r.user, password) : "nd_wifi_error";
+			error = online() ? ping_current(&r, password, &job) : "nd_wifi_error";
 			// Recheck Wi-Fi even if the user left the menu during this request.
 			if (!error && !online())
 				error = "nd_wifi_error";
@@ -838,6 +910,7 @@ static void *work(void *unused) {
 		}
 		pthread_mutex_unlock(&lock);
 		nd_log("navidrome: operation finish kind=%s generation=%u accepted=%d result=%s\n", job.automatic ? "automatic_entry" : operations[job.kind], job.generation, accepted, error ? error : "ok");
+		work_activity_end(&job.activity);
 		nd_wipe(&job, sizeof(job));
 		nd_wipe(&r, sizeof(r));
 		nd_wipe(key, sizeof(key));
@@ -917,6 +990,9 @@ static bool submit(job_t *job) {
 		}
 		g.started = true;
 	}
+	unsigned demand = WORK_JOB | ((job->kind == JOB_SYNC || job->kind == JOB_FAVORITES) ? WORK_NETWORK : 0);
+	if (!work_activity_begin(&job->activity, demand))
+		return false;
 	g.busy = true;
 	g.error = NULL;
 	if (check) {
@@ -929,6 +1005,7 @@ static bool submit(job_t *job) {
 		g.search_network_epoch++;
 	job->generation = ++g.generation;
 	g.job = *job;
+	job->activity.mask = 0; // ownership moves into the pending slot
 	g.pending = true;
 	if (job->kind == JOB_CONNECT || job->kind == JOB_SAVE || job->kind == JOB_UNLOCK)
 		g.connected = false;
@@ -1081,6 +1158,7 @@ bool navidrome_reconnect(void) {
 }
 
 static void clear_secrets(void) {
+	nd_store_cancel_reads();
 	g.auto_pending = g.auto_inflight = g.report_connected = g.connection_job = false;
 	g.search_network_epoch++;
 	g.profile_epoch++;
@@ -1092,6 +1170,7 @@ static void clear_secrets(void) {
 	g.local_epoch++;
 	g.library.syncing = g.favorites.syncing = false;
 	g.unlocked = g.connected = g.checking = g.busy = g.pending = false;
+	work_activity_end(&g.job.activity);
 	nd_wipe(&g.job, sizeof(g.job));
 	nd_wipe(g.key, sizeof(g.key));
 	nd_wipe(g.password, sizeof(g.password));
@@ -1148,15 +1227,36 @@ void navidrome_poll_network(void) {
 }
 
 void navidrome_reset(void) {
+	char root[sizeof(g.root)];
+	pthread_mutex_lock(&lock);
+	unsigned card_epoch = g.card_epoch;
+	snprintf(root, sizeof(root), "%s", g.root);
+	pthread_mutex_unlock(&lock);
 	playback_session_forget();
 	// Reset terminates the service before removing files, so a cancelled
 	// worker cannot recreate even a staging file after reset has finished.
 	navidrome_shutdown();
 	pthread_mutex_lock(&lock);
 	clear_secrets();
-	if (nd_vault_remove(g.path)) {
+	pthread_mutex_unlock(&lock);
+	pthread_mutex_lock(&publication);
+	pthread_mutex_lock(&lock);
+	// Reset has stopped normal service admission; retain only the original
+	// selected card while its cleanup runs. A replacement card is untouched.
+	bool held = *root && card_epoch == g.card_epoch && !strcmp(root, g.root) && work_activity_hold(WORK_STORAGE);
+	if (held)
+		cache_users++;
+	pthread_mutex_unlock(&lock);
+	bool removed = nd_vault_remove(g.path);
+	if (removed) {
 		nd_vault_sync(g.path);
-		nd_cache_retire(g.root, g.path);
+		nd_cache_retire(held ? root : NULL, g.path);
+	}
+	if (held)
+		navidrome_cache_end();
+	pthread_mutex_unlock(&publication);
+	pthread_mutex_lock(&lock);
+	if (removed) {
 		nd_wipe(&g.record, sizeof(g.record));
 		g.configured = g.invalid = false;
 		g.error = NULL;
@@ -1222,6 +1322,7 @@ void navidrome_set_root(const char *root) {
 		snprintf(g.root, sizeof(g.root), "%s", root);
 	else
 		g.root[0] = 0;
+	nd_store_cancel_reads();
 	g.card_epoch++;
 	g.local_epoch++;
 	if (g.invalidate_playback)
@@ -1354,16 +1455,31 @@ bool navidrome_context_current(const nd_context_t *context, bool network) {
 	return ok;
 }
 
+bool navidrome_cache_publish(unsigned epoch, unsigned card_epoch, const char *temp, const char *path) {
+	pthread_mutex_lock(&publication);
+	bool admitted = navidrome_cache_begin(epoch, card_epoch);
+	bool ok = admitted && rename(temp, path) == 0;
+	if (admitted)
+		navidrome_cache_end();
+	pthread_mutex_unlock(&publication);
+	return ok;
+}
+
 bool navidrome_context_publish(const nd_context_t *context, const char *temp, const char *path) {
-	pthread_mutex_lock(&lock);
-	bool ok = g.unlocked && g.connected && context->epoch == g.local_epoch && context->card_epoch == g.card_epoch && context->network_epoch == g.generation && rename(temp, path) == 0;
-	pthread_mutex_unlock(&lock);
+	pthread_mutex_lock(&publication);
+	bool admitted = navidrome_context_current(context, true) && navidrome_cache_begin(context->epoch, context->card_epoch);
+	bool ok = admitted && rename(temp, path) == 0;
+	if (admitted) {
+		ok = ok && navidrome_context_current(context, true);
+		navidrome_cache_end();
+	}
+	pthread_mutex_unlock(&publication);
 	return ok;
 }
 
 bool navidrome_cache_begin(unsigned epoch, unsigned card_epoch) {
 	pthread_mutex_lock(&lock);
-	bool ok = g.unlocked && !g.stop && epoch == g.local_epoch && card_epoch == g.card_epoch;
+	bool ok = g.unlocked && !g.stop && epoch == g.local_epoch && card_epoch == g.card_epoch && work_activity_hold(WORK_STORAGE);
 	if (ok)
 		cache_users++;
 	pthread_mutex_unlock(&lock);
@@ -1372,8 +1488,10 @@ bool navidrome_cache_begin(unsigned epoch, unsigned card_epoch) {
 
 void navidrome_cache_end(void) {
 	pthread_mutex_lock(&lock);
-	if (cache_users)
+	if (cache_users) {
 		cache_users--;
+		work_activity_release(WORK_STORAGE);
+	}
 	pthread_cond_broadcast(&io_drained);
 	pthread_mutex_unlock(&lock);
 }
@@ -1397,7 +1515,7 @@ bool navidrome_playback_scope(const nd_context_t *c, const nd_library_t *library
 
 bool navidrome_playback_begin(const nd_context_t *c) {
 	pthread_mutex_lock(&lock);
-	bool ok = playback_current(c, false);
+	bool ok = playback_current(c, false) && work_activity_hold(WORK_STORAGE);
 	if (ok)
 		cache_users++;
 	pthread_mutex_unlock(&lock);
@@ -1405,9 +1523,14 @@ bool navidrome_playback_begin(const nd_context_t *c) {
 }
 
 bool navidrome_playback_publish(const nd_context_t *c, const char *temp, const char *path) {
-	pthread_mutex_lock(&lock);
-	bool ok = playback_current(c, true) && rename(temp, path) == 0;
-	pthread_mutex_unlock(&lock);
+	pthread_mutex_lock(&publication);
+	bool admitted = navidrome_playback_current(c, true) && navidrome_playback_begin(c);
+	bool ok = admitted && rename(temp, path) == 0;
+	if (admitted) {
+		ok = ok && navidrome_playback_current(c, true);
+		navidrome_cache_end();
+	}
+	pthread_mutex_unlock(&publication);
 	return ok;
 }
 
@@ -1458,15 +1581,26 @@ void navidrome_set_download_hooks(void (*cancel)(void), void (*shutdown)(void)) 
 	pthread_mutex_unlock(&lock);
 }
 bool navidrome_playback_action(const nd_context_t *context, bool network, bool (*action)(void *), void *user) {
+	pthread_mutex_lock(&publication);
 	pthread_mutex_lock(&lock);
-	bool ok = playback_current(context, network) && action && action(user);
+	bool ok = playback_current(context, network) && action && work_activity_hold(WORK_STORAGE);
+	if (ok)
+		cache_users++;
 	pthread_mutex_unlock(&lock);
+	if (ok) {
+		ok = action(user);
+		pthread_mutex_lock(&lock);
+		ok = ok && playback_current(context, network);
+		pthread_mutex_unlock(&lock);
+		navidrome_cache_end();
+	}
+	pthread_mutex_unlock(&publication);
 	return ok;
 }
 
 bool navidrome_external_begin(const nd_context_t *context, bool network) {
 	pthread_mutex_lock(&lock);
-	bool ok = !g.stop && !g.busy && !external_users && g.unlocked && context->epoch == g.local_epoch && context->card_epoch == g.card_epoch && (!network || (g.connected && context->network_epoch == g.generation));
+	bool ok = !g.stop && !g.busy && !external_users && g.unlocked && context->epoch == g.local_epoch && context->card_epoch == g.card_epoch && (!network || (g.connected && context->network_epoch == g.generation)) && work_activity_hold(WORK_JOB);
 	if (ok)
 		external_users++;
 	pthread_mutex_unlock(&lock);
@@ -1474,17 +1608,26 @@ bool navidrome_external_begin(const nd_context_t *context, bool network) {
 }
 void navidrome_external_end(void) {
 	pthread_mutex_lock(&lock);
-	if (external_users)
+	bool released = external_users != 0;
+	if (released) {
 		external_users--;
+		work_activity_release(WORK_JOB);
+	}
 	pthread_cond_broadcast(&io_drained);
 	pthread_mutex_unlock(&lock);
+	// The reporter may be asleep solely because this lease made it busy.
+	if (released && nd_reports_wake)
+		nd_reports_wake();
 }
 bool navidrome_context_commit(const nd_context_t *context, sqlite3 *db) {
-	pthread_mutex_lock(&lock);
-	bool ok = !g.stop && g.unlocked && context->epoch == g.local_epoch && context->card_epoch == g.card_epoch;
-	if (ok)
-		ok = sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK;
-	pthread_mutex_unlock(&lock);
+	pthread_mutex_lock(&publication);
+	bool admitted = navidrome_cache_begin(context->epoch, context->card_epoch);
+	bool ok = admitted && sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK;
+	if (admitted) {
+		ok = ok && navidrome_context_current(context, false);
+		navidrome_cache_end();
+	}
+	pthread_mutex_unlock(&publication);
 	return ok;
 }
 
@@ -1547,7 +1690,11 @@ bool nd_cache_io_current(unsigned epoch) {
 bool nd_cache_maintenance_begin(void) {
 	pthread_mutex_lock(&cache_io_lock);
 	bool ok = !cache_maintenance;
-	if (ok) { cache_maintenance = true; cache_io_epoch++; }
+	if (ok) {
+		cache_maintenance = true;
+		cache_io_epoch++;
+		nd_store_cancel_reads();
+	}
 	pthread_mutex_unlock(&cache_io_lock);
 	return ok;
 }
@@ -1596,14 +1743,18 @@ bool navidrome_report_current(const nd_report_context_t *c, bool network, bool l
 	bool ok = !g.stop && g.unlocked && !g.invalid && c->profile == g.profile_epoch &&
 		c->card == g.card_epoch && !strcmp(c->scope, g.library.scope) &&
 		(!network || (g.connected && g.report_connected && c->connection == report_connection && !g.busy && !external_users && !sync_owners));
-	if (ok && lease) cache_users++;
+	if (ok && lease) {
+		ok = work_activity_hold(WORK_STORAGE);
+		if (ok)
+			cache_users++;
+	}
 	pthread_mutex_unlock(&lock);
 	return ok;
 }
 
 bool navidrome_session_card_begin(unsigned card_epoch, const char *root) {
 	pthread_mutex_lock(&lock);
-	bool ok = !g.stop && root && *root && card_epoch == g.card_epoch && !strcmp(root, g.root);
+	bool ok = !g.stop && root && *root && card_epoch == g.card_epoch && !strcmp(root, g.root) && work_activity_hold(WORK_STORAGE);
 	if (ok)
 		cache_users++;
 	pthread_mutex_unlock(&lock);

@@ -31,6 +31,9 @@ with tempfile.TemporaryDirectory(prefix='sonix-polish-cache-') as temp:
         put(layout / 'audio' / scope / 'unknown.flac', 50)
         put(layout / 'audio' / 'unknown' / ('d' * 32 + '.mp3'), 50)
         put(layout / 'art' / 'unrelated.img', 50)
+    for layout in (base, modern):
+        for name in ('browse-order.db', 'browse-order.db.tmp', 'browse-order.db-journal', 'browse-order.db.tmp-journal'):
+            put(layout / name, 13, True)
     for name in ('library.db', 'favorites.db', 'library.db-wal'):
         put(modern / name, 19)
     for name in ('playlists-scope.db', 'downloads-scope.db', 'lyrics-scope.db'):

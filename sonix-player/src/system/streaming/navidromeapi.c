@@ -35,18 +35,18 @@ static const char *request_url(const char *host, const char *user, const char *p
 	return NULL;
 }
 
-const char *nd_api_stream(const char *host, const char *user, const char *password, const char *id, http_stream_t *stream) {
+const char *nd_api_stream(const char *host, const char *user, const char *password, const char *id, http_session_t *stream) {
 	char encoded[ND_ID_MAX * 3 + 1], query[ND_ID_MAX * 3 + 32], url[2500];
 	if (!id || !*id || strlen(id) >= ND_ID_MAX)
 		return "nd_response_error";
 	http_url_encode(id, encoded, sizeof(encoded));
 	snprintf(query, sizeof(query), "id=%s&format=raw", encoded);
 	const char *error = request_url(host, user, password, "stream", query, url, sizeof(url));
-	if (!error && !http_file_open(stream, url, 8))
-		error = stream->status == 401 || stream->status == 403 ? "nd_auth_error" : "nd_network_error";
+	if (!error && (!http_session_get(stream, url, false, false) || http_session_status(stream) != 200))
+		error = http_session_status(stream) == 401 || http_session_status(stream) == 403 ? "nd_auth_error" : "nd_network_error";
 	nd_wipe(url, sizeof(url));
 	http_clear_request_metadata();
-	nd_log("navidrome: stream open status=%d accepted=%d\n", stream->status, !error);
+	nd_log("navidrome: stream open status=%d accepted=%d\n", http_session_status(stream), !error);
 	return error;
 }
 
@@ -72,7 +72,7 @@ const char *nd_api_download(const char *host, const char *user, const char *pass
 	return error;
 }
 
-static const char *json_request(const char *host, const char *user, const char *password, const char *method, const char *query, size_t limit, int tokens, const char *form, nd_document_t *out) {
+static const char *json_request(const char *host, const char *user, const char *password, const char *method, const char *query, size_t limit, int tokens, const char *form, bool (*current)(void *), void *arg, nd_document_t *out) {
 	memset(out, 0, sizeof(*out));
 	char url[2500];
 	const char *error = request_url(host, user, password, method, query, url, sizeof(url));
@@ -82,10 +82,10 @@ static const char *json_request(const char *host, const char *user, const char *
 	size_t size = 0, received = 0;
 	int status = 0;
 	bool too_large = false;
-	http_req_t request = {.method = form ? "POST" : NULL, .body = form, .received_out = &received, .diagnostic = nd_debug_line, .body_limit_out = &too_large, .want_error_body = true, .sensitive_url = true, .require_complete_body = true};
+	const char *transport = NULL;
 	nd_log("navidrome: %s start scheme=%s timeout_seconds=8 body_limit=%zu\n", method, !strncmp(host, "https://", 8) ? "https" : "http", limit);
-	bool ok = http_request(url, &request, &body, &size, limit, 8, &status);
-	bool diagnostic_error = http_last_error() != NULL;
+	bool ok = http_finite_request(url, form, current, arg, &body, &size, limit, &status, &transport, &too_large, nd_debug_line);
+	bool diagnostic_error = transport != NULL;
 	nd_log("navidrome: %s response http_ok=%d status=%d bytes=%zu transport_diagnostic=%d\n", method, ok, status, received ? received : size, diagnostic_error);
 	http_clear_request_metadata();
 	nd_wipe(url, sizeof(url));
@@ -96,11 +96,17 @@ static const char *json_request(const char *host, const char *user, const char *
 		nd_log("navidrome: %s rejected reason=%s\n", method, status >= 200 && status < 300 ? "incomplete_or_oversized_http_body" : "http_request_failed");
 		if (too_large && status >= 200 && status < 300 && strcmp(method, "ping"))
 			return tokens == ND_PL_TOKENS ? "nd_pl_too_large" : "nd_page_large";
-		if (status >= 200 && status < 300)
-			return "nd_response_error";
+		if (transport && !strcmp(transport, "cancelled"))
+			return "nd_sync_cancelled";
+		if (transport && (!strcmp(transport, "allocation_failed") || !strcmp(transport, "resolver_unavailable") || !strcmp(transport, "admission")))
+			return "nd_worker_error";
+		if (transport && !strcmp(transport, "tls"))
+			return "nd_tls_error";
+		if (!transport || !strcmp(transport, "dns") || !strcmp(transport, "connect") || !strcmp(transport, "network") || !strcmp(transport, "idle_timeout") || !strcmp(transport, "deadline"))
+			return "nd_network_error";
 		if (status >= 400)
 			return "nd_api_error";
-		return diagnostic_error && !strncmp(host, "https://", 8) ? "nd_tls_error" : "nd_network_error";
+		return "nd_response_error";
 	}
 	error = "nd_response_error";
 	// Only classify response bytes. Never log server text, which may echo
@@ -155,6 +161,10 @@ static const char *json_request(const char *host, const char *user, const char *
 				nd_log("navidrome: %s API error_code=%ld\n", method, code);
 			}
 		}
+		if (!error && current && !current(arg)) {
+			error = "nd_sync_cancelled";
+			reason = "cancelled";
+		}
 		if (!error) {
 			out->body = body;
 			out->doc = doc;
@@ -170,12 +180,19 @@ static const char *json_request(const char *host, const char *user, const char *
 	return error;
 }
 
-const char *nd_api_json(const char *host, const char *user, const char *password, const char *method, const char *query, size_t limit, nd_document_t *out) { return json_request(host, user, password, method, query, limit, ND_API_TOKENS, NULL, out); }
+const char *nd_api_json(const char *host, const char *user, const char *password, const char *method, const char *query, size_t limit, nd_document_t *out) { return json_request(host, user, password, method, query, limit, ND_API_TOKENS, NULL, NULL, NULL, out); }
 
 const char *nd_api_playlist(const char *host, const char *user, const char *password, const char *method, const char *query, const char *form, nd_document_t *out) {
 	if (form && strlen(form) > ND_PL_BYTES)
 		return "nd_pl_too_large";
-	return json_request(host, user, password, method, query, ND_PL_BYTES + 1, ND_PL_TOKENS, form, out);
+	return json_request(host, user, password, method, query, ND_PL_BYTES + 1, ND_PL_TOKENS, form, NULL, NULL, out);
+}
+
+const char *nd_api_json_current(const char *host, const char *user, const char *password, const char *method, const char *query, size_t limit, bool (*current)(void *), void *arg, nd_document_t *out) { return json_request(host, user, password, method, query, limit, ND_API_TOKENS, NULL, current, arg, out); }
+const char *nd_api_playlist_current(const char *host, const char *user, const char *password, const char *method, const char *query, const char *form, bool (*current)(void *), void *arg, nd_document_t *out) {
+	if (form && strlen(form) > ND_PL_BYTES)
+		return "nd_pl_too_large";
+	return json_request(host, user, password, method, query, ND_PL_BYTES + 1, ND_PL_TOKENS, form, current, arg, out);
 }
 
 void nd_api_free(nd_document_t *doc) {

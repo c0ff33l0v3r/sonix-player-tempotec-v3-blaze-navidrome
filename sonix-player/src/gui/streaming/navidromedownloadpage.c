@@ -1,6 +1,6 @@
+#include "navidromedownloadpage.h"
 #include "navidromepage.h"
 #include "navidromerow.h"
-#include "navidromedownloadpage.h"
 #include "navidromethumb.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/library/browser.h"
@@ -14,6 +14,7 @@
 #include "src/gui/shell/uiscale.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
+#include "src/system/device/power.h"
 #include "src/system/library/library.h"
 #include "src/system/streaming/navidromedownloads.h"
 #include <limits.h>
@@ -96,6 +97,8 @@ static bool request(nd_dl_action_t action) {
 		}
 		folder_waiting = manager_waiting = false;
 		loading = true;
+		if (timer)
+			lv_timer_resume(timer);
 		submitted = lv_tick_get();
 		if (picking)
 			lv_obj_scroll_to_y(picker_body, 0, LV_ANIM_OFF);
@@ -377,6 +380,12 @@ static void tick(lv_timer_t *unused) {
 	}
 	if (lv_screen_active() != screen && lv_screen_active() != picker && lv_screen_active() != manager) {
 		loading = folder_waiting = manager_waiting = clearing = clear_pending = false;
+		if (timer) {
+			if (discovery_pending)
+				lv_timer_resume(timer);
+			else
+				lv_timer_pause(timer);
+		}
 		return;
 	}
 	if (clear_pending && lv_screen_active() == manager)
@@ -440,23 +449,34 @@ static void tick(lv_timer_t *unused) {
 		result = *fresh;
 		repaint();
 	}
+	bool running = fresh->busy || fresh->armed;
+	bool artwork_pending = false;
 	free(fresh);
 	if (lv_screen_active() == manager) {
 		if (!eligible)
 			details_close(NULL);
 		else
-			for (int i = 0; i < ND_WINDOW; i++)
+			for (int i = 0; i < ND_WINDOW; i++) {
 				navidromethumb_tick(&thumbnails[i]);
+				artwork_pending |= !thumbnails[i].finished;
+			}
 	}
 	if (lv_screen_active() == manager && !loading && !clearing)
 		manager_scroll(NULL);
 	if (loading && lv_tick_elaps(submitted) > 2500)
 		loading = false;
-	if (!loading && !naming && !clearing && (lv_screen_active() == screen || lv_screen_active() == manager) && lv_tick_elaps(refreshed) > 1000) {
+	if (running && !loading && !naming && !clearing && (lv_screen_active() == screen || lv_screen_active() == manager) && lv_tick_elaps(refreshed) > 1000) {
 		refreshed = lv_tick_get();
 		request(NDDL_VIEW);
 	}
+	if (timer) {
+		if (artwork_pending || running || loading || folder_waiting || manager_waiting || discovery_pending || clear_pending)
+			lv_timer_resume(timer);
+		else
+			lv_timer_pause(timer);
+	}
 }
+static void download_changed(void) { tick(NULL); }
 void navidromedownloadpage_open(void) {
 	first = 0;
 	folder[0] = 0;
@@ -832,4 +852,7 @@ void navidromedownloadpage_init(gui_config_t *config) {
 	keyboard_set_visible(name_keyboard, false);
 	lv_obj_set_hidden(name_layer, true);
 	timer = lv_timer_create(tick, 200, NULL);
+	power_slow_in_standby(timer, 1000);
+	lv_timer_pause(timer);
+	navidromedownloads_set_listener(download_changed);
 }

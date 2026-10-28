@@ -72,6 +72,19 @@ static bool dirty, suspended_local;
 static unsigned allocation_failed, other_pending;
 static unsigned retry_ms;
 static bool (*legacy)(void);
+static lv_timer_t *session_timer;
+static void tick(lv_timer_t *unused);
+static void session_notice(void *unused) {
+	(void)unused;
+	tick(session_timer);
+}
+void playback_session_service_changed(void) {
+	if (started && enabled) {
+		if (blocked && !suspended_local && !loading)
+			observed_service = observed_card = UINT_MAX;
+		gui_post_signal(session_notice, NULL);
+	}
+}
 static unsigned now_ms(void) {
 	struct timespec t;
 	clock_gettime(CLOCK_MONOTONIC, &t);
@@ -253,6 +266,7 @@ static void post(result_t *r) {
 	fallback = r;
 	pthread_mutex_unlock(&mutex);
 	free_result(old);
+	gui_post_signal(session_notice, NULL);
 }
 typedef struct {
 	job_t *job;
@@ -382,6 +396,7 @@ static void *run(void *unused) {
 		result_t *r = calloc(1, sizeof(*r));
 		if (!r) {
 			__atomic_store_n(&allocation_failed, 1, __ATOMIC_RELEASE);
+			gui_post_signal(session_notice, NULL);
 			pthread_mutex_lock(&mutex);
 			write_failed = true;
 			pthread_mutex_unlock(&mutex);
@@ -542,6 +557,7 @@ static job_t *new_job(void) {
 	job_t *j = calloc(1, sizeof(*j));
 	if (!j) {
 		__atomic_store_n(&allocation_failed, 1, __ATOMIC_RELEASE);
+		gui_post_signal(session_notice, NULL);
 		return NULL;
 	}
 	j->intent = intent;
@@ -554,6 +570,8 @@ static job_t *new_job(void) {
 	return j;
 }
 static void request_load(void) {
+	if (session_timer)
+		lv_timer_resume(session_timer);
 	if (loading)
 		return;
 	job_t *j = new_job();
@@ -570,6 +588,8 @@ static void request_load(void) {
 	submit(j);
 }
 void playback_session_note(void) {
+	if (session_timer && enabled)
+		lv_timer_resume(session_timer);
 	if (!started || !enabled || installing)
 		return;
 	__atomic_store_n(&other_pending, 0, __ATOMIC_RELEASE);
@@ -671,6 +691,12 @@ void playback_session_settings(void) {
 	if (on == enabled)
 		return;
 	enabled = on;
+	if (session_timer) {
+		if (on)
+			lv_timer_resume(session_timer);
+		else
+			lv_timer_pause(session_timer);
+	}
 	__atomic_add_fetch(&serial, 1, __ATOMIC_RELEASE);
 	intent++;
 	loading = blocked = false;
@@ -735,9 +761,9 @@ void playback_session_other_started(void) {
 	if (!enabled)
 		return;
 	__atomic_store_n(&other_pending, 1, __ATOMIC_RELEASE);
-	gui_post(other_delivered, NULL); // The timer drains the fixed flag if posting is rejected.
+	gui_post_signal(other_delivered, NULL); // retained flag, coalesced doorbell delivery
 }
-static void tick(lv_timer_t *unused) {
+static void session_tick_body(lv_timer_t *unused) {
 	(void)unused;
 	other_delivered(NULL);
 	pthread_mutex_lock(&mutex);
@@ -794,6 +820,21 @@ static void tick(lv_timer_t *unused) {
 	if (state.status != saved_status || (state.status != AUDIO_STATUS_PLAYING && fabs(state.progress_current_secs - saved_position) >= 1) || (state.status == AUDIO_STATUS_PLAYING && now_ms() - saved_ms >= period))
 		position_note(&state);
 }
+static void tick(lv_timer_t *unused) {
+	if (!started)
+		return;
+	session_tick_body(unused);
+	pthread_mutex_lock(&mutex);
+	bool outstanding = pending || working || fallback;
+	pthread_mutex_unlock(&mutex);
+	bool observing = enabled && !blocked && !loading && tracked_owner != SESSION_NONE;
+	if (session_timer) {
+		if (outstanding || observing || dirty || __atomic_load_n(&allocation_failed, __ATOMIC_ACQUIRE))
+			lv_timer_resume(session_timer);
+		else
+			lv_timer_pause(session_timer);
+	}
+}
 void playback_session_flush(void) {
 	if (!started)
 		return;
@@ -848,6 +889,8 @@ static void shutdown_session(void) {
 	pthread_mutex_unlock(&mutex);
 	pthread_join(worker, NULL);
 	started = false;
+	if (session_timer)
+		lv_timer_pause(session_timer);
 }
 void playback_session_reset(void) {
 	if (!started)
@@ -864,6 +907,8 @@ void playback_session_reset(void) {
 	free_job(old);
 	pthread_join(worker, NULL);
 	started = false;
+	if (session_timer)
+		lv_timer_pause(session_timer);
 	pthread_mutex_lock(&mutex);
 	result_t *r = fallback;
 	fallback = NULL;
@@ -902,7 +947,9 @@ void playback_session_init(bool (*legacy_restore)(void)) {
 		return;
 	started = true;
 	atexit(shutdown_session);
-	lv_timer_create(tick, 250, NULL);
+	if (!session_timer)
+		session_timer = lv_timer_create(tick, 1000, NULL);
+	lv_timer_pause(session_timer);
 	if (enabled)
 		request_load();
 }

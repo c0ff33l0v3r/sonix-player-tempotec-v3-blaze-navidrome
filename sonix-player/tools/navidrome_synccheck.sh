@@ -21,7 +21,7 @@ done
 ${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -O1 -g ${NAVIDROME_CHECK_FLAGS:-} \
     -DHOST_BUILD -DNAVIDROME_TEST -DLV_CONF_INCLUDE_SIMPLE -I"${check_prefix:-.}" -I. -Ilvgl \
     tools/navidrome_synccheck.c tools/navidrome_test_support.c \
-    "${check_prefix}src/system/streaming/navidromedebug.c" "${check_prefix}src/system/streaming/navidrome.c" \
+    "${check_prefix}src/system/streaming/navidromedebug.c" src/system/device/workactivity.c "${check_prefix}src/system/streaming/navidrome.c" \
     "${check_prefix}src/system/streaming/navidromeapi.c" "${check_prefix}src/system/streaming/navidromestore.c" \
     "${check_prefix}src/system/streaming/navidromelibrary.c" "${check_prefix}src/system/streaming/navidromecrypto.c" \
     "${check_prefix}src/system/streaming/navidromevault.c" "${check_prefix}src/system/core/json.c" src/system/core/md5.c \

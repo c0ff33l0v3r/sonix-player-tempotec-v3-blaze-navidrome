@@ -1,10 +1,11 @@
 #include "navidromepage.h"
+#include "navidromebrowse.h"
 #include "navidromediscovery.h"
 #include "navidromefavorites.h"
-#include "navidromesearch.h"
-#include "navidromebrowse.h"
 #include "navidromeplaylists.h"
+#include "navidromesearch.h"
 #include "navidromesettings.h"
+#include "src/system/device/power.h"
 #include "src/system/streaming/navidromeplay.h"
 #include <stdlib.h>
 #include <string.h>
@@ -117,6 +118,7 @@ static void entry_retry(lv_event_t *event) {
 }
 static void entry_init(void) {
 	entry_timer = lv_timer_create(entry_tick, 250, NULL);
+	power_slow_in_standby(entry_timer, 1000);
 	lv_timer_pause(entry_timer);
 	lv_display_add_event_cb(lv_display_get_default(), entry_shown, LV_EVENT_SCREEN_LOADED, NULL);
 }

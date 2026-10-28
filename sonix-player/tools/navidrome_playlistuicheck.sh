@@ -37,13 +37,13 @@ ${CC:-cc} $baseline_flags -DNAVIDROME_BROWSE_SOURCE=\"${SONIX_BROWSE_SOURCE:-src
     -ffunction-sections -fdata-sections ${NAVIDROME_CHECK_FLAGS:-} \
     -DNAVIDROME_NATIVE_SORT_ICONS -I"$check_dir" -DHOST_BUILD -DNAVIDROME_TEST -DLV_CONF_INCLUDE_SIMPLE -DLV_FONT_UNSCII_8=1 -I. -Ilvgl \
     tools/navidrome_playlistuicheck.c tools/navidrome_test_support.c src/system/streaming/navidromemembership.c "$check_dir/download-icon.c" lvgl/src/font/lv_font_unscii_8.c \
-    src/system/streaming/navidromedebug.c src/system/streaming/navidrome.c src/system/streaming/navidromeapi.c src/system/streaming/navidromebatch.c \
+    src/system/streaming/navidromedebug.c src/system/device/workactivity.c src/system/streaming/navidrome.c src/system/streaming/navidromeapi.c src/system/streaming/navidromebatch.c \
     src/system/streaming/navidromeplaycatalog.c src/system/streaming/navidromeplaylists.c src/system/streaming/navidromeplayliststore.c src/system/core/sha256.c \
     src/system/streaming/navidromedownloadstore.c \
     src/system/streaming/navidromestars.c src/system/streaming/navidromestore.c src/system/streaming/navidromelibrary.c \
     src/system/streaming/navidromecrypto.c src/system/streaming/navidromevault.c \
     src/system/net/gzip.c src/system/image/png_scaled.c src/gb/miniz/miniz.c src/system/net/http.c src/system/net/tls.c src/system/core/json.c src/system/core/md5.c "$check_sqlite" \
     @"$check_dir/lvgl-objects" -pthread -ldl -lm $(pkg-config --libs freetype2 sdl2) \
-    -Wl,--wrap=http_request,--wrap=http_last_error,--wrap=http_clear_request_metadata,--wrap=http_url_encode,--wrap=http_file_open -Wl,--gc-sections,--wrap=rename,--wrap=fsync,--wrap=unlink,--wrap=sqlite3_step -o "$check_dir/check"
+    -Wl,--wrap=http_finite_request,--wrap=http_request,--wrap=http_last_error,--wrap=http_clear_request_metadata,--wrap=http_url_encode,--wrap=http_file_open -Wl,--gc-sections,--wrap=rename,--wrap=fsync,--wrap=unlink,--wrap=sqlite3_step -o "$check_dir/check"
 "$check_dir/check" 320
 "$check_dir/check" 480

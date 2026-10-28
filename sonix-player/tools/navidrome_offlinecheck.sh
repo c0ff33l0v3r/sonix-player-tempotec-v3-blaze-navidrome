@@ -20,7 +20,7 @@ ${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -O1 -g -ffunction-sections -fdata-sec
     ${NAVIDROME_CHECK_FLAGS:-} -I. -Ilvgl \
     tools/navidrome_offlinecheck.c tools/navidrome_test_support.c src/system/streaming/navidromemembership.c \
     src/system/streaming/navidromedownloads.c src/system/streaming/navidromedownloadstore.c \
-    src/system/streaming/navidromedownloadfile.c src/system/streaming/navidromeaudio.c \
+    src/system/streaming/navidromedownloadfile.c src/system/device/workactivity.c src/system/streaming/navidromeaudio.c \
     src/system/streaming/navidromestore.c src/system/streaming/navidromeplayliststore.c \
     src/system/streaming/streamturn.c src/system/streaming/navidromecrypto.c src/system/core/sha256.c "$check_sqlite" \
     -Wl,--gc-sections,--wrap=calloc,--wrap=write,--wrap=fsync,--wrap=fstatvfs64,--wrap=nd_pl_play_window \

@@ -173,3 +173,12 @@ __attribute__((weak)) void navidromeart_request_player_local(const nd_library_t 
 	(void)w;
 	(void)h;
 }
+
+// Focused UI fixtures have no device power manager. Production scheduling is
+// exercised separately by the real GUI bridge and power-policy fixtures.
+__attribute__((weak)) void power_slow_in_standby(lv_timer_t *timer, uint32_t period) {
+	(void)timer;
+	(void)period;
+}
+
+__attribute__((weak)) bool power_screen_is_on(void) { return true; }

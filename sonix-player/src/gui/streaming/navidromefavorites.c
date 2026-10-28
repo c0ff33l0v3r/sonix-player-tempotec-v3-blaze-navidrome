@@ -9,6 +9,7 @@
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/uiscale.h"
 #include "src/system/core/lang.h"
+#include "src/system/device/power.h"
 #include "src/system/streaming/navidrome.h"
 #include <stdint.h>
 #include <time.h>
@@ -162,6 +163,7 @@ void navidromefavorites_init(gui_config_t *cfg) {
 		lv_obj_set_width(labels[i], lv_pct(100));
 	}
 	refresh_timer = lv_timer_create(tick, 250, NULL);
+	power_pause_in_standby(refresh_timer);
 	lv_timer_pause(refresh_timer);
 	lv_obj_add_event_cb(screen, loaded, LV_EVENT_SCREEN_LOADED, NULL);
 	lv_obj_add_event_cb(screen, unloaded, LV_EVENT_SCREEN_UNLOADED, NULL);

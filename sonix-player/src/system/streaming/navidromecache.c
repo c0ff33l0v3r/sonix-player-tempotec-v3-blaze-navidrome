@@ -1,4 +1,5 @@
 #include "navidromecache.h"
+#include "src/gui/shell/gui.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -6,11 +7,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 static pthread_mutex_t usage_lock = PTHREAD_MUTEX_INITIALIZER;
 static nd_cache_usage_t saved;
+static void (*usage_listener)(void);
+void nd_cache_set_listener(void (*listener)(void)) { usage_listener = listener; }
+static void usage_notice(void *unused) {
+	(void)unused;
+	if (usage_listener)
+		usage_listener();
+}
 static bool hex32(const char *name) { return strlen(name) == 32 && strspn(name, "0123456789abcdef") == 32; }
 static bool owned(const char *name, bool art) {
 	if (strlen(name) < 34 || strspn(name, "0123456789abcdef") != 32 || name[32] != '.')
@@ -106,6 +115,34 @@ static bool files(int parent, const char *name, bool audio_root, bool clear, uin
 	closedir(dir);
 	return ok;
 }
+// Disposable ordering is derived metadata, outside the audio/art byte totals.
+// Clear only these generated leaves after cache-I/O ownership has drained.
+static bool clear_order(int parent) {
+	int guard = openat(parent, "browse-order.db.lock", O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+	if (guard >= 0 && flock(guard, LOCK_EX | LOCK_NB)) {
+		close(guard);
+		return false;
+	}
+	if (guard < 0 && errno != ENOENT)
+		return false;
+	static const char *names[] = {"browse-order.db", "browse-order.db-journal", "browse-order.db.tmp", "browse-order.db.tmp-journal"};
+	bool ok = true;
+	for (unsigned i = 0; i < sizeof(names) / sizeof(*names); i++) {
+		struct stat st;
+		if (fstatat(parent, names[i], &st, AT_SYMLINK_NOFOLLOW)) {
+			if (errno != ENOENT)
+				ok = false;
+			continue;
+		}
+		if (S_ISREG(st.st_mode) && unlinkat(parent, names[i], 0) && errno != ENOENT)
+			ok = false;
+	}
+	if (guard >= 0) {
+		flock(guard, LOCK_UN);
+		close(guard);
+	}
+	return ok;
+}
 static bool scan(const char *path, bool clear, nd_cache_usage_t *usage, const nd_context_t *context) {
 	char base[1100];
 	if (!path || strlen(path) >= sizeof(base))
@@ -129,10 +166,14 @@ static bool scan(const char *path, bool clear, nd_cache_usage_t *usage, const nd
 	int legacy = open_directory(base);
 	if (legacy >= 0) {
 		found = true;
+		if (clear)
+			ok = clear_order(legacy) && ok;
 		ok = files(legacy, "audio", true, clear, &usage->audio, context) && ok;
 		ok = files(legacy, "art", false, clear, &usage->art, context) && ok;
 		int modern = openat(legacy, ".cache", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
 		if (modern >= 0) {
+			if (clear)
+				ok = clear_order(modern) && ok;
 			ok = files(modern, "audio", true, clear, &usage->audio, context) && ok;
 			ok = files(modern, "art", false, clear, &usage->art, context) && ok;
 			close(modern);
@@ -183,6 +224,7 @@ static void *cache_worker(void *data) {
 	pthread_mutex_unlock(&usage_lock);
 	nd_wipe(&q->context, sizeof(q->context));
 	free(q);
+	gui_post_signal(usage_notice, NULL);
 	return NULL;
 }
 static bool request(const nd_library_t *lib, bool clear, bool (*reader_active)(void)) {

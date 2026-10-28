@@ -750,6 +750,47 @@ RSS separate; TLS library allocations are identified as uninstrumented. Failed
 requests are not replayed automatically; only classified page-resource limits
 permit finite count reduction. Existing feedback strings remain unchanged.
 
+## Navidrome background work and focused checks
+
+Admitted Sync, Favorites and download work participates in normal Wi-Fi parking,
+suspend and automatic-shutdown decisions. Paused or ineligible work releases its
+hold. Playback setup, connection checks and playlist requests use cancellable
+finite sessions: 30 seconds for setup/JSON requests and eight seconds of idle
+I/O. Original audio has a separate 30-minute body deadline. Abandoned DNS helpers
+retain their existing bounded quotas; cancelling a request does not interrupt
+libc DNS itself. Playlist failures still require explicit uncertain-write recovery.
+
+Slow storage publication runs outside the service snapshot lock. Audio cache
+accounting reserves space in 1-MiB increments, and grouped browse windows reuse
+one disposable ordered-handle database. Read-only sources can reuse an exact
+sealed order or use the existing complete SQL fallback. Each order/staging
+file is capped at 8 MiB, with combined owned order files/journals below 32 MiB.
+Clear cache also removes derived orders, preserving library metadata and durable
+user data. Settings count cache usage on entry and repaint on completion rather
+than repeatedly scanning while idle. Worker completion uses the GUI doorbell;
+idle reporting sleeps until an event or a real deadline. Saved-playlist artwork
+keeps its visible observation armed until completion; settled nonempty playlist
+rows recheck offline status every five seconds. Hidden pages stop that polling.
+
+These checks compile focused production paths, use synthetic data, and execute
+no power action or full player build. The power timer check needs existing host
+LVGL objects; transport needs loopback socket permission. The query probe uses
+the bundled SQLite object, or compiles its wrapper if the object is absent.
+
+```sh
+python3 sonix-player/tools/navidrome_powercheck.py
+python3 sonix-player/tools/navidrome_transportcheck.py
+sh sonix-player/tools/navidrome_publicationcheck.sh
+sh sonix-player/tools/navidrome_cleanupcheck.sh
+sh sonix-player/tools/navidrome_noticecheck.sh
+python3 sonix-player/tools/navidrome_workprobe.py --current --query-work
+```
+
+Without `--current`, the work probe reads committed baseline `91a90cb` into a
+temporary directory. `NAVIDROME_CHECK_FLAGS` accepts optional ASan/UBSan flags
+for these focused checks. Operation counts and host cancellation limits do not
+establish Blaze battery life, storage latency or target build success.
+
 ## Building
 
 Sonix builds as described in [UPSTREAM-README.md](UPSTREAM-README.md)

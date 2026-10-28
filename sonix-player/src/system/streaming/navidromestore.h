@@ -41,6 +41,9 @@ typedef struct {
 	char scope[33], path[1024]; // Exact published source path, including relative roots.
 	int64_t generation;
 	const char *error;
+	bool (*current)(void *); // optional worker cancellation, never reads LVGL
+	void *current_user;
+	bool (*publish_order)(void *, const char *, const char *);
 } nd_store_t;
 typedef struct {
 	nd_kind_t kind;
@@ -112,6 +115,9 @@ bool nd_store_retain(const char *scope, int64_t generation);
 bool nd_store_retain_source(const nd_library_t *library);
 void nd_store_release_source(const nd_library_t *library);
 void nd_store_release(const char *scope, int64_t generation);
+void nd_store_cancel_reads(void); // bounded thread-safe interrupt, no SQL/I/O
+// Browsing-only disposable order reuse; caller owns the existing short card lease.
+bool nd_store_query_cached(nd_store_t *store, int64_t generation, const nd_query_t *query, int offset, nd_row_t rows[ND_WINDOW], int *count, int *total, bool writable);
 bool nd_store_query(nd_store_t *store, int64_t generation, const nd_query_t *query, int offset, nd_row_t rows[ND_WINDOW], int *count, int *total);
 bool nd_store_letters(nd_store_t *store, int64_t generation, const nd_query_t *query, int first[ND_LETTER_BUCKETS]);
 bool nd_store_track(nd_store_t *store, int64_t generation, const char *id, nd_row_t *out);

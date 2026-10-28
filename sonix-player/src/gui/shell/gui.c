@@ -141,6 +141,7 @@ static gui_post_t post_ring[GUI_POST_MAX];
 static int post_head;
 static int post_count;
 static lv_timer_t *post_timer;
+static gui_post_t post_notices[GUI_POST_MAX];
 
 // ---------------------------------------------------------------------------
 // The doorbell
@@ -210,6 +211,34 @@ bool gui_post(void (*cb)(void *), void *user) {
 	return queued;
 }
 
+bool gui_post_coalesced(void (*cb)(void *), void *user) {
+	if (!cb)
+		return false;
+	bool queued = false, ring = false;
+	pthread_mutex_lock(&post_lock);
+	int slot = -1;
+	for (int i = 0; i < GUI_POST_MAX; i++) {
+		if (post_notices[i].cb == cb && post_notices[i].user == user) {
+			slot = i;
+			break;
+		}
+		if (!post_notices[i].cb)
+			slot = i;
+	}
+	if (slot >= 0) {
+		ring = !post_notices[slot].cb;
+		post_notices[slot] = (gui_post_t){cb, user, "notice"};
+		queued = true;
+	}
+	pthread_mutex_unlock(&post_lock);
+	if (ring && post_wake_fd >= 0) {
+		uint64_t one = 1;
+		ssize_t ignored = write(post_wake_fd, &one, sizeof(one));
+		(void)ignored;
+	}
+	return queued;
+}
+
 static void post_drain_cb(lv_timer_t *timer) {
 	(void)timer;
 
@@ -222,15 +251,29 @@ static void post_drain_cb(lv_timer_t *timer) {
 		(void)ignored;
 	}
 
+	bool notice_turn = true;
 	for (;;) {
 		pthread_mutex_lock(&post_lock);
-		if (post_count == 0) {
+		int notice = -1;
+		for (int i = 0; i < GUI_POST_MAX; i++)
+			if (post_notices[i].cb) {
+				notice = i;
+				break;
+			}
+		if (post_count == 0 && notice < 0) {
 			pthread_mutex_unlock(&post_lock);
 			return;
 		}
-		gui_post_t entry = post_ring[post_head];
-		post_head = (post_head + 1) % GUI_POST_MAX;
-		post_count--;
+		gui_post_t entry;
+		if (notice >= 0 && (notice_turn || !post_count)) {
+			entry = post_notices[notice];
+			memset(&post_notices[notice], 0, sizeof(post_notices[notice]));
+		} else {
+			entry = post_ring[post_head];
+			post_head = (post_head + 1) % GUI_POST_MAX;
+			post_count--;
+		}
+		notice_turn = !notice_turn;
 		pthread_mutex_unlock(&post_lock);
 
 		// Outside the lock: the callback may post in turn.

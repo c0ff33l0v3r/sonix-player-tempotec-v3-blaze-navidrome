@@ -33,6 +33,12 @@ void gui_init(gui_config_t *cfg);
 // passed heap memory owns it again and has to free it.
 bool gui_post(void (*cb)(void *), void *user);
 
+// Bounded coalesced notices for controllers with their own retained mailbox.
+// No heap ownership is transferred. Uses the same doorbell even if gui_post's
+// ordinary queue is full. Embedders supplying their own bridge can omit it.
+bool gui_post_coalesced(void (*cb)(void *), void *user) __attribute__((weak));
+static inline bool gui_post_signal(void (*cb)(void *), void *user) { return gui_post_coalesced ? gui_post_coalesced(cb, user) : gui_post(cb, user); }
+
 // The descriptor the main loop waits on instead of sleeping on a timer: it
 // becomes readable as soon as something is posted. -1 when it could not be
 // opened, in which case the loop falls back to usleep().

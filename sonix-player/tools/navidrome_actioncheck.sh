@@ -16,7 +16,7 @@ ${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -O1 -g -ffunction-sections -fdata-sec
     tools/navidrome_actioncheck.c src/system/library/library.c src/system/streaming/navidromeactions.c \
     src/system/streaming/navidromeplaylists.c src/system/streaming/navidromeplayliststore.c src/system/core/sha256.c \
     src/system/streaming/navidromestars.c src/system/streaming/navidromesearch.c src/system/streaming/navidromemembership.c src/system/streaming/navidromedebug.c \
-    src/system/streaming/navidromeplaycatalog.c src/system/streaming/navidrome.c src/system/streaming/navidromeapi.c src/system/streaming/navidromebatch.c src/system/streaming/navidromestore.c \
+    src/system/streaming/navidromeplaycatalog.c src/system/device/workactivity.c src/system/streaming/navidrome.c src/system/streaming/navidromeapi.c src/system/streaming/navidromebatch.c src/system/streaming/navidromestore.c \
     src/system/streaming/navidromelibrary.c src/system/streaming/navidromecrypto.c src/system/streaming/navidromevault.c \
     src/system/net/gzip.c src/system/image/png_scaled.c src/gb/miniz/miniz.c src/system/core/json.c src/system/core/md5.c src/system/net/http.c src/system/net/tls.c \
     "$check_sqlite" -Wl,--gc-sections,--wrap=calloc,--wrap=sqlite3_step -lm -pthread -ldl -lresolv -o "$check_dir/check"

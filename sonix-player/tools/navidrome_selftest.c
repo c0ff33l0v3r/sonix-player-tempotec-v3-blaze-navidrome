@@ -2,6 +2,7 @@
 // tools/navidrome_selftest.sh. All credentials/files are synthetic and temporary.
 #define _GNU_SOURCE 1
 #include "src/system/core/md5.h"
+#include "src/system/device/workactivity.h"
 #include "src/system/net/http.h"
 #include "src/system/streaming/navidrome.h"
 #include <assert.h>
@@ -146,6 +147,25 @@ bool __wrap_http_request(const char *url, const http_req_t *req, char **out, siz
 		*size = strlen(body);
 	}
 	return true;
+}
+
+bool __real_http_finite_request(const char *, const char *, bool (*)(void *), void *, char **, size_t *, size_t, int *, const char **, bool *, void (*)(const char *));
+bool __wrap_http_finite_request(const char *url, const char *form, bool (*current)(void *), void *user, char **out, size_t *size, size_t limit, int *status, const char **reason, bool *too_large, void (*diagnostic)(const char *)) {
+	if (!strstr(url, "/rest/ping.view?") && !strstr(url, "://fixture/") && !strstr(url, "://other-fixture/"))
+		return __real_http_finite_request(url, form, current, user, out, size, limit, status, reason, too_large, diagnostic);
+	*reason = NULL;
+	*too_large = false;
+	http_req_t req = {.method = form ? "POST" : NULL, .body = form, .want_error_body = true, .sensitive_url = true, .require_complete_body = true};
+	bool ok = http_request(url, &req, out, size, limit, 8, status);
+	if (!ok)
+		*reason = atomic_load(&mode) == 7 ? "tls" : "network";
+	if (current && !current(user)) {
+		free(*out);
+		*out = NULL;
+		*reason = "cancelled";
+		return false;
+	}
+	return ok;
 }
 
 static navidrome_snapshot_t wait_idle(void) {
@@ -481,6 +501,25 @@ static void service_checks(const char *dir) {
 	assert(s.configured && s.unlocked && s.authenticated && s.state == ND_CONNECTED);
 	assert(navidrome_password(secret) && !strcmp(secret, server_password));
 	nd_wipe(secret, sizeof(secret));
+	for (int i = 0; work_activity_busy(); i++) {
+		assert(i < 10000);
+		usleep(100);
+	}
+	assert(work_activity_suspend_begin());
+	navidrome_set_root(NULL);
+	usleep(30000);
+	nd_library_t deferred;
+	navidrome_library_snapshot(&deferred);
+	assert(deferred.loading && !work_activity_busy());
+	work_activity_suspend_end();
+	for (int i = 0;; i++) {
+		navidrome_library_snapshot(&deferred);
+		if (!deferred.loading && !work_activity_busy())
+			break;
+		assert(i < 10000);
+		usleep(100);
+	}
+	puts("background cache admission waits across suspend and returns to idle: passed");
 	atomic_store(&fail_rename, 1);
 	assert(navidrome_save("http://fixture/base", "fixture user", "unsaved replacement", NULL));
 	s = wait_idle();

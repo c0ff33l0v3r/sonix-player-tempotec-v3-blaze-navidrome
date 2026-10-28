@@ -373,8 +373,9 @@ int NAVIDROME_SETTINGS_MAIN(void) {
 	puts("UI explicit/automatic connection, repeated settings entry and late completion never show a Sync prompt; manual Sync retains eligibility checks: passed");
 	fixture_cache_override = true;
 	fixture_cache_usage = (nd_cache_usage_t){.audio = 1024 * 1024, .art = 512 * 1024, .ready = true, .card_epoch = 123};
-	cache_last_request = lv_tick_get();
+	cache_usage_needed = false;
 	cache_refresh();
+	assert(lv_timer_get_paused(refresh_timer));
 	assert(!lv_obj_has_state(cache_clear, LV_STATE_DISABLED));
 	assert(!strcmp(lv_label_get_text(cache_total), "Total: 1.50 MiB"));
 	fixture_cache_usage.busy = true; // A periodic usage scan keeps Clear available.

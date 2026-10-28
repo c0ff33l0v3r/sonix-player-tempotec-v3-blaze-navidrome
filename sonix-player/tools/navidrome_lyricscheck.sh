@@ -10,6 +10,6 @@ ${CC:-cc} -std=gnu11 -O1 -g -Wall -Wextra -Werror -Wno-missing-field-initializer
     src/system/streaming/navidromelyricparse.c src/system/streaming/navidromelyricstore.c \
     src/system/streaming/navidromelyrics.c src/system/streaming/navidromeapi.c \
     src/system/streaming/navidromecrypto.c src/system/core/json.c src/system/core/md5.c \
-    "$check_dir/sqlite.o" src/system/net/http.c src/system/net/tls.c src/system/net/gzip.c \
+    "$check_dir/sqlite.o" src/system/device/workactivity.c src/system/net/http.c src/system/net/tls.c src/system/net/gzip.c \
     src/gb/miniz/miniz.c src/system/image/png_scaled.c -Wl,--gc-sections,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=sqlite3_exec,--wrap=getaddrinfo -pthread -lm -ldl -lresolv -o "$check_dir/check"
 python3 tools/navidrome_lyricscheck.py "$check_dir/check"

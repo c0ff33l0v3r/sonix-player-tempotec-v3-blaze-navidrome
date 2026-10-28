@@ -68,7 +68,9 @@ def main():
                                 ('unknown','progressive'),('cut','cut'),('invalid','invalid'),('cancel','cancel'),
                                 ('protected','protected'),('evict','evict'),('detach','detach'),
                                 ('publish','publish'),('network','network'),('prefetch','prefetch'),
-                                ('switch','switch'),('unknownswitch','switch'),('turn','turn')]:
+                                ('switch','switch'),('unknownswitch','switch'),('turn','turn'),
+                                ('write-fail','write-fail'),('close-fail','close-fail'),
+                                ('marker-fail','marker-fail'),('free-loss','free-loss')]:
                 card=root/route
                 (card/'.local/navidrome/.cache').mkdir(parents=True)
                 completed=subprocess.run([binary,f'http://127.0.0.1:{server.server_port}/{route}',str(card),mode],

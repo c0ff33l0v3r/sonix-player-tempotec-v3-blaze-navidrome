@@ -547,6 +547,10 @@ static void deliver(void *value) {
 	busy = false;
 	pthread_mutex_unlock(&mutex);
 }
+static void completion_notice(void *unused) {
+	(void)unused;
+	navidrome_actions_poll();
+}
 void navidrome_actions_poll(void) {
 	pthread_mutex_lock(&mutex);
 	action_job_t *job = deferred;
@@ -609,6 +613,7 @@ static void *work(void *unused) {
 			pthread_mutex_lock(&mutex);
 			deferred = job;
 			pthread_mutex_unlock(&mutex);
+			gui_post_signal(completion_notice, NULL);
 		}
 	}
 	return NULL;

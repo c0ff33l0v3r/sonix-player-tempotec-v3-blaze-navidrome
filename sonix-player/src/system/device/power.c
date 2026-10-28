@@ -3,6 +3,7 @@
  */
 
 #include "power.h"
+#include "workactivity.h"
 
 // LVGL 9.2 made lv_timer_t opaque. There is a lv_timer_set_period() but no
 // getter, and both places here have to read the period before changing it.
@@ -699,7 +700,7 @@ static bool wifi_in_use(void) {
 	// A scan or a connect in flight counts as use: parking the radio out from
 	// under wpa_supplicant mid-association leaves the driver to sort out a
 	// teardown it did not expect.
-	return wifi_busy() || wifi_scan_running() || streaming_playback_active() || airplay_get_enabled() || dlna_get_enabled() || sonixlink_get_enabled() || wifitransfer_get_enabled() || qobuzcache_downloading_id() > 0 || (nd_audio_network_wanted() || navidromedownloads_network_wanted()) || qobuzcache_network_wanted() || tidalcache_downloading_id() > 0 || tidalcache_network_wanted() || podcastcache_downloading_id() > 0 || podcastcache_network_wanted() || podcastdl_busy() || lastfm_network_wanted() || ota_busy();
+	return work_activity_network() || wifi_busy() || wifi_scan_running() || streaming_playback_active() || airplay_get_enabled() || dlna_get_enabled() || sonixlink_get_enabled() || wifitransfer_get_enabled() || qobuzcache_downloading_id() > 0 || (nd_audio_network_wanted() || navidromedownloads_network_wanted()) || qobuzcache_network_wanted() || tidalcache_downloading_id() > 0 || tidalcache_network_wanted() || podcastcache_downloading_id() > 0 || podcastcache_network_wanted() || podcastdl_busy() || lastfm_network_wanted() || ota_busy();
 }
 
 // Pushes the next suspend attempt out by the anti-hammer delay. A radio that has
@@ -751,7 +752,7 @@ static bool bluetooth_in_use(void) {
 static uint32_t power_tick_ms(void) { return g_power_timer && g_power_timer->period ? g_power_timer->period : POWER_TICK_MS; }
 
 static bool player_is_busy(bool playing, uint32_t input_idle) {
-	return playing ||							   // a track or a station
+	return work_activity_busy() || playing ||							   // a track or a station
 		   input_idle < power_tick_ms() * 4 ||	   // a key just pressed
 		   usbdac_is_active() ||				   // a computer feeding the DAC
 		   usb_storage_active() ||				   // the card exported over USB
@@ -1375,7 +1376,7 @@ static void suspend_if_idle(uint32_t now, bool playing) {
 	// device from scratch, route included, which is the path every unpause
 	// exercises. What must not cross the suspend is a live ALSA object, not a
 	// remembered position: that sits in RAM, and RAM is preserved.
-	if (wifi_in_use()) {
+	if (work_activity_busy() || wifi_in_use()) {
 		mem_skip("something is using the network");
 		return;
 	}
@@ -1445,7 +1446,12 @@ static void suspend_if_idle(uint32_t now, bool playing) {
 		return;
 	}
 
+	if (!work_activity_suspend_begin()) {
+		mem_skip("background work was admitted");
+		return;
+	}
 	suspend_to_ram();
+	work_activity_suspend_end();
 }
 
 // ---------------------------------------------------------------------------
@@ -1472,7 +1478,7 @@ static void suspend_if_idle(uint32_t now, bool playing) {
 // A page registers its timer here once and then forgets about it; power.c
 // never looks at what the timer does.
 // ---------------------------------------------------------------------------
-#define STANDBY_TIMERS_MAX 24
+#define STANDBY_TIMERS_MAX 48
 static lv_timer_t *g_standby_timers[STANDBY_TIMERS_MAX];
 // 0 = paused outright while the panel is dark. Anything else = kept running,
 // at that period instead of its own. A timer that only paints can be stopped;

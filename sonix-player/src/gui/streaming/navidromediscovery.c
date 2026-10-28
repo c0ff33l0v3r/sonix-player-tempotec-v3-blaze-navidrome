@@ -1,8 +1,8 @@
 #include "navidromediscovery.h"
 #include "navidromealbum.h"
 #include "navidromeofflinebadge.h"
-#include "navidromeplaylists.h"
 #include "navidromepage.h"
+#include "navidromeplaylists.h"
 #include "navidromerow.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/nowplaying/coverflow.h"
@@ -10,18 +10,19 @@
 #include "src/gui/shell/gridpage.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/playmark.h"
+#include "src/gui/shell/popover.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
-#include "src/gui/shell/popover.h"
-#include "src/system/streaming/navidromestars.h"
 #include "src/system/core/config.h"
-#include "src/system/streaming/navidromedownloads.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
+#include "src/system/device/power.h"
 #include "src/system/streaming/navidromecache.h"
 #include "src/system/streaming/navidromediscovery.h"
+#include "src/system/streaming/navidromedownloads.h"
 #include "src/system/streaming/navidromeplay.h"
+#include "src/system/streaming/navidromestars.h"
 #include <limits.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -789,6 +790,7 @@ void navidromediscovery_init(gui_config_t *cfg) {
 		switcher_attach_back_gesture(discovery_pages[i].reason);
 	}
 	discovery_timer = lv_timer_create(discovery_tick, 100, NULL);
+	power_pause_in_standby(discovery_timer);
 	lv_timer_pause(discovery_timer);
 }
 

@@ -5,6 +5,7 @@
 #include "src/system/streaming/streamturn.h"
 #include <assert.h>
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -13,8 +14,50 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 
+static const char *fault_mode;
+static bool fault_used;
+static unsigned space_checks;
+static bool cache_descriptor(int fd, bool marker) {
+	char link[64], path[1200];
+	snprintf(link, sizeof(link), "/proc/self/fd/%d", fd);
+	ssize_t n = readlink(link, path, sizeof(path) - 1);
+	if (n < 0)
+		return false;
+	path[n] = 0;
+	return strstr(path, "/audio/") && (marker ? strstr(path, ".tmp") != NULL : strstr(path, ".flac") != NULL);
+}
+ssize_t __real_write(int, const void *, size_t);
+ssize_t __wrap_write(int fd, const void *data, size_t bytes) {
+	if (!fault_used && fault_mode && ((!strcmp(fault_mode, "write-fail") && cache_descriptor(fd, false)) || (!strcmp(fault_mode, "marker-fail") && cache_descriptor(fd, true)))) {
+		fault_used = true;
+		errno = ENOSPC;
+		return -1;
+	}
+	return __real_write(fd, data, bytes);
+}
+int __real_close(int);
+int __wrap_close(int fd) {
+	bool fail = !fault_used && fault_mode && !strcmp(fault_mode, "close-fail") && cache_descriptor(fd, false);
+	int result = __real_close(fd);
+	if (fail) {
+		fault_used = true;
+		errno = EIO;
+		return -1;
+	}
+	return result;
+}
+int __real_statvfs(const char *, struct statvfs *);
+int __wrap_statvfs(const char *path, struct statvfs *space) {
+	int result = __real_statvfs(path, space);
+	if (!result && fault_mode && !strcmp(fault_mode, "free-loss") && ++space_checks >= 2) {
+		space->f_bavail = 0;
+		fault_used = true;
+	}
+	return result;
+}
 typedef struct {
 	uint32_t version;
 	char scope[33], id[ND_ID_MAX], extension[8];
@@ -159,6 +202,8 @@ static void no_card_descriptors(const char *root) {
 }
 int main(int argc, char **argv) {
 	assert(argc == 4);
+	fault_mode=argv[3];
+	bool storage_fault=strstr(fault_mode,"-fail") || !strcmp(fault_mode,"free-loss");
 	nd_library_t lib = {.ready = true, .writable = true};
 	strcpy(lib.scope, "0123456789abcdef0123456789abcdef");
 	snprintf(lib.path, sizeof(lib.path), "%s/.local/navidrome/.cache/library.db", argv[2]);
@@ -228,9 +273,12 @@ int main(int argc, char **argv) {
 		return 0;
 	}
 	reject_publish = !strcmp(argv[3], "publish");
-	const char *error = nd_audio_fetch(&lib, &ctx, &track, !reject_publish && strcmp(argv[3], "prefetch"), current, ready, argv[3]);
+	const char *error = nd_audio_fetch(&lib, &ctx, &track, !storage_fault && !reject_publish && strcmp(argv[3], "prefetch"), current, ready, argv[3]);
 	assert(!leases);
-	if (!strcmp(argv[3], "invalid"))
+	if (storage_fault) {
+		assert(fault_used && error && !strcmp(error,!strcmp(fault_mode,"free-loss") ? "nd_audio_space" : "nd_cache_storage") && !deliveries);
+		assert(!nd_audio_cached(&lib,&ctx,track.row.id));
+	} else if (!strcmp(argv[3], "invalid"))
 		assert(error && !strcmp(error, "nd_audio_invalid") && !deliveries);
 	else if (!strcmp(argv[3], "publish"))
 		assert(error && !strcmp(error, "nd_cache_storage") && !deliveries);

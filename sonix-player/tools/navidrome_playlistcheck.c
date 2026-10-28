@@ -137,6 +137,19 @@ bool __wrap_http_request(const char *url, const http_req_t *q, char **body, size
 	}
 	return result;
 }
+bool __real_http_finite_request(const char *, const char *, bool (*)(void *), void *, char **, size_t *, size_t, int *, const char **, bool *, void (*)(const char *));
+bool __wrap_http_finite_request(const char *url, const char *form, bool (*current)(void *), void *user, char **body, size_t *size, size_t limit, int *status, const char **reason, bool *too_large, void (*diagnostic)(const char *)) {
+	assert(leases == 0);
+	bool result = __real_http_finite_request(url, form, current, user, body, size, limit, status, reason, too_large, diagnostic);
+	if (form) {
+		mutation_calls++;
+		if (invalidate_after_post) {
+			invalidate_after_post = false;
+			epoch++;
+		}
+	}
+	return result;
+}
 static nd_context_t context;
 static nd_library_t library;
 static nd_pl_result_t result;

@@ -15,6 +15,7 @@ static nd_library_t favorites(void) {
 
 static nd_library_t refresh_ok(int albums, int songs) {
 	assert(navidrome_favorites_refresh());
+	assert(work_activity_network() && work_activity_busy() && !work_activity_suspend_begin());
 	assert(!navidrome_sync() && !navidrome_favorites_refresh() && !navidrome_reconnect());
 	idle();
 	nd_library_t result = favorites();

@@ -1,28 +1,29 @@
-#include "src/system/streaming/navidromeplay.h"
 #include "navidromeplaylists.h"
-#include "navidromerow.h"
-#include "navidromeofflinebadge.h"
 #include "navidromeart.h"
 #include "navidromebrowse.h"
+#include "navidromeofflinebadge.h"
 #include "navidromepage.h"
+#include "navidromerow.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/nowplaying/coverflow.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/confirm.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/keyboard.h"
-#include "src/gui/shell/popover.h"
 #include "src/gui/shell/playmark.h"
+#include "src/gui/shell/popover.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
 #include "src/gui/shell/uiscale.h"
-#include "src/system/core/lang.h"
 #include "src/system/core/config.h"
+#include "src/system/core/lang.h"
+#include "src/system/device/power.h"
 #include "src/system/playback/device_state.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/streaming/navidromedownloads.h"
+#include "src/system/streaming/navidromeplay.h"
 #include "src/system/streaming/navidromeplaylists.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,6 +62,14 @@ typedef struct {
 static pl_page_t pl_pages[4]; // collection, detail, destination, remote catalogue
 static gui_config_t *pl_cfg;
 static lv_timer_t *pl_timer;
+#define PL_WORK_POLL_MS 200
+#define PL_STATUS_POLL_MS 5000
+static void pl_wake(void) {
+	if (!pl_timer)
+		return;
+	lv_timer_set_period(pl_timer, power_screen_is_on() ? PL_WORK_POLL_MS : PL_STATUS_POLL_MS);
+	lv_timer_resume(pl_timer);
+}
 static lv_obj_t *pl_name_layer, *pl_name_field;
 static keyboard_t *pl_name_keyboard;
 static int pl_name_page;
@@ -279,6 +288,7 @@ static void pl_show_rows(pl_page_t *p, const bool keep_art[ND_WINDOW]) {
 		}
 		navidromeofflinebadge_bind(&p->offline, p->screen, &q, p->details);
 	}
+	pl_wake(); // Newly bound covers/status must be observed after service delivery.
 	pl_reorder_rows(p);
 	pl_status(p);
 	pl_buttons(p);
@@ -483,6 +493,7 @@ static void pl_done(nd_pl_result_t *r, void *value) {
 	free(r);
 }
 static void pl_action(int page, nd_pl_request_t *q) {
+	pl_wake();
 	if (page == 3 && pl_recovering && (q->action == NDPL_CATALOGUE || q->action == NDPL_CATALOGUE_WINDOW))
 		snprintf(q->name, sizeof(q->name), "%s", pl_recovery_name);
 	pl_page_t *p = &pl_pages[page];
@@ -620,6 +631,7 @@ static void pl_grip(lv_event_t *event) {
 	lv_obj_move_foreground(p->drop_line);
 }
 static void pl_load(int page) {
+	pl_wake();
 	pl_page_t *p = &pl_pages[page];
 	nd_pl_request_t q = {.action = page == 1 ? NDPL_ENTRIES : page == 3 ? NDPL_CATALOGUE_WINDOW : NDPL_LIST, .id = page == 1 ? p->playlist.id : 0, .session = p->session};
 	q.first = nd_row_first(p->list, p->total, p->pitch, p->offset);
@@ -1053,7 +1065,7 @@ static void pl_loaded(lv_event_t *event) {
 	snprintf(p->scope, sizeof(p->scope), "%s", lib.scope);
 	for (int i = 0; i < ND_WINDOW; i++)
 		lv_obj_set_hidden(p->rows[i], true);
-	lv_timer_resume(pl_timer);
+	pl_wake();
 	if (!pl_skip_load)
 		pl_load((int)(p - pl_pages));
 	else
@@ -1161,8 +1173,25 @@ static void pl_tick(lv_timer_t *timer) {
 				pl_load(i);
 			}
 		}
-	} else
+	}
+	bool outstanding = navidrome_playlists_busy(), status_visible = false;
+	for (int i = 0; i < 4; i++) {
+		pl_page_t *p = &pl_pages[i];
+		outstanding |= p->loading || p->move_pending || (pl_active(i) && p->reload);
+		if (!pl_active(i))
+			continue;
+		status_visible |= p->offline.bound && p->offline.request.count > 0;
+		outstanding |= p->offline.busy;
+		if (i == 1)
+			for (int row = 0; row < p->count; row++)
+				outstanding |= p->art_bound[row] && !p->art_finished[row];
+	}
+	if (!active || (!outstanding && !status_visible))
 		lv_timer_pause(timer);
+	else
+		// Artwork has no completion notice; offline revisions and external file
+		// changes also need a visible-page wake after operations have settled.
+		lv_timer_set_period(timer, outstanding && power_screen_is_on() ? PL_WORK_POLL_MS : PL_STATUS_POLL_MS);
 }
 void navidromeplaylists_open(void) {
 	nd_library_t lib;
@@ -1601,6 +1630,7 @@ void navidromeplaylists_init(gui_config_t *cfg) {
 	lv_obj_center(glyph);
 	lv_obj_add_event_cb(cancel, pl_name_close, LV_EVENT_CLICKED, NULL);
 	pl_name_hide();
-	pl_timer = lv_timer_create(pl_tick, 200, NULL);
+	pl_timer = lv_timer_create(pl_tick, PL_WORK_POLL_MS, NULL);
+	power_slow_in_standby(pl_timer, PL_STATUS_POLL_MS);
 	lv_timer_pause(pl_timer);
 }

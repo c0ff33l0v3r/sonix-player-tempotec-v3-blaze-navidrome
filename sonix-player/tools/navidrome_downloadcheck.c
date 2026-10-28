@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #include "navidrome_owned_fixture.h"
 #include "src/system/decode/decode.h"
+#include "src/system/device/workactivity.h"
 #include "src/system/library/metadata.h"
 #include "src/system/streaming/navidromeaudio.h"
 #include "src/system/streaming/navidromedownloads.h"
@@ -505,7 +506,7 @@ int main(int argc, char **argv) {
 		assert(!capture_ok);
 		navidromedownloads_shutdown();
 		pump();
-		assert(!leases && !cache_users);
+		assert(!leases && !cache_users && !work_activity_busy());
 		assert(descriptors() == baseline_descriptors);
 		puts("PASS read-only capture rejects before HTTP");
 		return 0;
@@ -781,7 +782,7 @@ int main(int argc, char **argv) {
 	}
 	navidromedownloads_shutdown();
 	pump();
-	assert(!leases && !cache_users);
+	assert(!leases && !cache_users && !work_activity_busy());
 	assert(descriptors() == baseline_descriptors);
 	puts("PASS real worker original transfer/cache reuse, job state, publication and source context");
 	return 0;

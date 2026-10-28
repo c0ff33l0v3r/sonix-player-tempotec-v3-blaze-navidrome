@@ -1,3 +1,5 @@
+static void search_actions_poll(lv_timer_t *timer);
+static void search_actions_notice(void *unused) { (void)unused; search_actions_poll(NULL); }
 // Private Search controller. Service requests own all data before row recycling.
 typedef enum { SEARCH_MARKS, SEARCH_TOGGLE, SEARCH_PLAYLIST, SEARCH_QUEUE, SEARCH_DOWNLOAD, SEARCH_FAVORITE } search_action_t;
 typedef struct {
@@ -13,6 +15,7 @@ static unsigned search_menu_visit, search_menu_serial, search_menu_token;
 static int search_menu_index;
 static nd_star_action_t search_menu_star;
 static void search_selection_ui(search_page_t *p) {
+	if (p->marks_dirty) gui_post_signal(search_actions_notice, NULL);
 	bool selecting = p->selected > 0;
 	for (int slot = 0; slot < 5; slot++) {
 		lv_obj_set_hidden(p->select_buttons[slot], !selecting);
@@ -104,6 +107,7 @@ static void search_star_done(nd_star_result_t *result, void *value) {
 	free(ctx);
 }
 static void search_action_done(nd_action_result_t *result, void *value) {
+	gui_post_signal(search_actions_notice, NULL);
 	search_action_context_t *ctx = value;
 	search_page_t *p = ctx->page;
 	bool visible = search_action_visible(ctx);

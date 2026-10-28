@@ -117,7 +117,7 @@ with tempfile.TemporaryDirectory(prefix="sonix-download-check-") as temporary:
         "src/system/streaming/navidromestore.c", "src/system/streaming/navidromeplayliststore.c",
         "src/system/streaming/streamturn.c", "src/system/decode/growfile.c",
         "src/system/core/json.c", "src/system/core/md5.c", "src/system/core/sha256.c",
-        "src/system/net/http.c", "src/system/net/tls.c", "src/system/net/gzip.c", "src/gb/miniz/miniz.c", "src/system/image/png_scaled.c",
+        "src/system/device/workactivity.c", "src/system/net/http.c", "src/system/net/tls.c", "src/system/net/gzip.c", "src/gb/miniz/miniz.c", "src/system/image/png_scaled.c",
     ]
     binary = root / "downloadcheck"
     compile_args = compiler + ["-std=gnu11", "-DHOST_BUILD", "-DLV_CONF_INCLUDE_SIMPLE", "-D_FILE_OFFSET_BITS=64", "-DNAVIDROME_DOWNLOAD_PUBLISH_TEST", "-Wall", "-Wextra", "-Werror", "-O1", "-g", "-ffunction-sections", "-fdata-sections", "-I", str(player), "-I", str(player / "lvgl")] + extra + [str(player / source) for source in sources] + [str(sqlite), "-Wl,--gc-sections,--wrap=write,--wrap=fsync,--wrap=fstatvfs64,--wrap=nd_pl_play_window", "-pthread", "-ldl", "-lm", "-lresolv"]

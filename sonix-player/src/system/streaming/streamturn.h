@@ -32,6 +32,7 @@ void streamturn_release(void);
 void streamturn_wait_idle(void);
 // Advisory only; observers never own the turn or block its participants.
 unsigned streamturn_observe(bool *idle);
+void streamturn_set_observer(void (*changed)(void)) __attribute__((weak));
 
 // ---------------------------------------------------------------------------
 // Abandoning every download, whoever owns it

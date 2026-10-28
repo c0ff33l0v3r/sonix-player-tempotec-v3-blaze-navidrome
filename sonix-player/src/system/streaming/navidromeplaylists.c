@@ -216,10 +216,11 @@ static bool add_selected(nd_playlist_store_t *s, const nd_pl_request_t *q, const
 		ok = rc == SQLITE_DONE && nd_pl_finish(s, q->id, out->added > 0) && statement_id(s, "DELETE FROM selection WHERE session=?", q->session) && commit(s, c);
 	return ok;
 }
+static bool api_current(void *context) { return navidrome_context_current(context, true); }
 static const char *api(const nd_context_t *c, const char *method, const char *query, const char *form, nd_document_t *doc) {
 	if (!navidrome_context_current(c, true))
 		return "nd_pl_stale";
-	return nd_api_playlist(c->host, c->user, c->password, method, query, form, doc);
+	return nd_api_playlist_current(c->host, c->user, c->password, method, query, form, api_current, (void *)c, doc);
 }
 // No card handle/lease survives a network wait. Card export can drain immediately.
 static const char *api_store(nd_playlist_store_t *s, const nd_context_t *c, const char *method, const char *query, const char *form, nd_document_t *doc) {
@@ -852,6 +853,10 @@ static void delivered(void *data) {
 		free(result);
 	free(job);
 }
+static void completion_notice(void *unused) {
+	(void)unused;
+	navidrome_playlists_poll();
+}
 void navidrome_playlists_poll(void) {
 	pthread_mutex_lock(&jobs_lock);
 	job_t *job = deferred;
@@ -873,6 +878,8 @@ static void *run_job(void *data) {
 		deferred = job;
 	busy = false;
 	pthread_mutex_unlock(&jobs_lock);
+	if (!posted)
+		gui_post_signal(completion_notice, NULL);
 	return NULL;
 }
 bool navidrome_playlists_submit(const nd_pl_request_t *q, void (*done)(nd_pl_result_t *, void *), void *user) {

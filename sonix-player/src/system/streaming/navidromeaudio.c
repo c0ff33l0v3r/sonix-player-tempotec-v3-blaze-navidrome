@@ -28,7 +28,6 @@ typedef struct {
 	int64_t bytes;
 } complete_t;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-static http_stream_t *active;
 static unsigned cancelled;
 static bool network_wanted;
 static char protected_paths[3][512];
@@ -42,8 +41,6 @@ static bool registered;
 void nd_audio_cancel(void) {
 	pthread_mutex_lock(&lock);
 	cancelled++;
-	if (active)
-		http_stream_wake(active);
 	pthread_mutex_unlock(&lock);
 }
 static void register_cache(void) { registered = streamturn_register_abandon(nd_audio_cancel); }
@@ -141,68 +138,163 @@ static bool completed_file(const char *path) {
 	strcpy(dot, record.extension);
 	return owned_file(strrchr(marker, '/') + 1) && !lstat(marker, &st) && S_ISREG(st.st_mode) && st.st_size == record.bytes;
 }
-// Called only under a short card lease. Budget includes every owned scope.
-static bool room(const char *root, int64_t incoming) {
-	for (;;) {
-		DIR *scopes = opendir(root);
-		if (!scopes)
-			return false;
-		int64_t bytes = 0;
-		time_t oldest = 0;
-		char victim[512] = "";
-		struct dirent *scope;
-		while ((scope = readdir(scopes))) {
-			if (!hex32(scope->d_name))
-				continue;
-			char dir[512];
-			struct stat ds;
-			if (snprintf(dir, sizeof(dir), "%s/%s", root, scope->d_name) >= (int)sizeof(dir) || lstat(dir, &ds) || !S_ISDIR(ds.st_mode))
-				continue;
-			DIR *files = opendir(dir);
-			if (!files)
-				continue;
-			struct dirent *file;
-			while ((file = readdir(files))) {
-				if (!owned_file(file->d_name))
-					continue;
-				char path[512];
-				struct stat st;
-				if (snprintf(path, sizeof(path), "%s/%s", dir, file->d_name) >= (int)sizeof(path) || lstat(path, &st) || !S_ISREG(st.st_mode))
-					continue;
-				if (!strcmp(file->d_name + 32, ".tmp")) {
-					unlink(path);
-					continue;
-				}
-				if (!protected(path) && !completed_file(path)) {
-					unlink(path); // abandoned partial, never reusable as complete audio
-					continue;
-				}
-				bytes += st.st_size;
-				if (strstr(file->d_name, ".complete") || strstr(file->d_name, ".tmp") || protected(path))
-					continue;
-				if (!victim[0] || st.st_mtime < oldest) {
-					oldest = st.st_mtime;
-					snprintf(victim, sizeof(victim), "%s", path);
-				}
-			}
-			closedir(files);
+// Transfer-local accounting. Only this transfer owns the audio-writing turn;
+// maintenance retires its epoch before touching files. Candidate metadata stays
+// fixed-sized rather than growing with cache or queue length.
+#define AUDIO_CANDIDATES 16
+#define AUDIO_RESERVATION (1024 * 1024)
+typedef struct {
+	char path[512];
+	time_t modified;
+} audio_victim_t;
+typedef struct {
+	bool accounted;
+	unsigned epoch;
+	int64_t base, granted, written;
+	char current[512];
+	audio_victim_t victims[AUDIO_CANDIDATES];
+	int count, next;
+	bool (*current_work)(void *);
+	void *user;
+} audio_space_t;
+static void space_candidate(audio_space_t *space, const char *path, time_t modified) {
+	int at = space->count;
+	if (at == AUDIO_CANDIDATES) {
+		if (modified >= space->victims[at - 1].modified)
+			return;
+		at--;
+	} else
+		space->count++;
+	while (at > 0 && space->victims[at - 1].modified > modified) {
+		space->victims[at] = space->victims[at - 1];
+		at--;
+	}
+	snprintf(space->victims[at].path, sizeof(space->victims[at].path), "%s", path);
+	space->victims[at].modified = modified;
+}
+static bool space_scan(audio_space_t *space, const char *root) {
+	DIR *scopes = opendir(root);
+	if (!scopes)
+		return false;
+	int64_t bytes = 0, current_bytes = 0;
+	space->count = space->next = 0;
+	bool ok = true;
+	struct dirent *scope;
+	while (ok && (scope = readdir(scopes))) {
+		if (space->current_work && !space->current_work(space->user)) {
+			ok = false;
+			break;
 		}
-		closedir(scopes);
-		struct statvfs fs;
-		bool free_space = !statvfs(root, &fs) && (uint64_t)fs.f_bavail * fs.f_frsize >= (uint64_t)(incoming + AUDIO_RESERVE);
-		if (bytes + incoming <= AUDIO_BUDGET && free_space)
+		if (!hex32(scope->d_name))
+			continue;
+		char dir[512];
+		struct stat ds;
+		if (snprintf(dir, sizeof(dir), "%s/%s", root, scope->d_name) >= (int)sizeof(dir) || lstat(dir, &ds) || !S_ISDIR(ds.st_mode))
+			continue;
+		DIR *files = opendir(dir);
+		if (!files) {
+			ok = false;
+			break;
+		}
+		struct dirent *file;
+		while ((file = readdir(files))) {
+			if (space->current_work && !space->current_work(space->user)) {
+				ok = false;
+				break;
+			}
+			if (!owned_file(file->d_name))
+				continue;
+			char path[512];
+			struct stat st;
+			if (snprintf(path, sizeof(path), "%s/%s", dir, file->d_name) >= (int)sizeof(path) || lstat(path, &st) || !S_ISREG(st.st_mode))
+				continue;
+			if (!strcmp(file->d_name + 32, ".tmp")) {
+				if (!unlink(path))
+					continue;
+				// Failed cleanup still consumes budget.
+			}
+			bool keep = protected(path) || !strcmp(path, space->current);
+			bool sidecar = !strcmp(file->d_name + 32, ".complete") || !strcmp(file->d_name + 32, ".tmp");
+			bool complete = !keep && completed_file(path);
+			if (!keep && !complete && !unlink(path))
+				continue;
+			if (st.st_size < 0 || bytes > INT64_MAX - st.st_size) {
+				ok = false;
+				break;
+			}
+			bytes += st.st_size;
+			if (!strcmp(path, space->current))
+				current_bytes = st.st_size;
+			if (!keep && !sidecar && complete)
+				space_candidate(space, path, st.st_mtime);
+		}
+		closedir(files);
+	}
+	closedir(scopes);
+	if (ok) {
+		space->base = bytes - current_bytes;
+		space->accounted = true;
+		space->epoch = nd_cache_epoch();
+	}
+	return ok;
+}
+static bool room(audio_space_t *space, const char *root, int64_t target) {
+	if (target <= 0 || target > AUDIO_BUDGET)
+		return false;
+	unsigned epoch = nd_cache_epoch();
+	if (space->accounted && epoch == space->epoch && target <= space->granted)
+		return true;
+	if ((!space->accounted || epoch != space->epoch) && !space_scan(space, root))
+		return false;
+	int64_t grant = ((target + AUDIO_RESERVATION - 1) / AUDIO_RESERVATION) * AUDIO_RESERVATION;
+	if (grant > AUDIO_BUDGET)
+		grant = AUDIO_BUDGET;
+	struct statvfs fs;
+	if (statvfs(root, &fs) || !fs.f_frsize)
+		return false;
+	uint64_t available = (uint64_t)fs.f_bavail > UINT64_MAX / fs.f_frsize ? UINT64_MAX : (uint64_t)fs.f_bavail * fs.f_frsize;
+	int64_t reclaimed = 0;
+	for (;;) {
+		// Near the budget/reserve, admit an exact smaller reservation rather
+		// than rejecting a final chunk solely because the quantum is larger.
+		int64_t allowed = grant;
+		if (space->base > AUDIO_BUDGET - allowed)
+			allowed = AUDIO_BUDGET - space->base;
+		uint64_t headroom = available > AUDIO_RESERVE ? available - AUDIO_RESERVE : 0;
+		if (allowed > space->written && (uint64_t)(allowed - space->written) > headroom)
+			allowed = space->written + (int64_t)(headroom > AUDIO_BUDGET ? AUDIO_BUDGET : headroom);
+		if (allowed >= target) {
+			space->granted = allowed;
 			return true;
-		if (!victim[0])
+		}
+		if (space->next == space->count) {
+			if (!space->count || !space_scan(space, root) || !space->count)
+				return false;
+		}
+		audio_victim_t *victim = &space->victims[space->next++];
+		struct stat st;
+		if (protected(victim->path) || !strcmp(victim->path, space->current) || !completed_file(victim->path) || lstat(victim->path, &st) || !S_ISREG(st.st_mode))
+			continue;
+		if (unlink(victim->path))
 			return false;
+		int64_t removed = st.st_size;
 		char marker[512];
-		snprintf(marker, sizeof(marker), "%s", victim);
+		snprintf(marker, sizeof(marker), "%s", victim->path);
 		char *dot = strrchr(marker, '.');
-		if (!dot)
-			return false;
-		strcpy(dot, ".complete");
-		if (unlink(victim))
-			return false;
-		unlink(marker);
+		if (dot) {
+			strcpy(dot, ".complete");
+			if (!lstat(marker, &st) && S_ISREG(st.st_mode) && !unlink(marker))
+				removed += st.st_size;
+		}
+		space->base = removed > space->base ? 0 : space->base - removed;
+		reclaimed += removed;
+		// Refresh after a bounded candidate/byte batch, without a full rescan.
+		if (space->next == space->count || reclaimed >= AUDIO_RESERVATION) {
+			reclaimed = 0;
+			if (statvfs(root, &fs) || !fs.f_frsize)
+				return false;
+			available = (uint64_t)fs.f_bavail > UINT64_MAX / fs.f_frsize ? UINT64_MAX : (uint64_t)fs.f_bavail * fs.f_frsize;
+		}
 	}
 }
 const char *nd_audio_extension(const unsigned char *p, size_t n) {
@@ -371,30 +463,29 @@ static const char *fetch_audio(const nd_library_t *lib, const nd_context_t *ctx,
 	turn_context_t wait = {.context = ctx, .current = current, .user = user, .cancellation = generation};
 	if (!streamturn_acquire_current(turn_current, &wait))
 		return current(user) && !navidrome_playback_current(ctx, true) ? "nd_network_error" : "nd_audio_cancelled";
-	http_stream_t stream = {.fd = -1};
-	const char *error = turn_current(&wait) ? nd_api_stream(ctx->host, ctx->user, ctx->password, track->row.id, &stream) : "nd_audio_cancelled";
-	if (!error && (strstr(stream.content_type, "text/") || strstr(stream.content_type, "json") || strstr(stream.content_type, "xml")))
+	http_session_t *stream = http_session_new(turn_current, &wait);
+	const char *error = !stream || !http_session_audio(stream, AUDIO_BUDGET) ? "nd_worker_error" : turn_current(&wait) ? nd_api_stream(ctx->host, ctx->user, ctx->password, track->row.id, stream) : "nd_audio_cancelled";
+	long content_length = stream ? (long)http_session_length(stream) : 0;
+	bool length_known = content_length > 0;
+	if (!error && (strstr(http_session_content_type(stream), "text/") || strstr(http_session_content_type(stream), "json") || strstr(http_session_content_type(stream), "xml")))
 		error = "nd_audio_invalid";
-	if (!error && stream.length_known && (stream.content_length <= 0 || stream.content_length > AUDIO_BUDGET))
+	if (!error && length_known && (content_length <= 0 || content_length > AUDIO_BUDGET))
 		error = "nd_audio_space";
-	pthread_mutex_lock(&lock);
-	if (!error)
-		active = &stream;
-	pthread_mutex_unlock(&lock);
 	unsigned char *buffer = malloc(AUDIO_CHUNK);
 	if (!buffer && !error)
 		error = "nd_worker_error";
 	int fd = -1;
 	long done = 0;
+	audio_space_t space = {.current_work = turn_current, .user = &wait};
 	bool announced = false, delivered = false, progressive = false;
 	path[0] = 0;
 	long prebuffer = STREAM_PREBUFFER;
 	struct timespec probe_start;
 	clock_gettime(CLOCK_MONOTONIC, &probe_start);
 	bool measured_probe = false;
-	if (stream.content_length > 0 && track->row.duration > 0) {
-		double seconds_floor = (double)stream.content_length / track->row.duration * STREAM_HEAD_SECS;
-		long floor = seconds_floor > stream.content_length ? stream.content_length : (long)seconds_floor;
+	if (content_length > 0 && track->row.duration > 0) {
+		double seconds_floor = (double)content_length / track->row.duration * STREAM_HEAD_SECS;
+		long floor = seconds_floor > content_length ? content_length : (long)seconds_floor;
 		if (floor > prebuffer)
 			prebuffer = floor;
 	}
@@ -414,10 +505,10 @@ static const char *fetch_audio(const nd_library_t *lib, const nd_context_t *ctx,
 			error = "nd_audio_cancelled";
 			break;
 		}
-		int n = http_stream_read(&stream, buffer, AUDIO_CHUNK);
+		int n = http_session_read(stream, buffer, AUDIO_CHUNK);
 		if (!path[0] && n > 0) {
 			while (n < 64) {
-				int more = http_stream_read(&stream, buffer + n, AUDIO_CHUNK - n);
+				int more = http_session_read(stream, buffer + n, AUDIO_CHUNK - n);
 				if (more < 0) {
 					n = -1;
 					break;
@@ -465,14 +556,18 @@ static const char *fetch_audio(const nd_library_t *lib, const nd_context_t *ctx,
 				char dir[512];
 				if (snprintf(dir, sizeof(dir), "%s/%s", root, lib->scope) >= (int)sizeof(dir))
 					error = "nd_cache_storage";
-				if (!directory(root) || !directory(dir) || protected(path) || !room(root, (int64_t)n + sizeof(complete_t)))
+				suffix(marker, sizeof(marker), stem, ".complete");
+				if (!protected(path))
+					unlink(marker);
+				if (!directory(root) || !directory(dir) || protected(path) || !room(&space, root, (int64_t)done + n + sizeof(complete_t)))
 					error = "nd_audio_space";
 				else {
 					suffix(marker, sizeof(marker), stem, ".complete");
 					unlink(marker); // a replaced partial file cannot retain an old completion record
 					fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600);
 					if (fd >= 0) {
-						growfile_announce(path, stream.length_known ? stream.content_length : 0);
+						snprintf(space.current, sizeof(space.current), "%s", path);
+						growfile_announce(path, length_known ? content_length : 0);
 						announced = true;
 					}
 				}
@@ -484,12 +579,13 @@ static const char *fetch_audio(const nd_library_t *lib, const nd_context_t *ctx,
 			if (fd < 0)
 				error = "nd_cache_storage";
 		}
-		if (!error && !room(root, (int64_t)n + sizeof(complete_t)))
+		if (!error && !room(&space, root, (int64_t)done + n + sizeof(complete_t)))
 			error = "nd_audio_space";
 		if (!error && !nd_audio_write_original(fd, buffer, (size_t)n))
 			error = "nd_cache_storage";
 		if (!error) {
 			done += n;
+			space.written = done;
 			if (announced)
 				growfile_progress(path, done);
 		}
@@ -504,16 +600,16 @@ static const char *fetch_audio(const nd_library_t *lib, const nd_context_t *ctx,
 			struct timespec now;
 			clock_gettime(CLOCK_MONOTONIC, &now);
 			double elapsed = (now.tv_sec - probe_start.tv_sec) + (now.tv_nsec - probe_start.tv_nsec) / 1e9;
-			if (elapsed > 0.3 && stream.length_known && track->row.duration > 0) {
-				double required = (double)stream.content_length / track->row.duration;
-				double head = stream.content_length * (1.0 - (done / elapsed) / (required * 1.2));
+			if (elapsed > 0.3 && length_known && track->row.duration > 0) {
+				double required = (double)content_length / track->row.duration;
+				double head = content_length * (1.0 - (done / elapsed) / (required * 1.2));
 				double cap = required * STREAM_HEAD_MAX_SECS;
 				if (head > cap)
 					head = cap;
 				if (head > prebuffer)
 					prebuffer = (long)head;
-				if (prebuffer > stream.content_length)
-					prebuffer = stream.content_length;
+				if (prebuffer > content_length)
+					prebuffer = content_length;
 			}
 		}
 		if (!error && progressive_start && progressive && !delivered && done >= prebuffer && current(user)) {
@@ -521,11 +617,7 @@ static const char *fetch_audio(const nd_library_t *lib, const nd_context_t *ctx,
 			delivered = true;
 		}
 	}
-	pthread_mutex_lock(&lock);
-	if (active == &stream)
-		active = NULL;
-	pthread_mutex_unlock(&lock);
-	http_stream_close(&stream);
+	http_session_free(stream);
 	free(buffer);
 	if (fd >= 0 && close(fd) && !error)
 		error = "nd_cache_storage";

@@ -2,11 +2,14 @@
 #include "navidromebatch.h"
 #include "navidromedebug.h"
 #include "src/system/library/library.h"
+#include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 static void album_display_fields(const json_doc_t *d, int obj, nd_playrow_t *out);
@@ -750,11 +753,14 @@ bool nd_store_publish(nd_store_t *s) {
 
 #define PIN_CONTEXTS 9
 static pthread_mutex_t pin_lock = PTHREAD_MUTEX_INITIALIZER;
-static struct {
+static pthread_mutex_t cleanup_serial = PTHREAD_MUTEX_INITIALIZER;
+static bool cleaning;
+typedef struct {
 	char scope[33], path[1024];
 	int64_t generation;
 	unsigned users;
-} pins[PIN_CONTEXTS];
+} pin_t;
+static pin_t pins[PIN_CONTEXTS];
 static bool retain_context(const char *scope, int64_t generation, const char *path) {
 	pthread_mutex_lock(&pin_lock);
 	int free_slot = -1;
@@ -768,7 +774,7 @@ static bool retain_context(const char *scope, int64_t generation, const char *pa
 			break;
 		}
 	}
-	if (!ok && free_slot >= 0) {
+	if (!ok && free_slot >= 0 && !cleaning) {
 		pins[free_slot].generation = generation;
 		snprintf(pins[free_slot].scope, sizeof(pins[free_slot].scope), "%s", scope);
 		snprintf(pins[free_slot].path, sizeof(pins[free_slot].path), "%s", path);
@@ -793,8 +799,14 @@ bool nd_store_retain_source(const nd_library_t *library) { return retain_context
 void nd_store_release_source(const nd_library_t *library) { release_context(library->scope, library->generation, library->path); }
 
 void nd_store_cleanup(nd_store_t *s) {
-	// The pin mutex serializes admission with deletion, not with playback I/O.
+	// Existing pins remain readable while deletion runs. New owner admission
+	// fails finitely during cleanup rather than blocking GUI/service locks on SD.
+	pthread_mutex_lock(&cleanup_serial);
 	pthread_mutex_lock(&pin_lock);
+	pin_t held[PIN_CONTEXTS];
+	memcpy(held, pins, sizeof(held));
+	cleaning = true;
+	pthread_mutex_unlock(&pin_lock);
 	sqlite3_stmt *st = NULL;
 	char text[4096];
 	size_t used = snprintf(text, sizeof(text), "DELETE FROM snapshot WHERE id NOT IN(SELECT gen FROM active)");
@@ -809,15 +821,18 @@ void nd_store_cleanup(nd_store_t *s) {
 	}
 	if (prepare(s, &st, text)) {
 		for (int i = 0; i < PIN_CONTEXTS; i++) {
-			bool matches = pins[i].users && (!*pins[i].path || (path && !strcmp(path, pins[i].path)));
-			sqlite3_bind_int64(st, 1 + 2 * i, matches ? pins[i].generation : -1);
-			bind(st, 2 + 2 * i, pins[i].scope);
+			bool matches = held[i].users && (!*held[i].path || (path && !strcmp(path, held[i].path)));
+			sqlite3_bind_int64(st, 1 + 2 * i, matches ? held[i].generation : -1);
+			bind(st, 2 + 2 * i, held[i].scope);
 		}
 		if (sqlite3_step(st) != SQLITE_DONE)
 			s->error = "nd_cache_error";
 		sqlite3_finalize(st);
 	}
+	pthread_mutex_lock(&pin_lock);
+	cleaning = false;
 	pthread_mutex_unlock(&pin_lock);
+	pthread_mutex_unlock(&cleanup_serial);
 	if (s->favorites)
 		sql(s, "DELETE FROM seen");
 	if (sqlite3_db_readonly(s->db, "main") == 0)
@@ -951,8 +966,14 @@ bool nd_store_query(nd_store_t *s, int64_t gen, const nd_query_t *q, int offset,
 	for (int pass = 0; ok && pass < 2; pass++) {
 		if (pass)
 			snprintf(text, sizeof(text), "SELECT e.id,e.title,e.artist,e.cover,e.duration,e.disc,e.track,e.details%s ORDER BY %s LIMIT ?6 OFFSET ?7", where, query_order(s, q, order));
-		else
-			snprintf(text, sizeof(text), "SELECT count(*)%s", where);
+		else {
+			char count_where[1024];
+			snprintf(count_where, sizeof(count_where), "%s", where);
+			char *join = strstr(count_where, query_sort_join(q));
+			if (grouped_tracks(q) && join)
+				memmove(join, join + strlen(query_sort_join(q)), strlen(join + strlen(query_sort_join(q))) + 1);
+			snprintf(text, sizeof(text), "SELECT count(*)%s", count_where);
+		}
 		ok = prepare(s, &st, text);
 		if (!ok)
 			break;
@@ -1002,6 +1023,195 @@ bool nd_store_query(nd_store_t *s, int64_t gen, const nd_query_t *q, int offset,
 		for (int i = 0; i < *count; i++)
 			rows[i].favorite_known = nd_store_annotation(s, gen, q->kind, rows[i].id, &rows[i].favorite);
 	return ok && ended;
+}
+
+// One disposable catalogue for the browse worker, independent of the source
+// connection's lifetime. No open sidecar/card handle survives a window call.
+#define ORDER_PAGES 2048
+static pthread_mutex_t order_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t order_cancel_lock = PTHREAD_MUTEX_INITIALIZER;
+static sqlite3 *order_read;
+void nd_store_cancel_reads(void) {
+	pthread_mutex_lock(&order_cancel_lock);
+	if (order_read)
+		sqlite3_interrupt(order_read);
+	pthread_mutex_unlock(&order_cancel_lock);
+}
+static void order_register(sqlite3 *db) {
+	pthread_mutex_lock(&order_cancel_lock);
+	order_read = db;
+	pthread_mutex_unlock(&order_cancel_lock);
+}
+static bool order_open(const char *path, sqlite3 **db, bool write) {
+	struct stat st;
+	if (!lstat(path, &st) && (!S_ISREG(st.st_mode) || st.st_size > ORDER_PAGES * 4096LL))
+		return false;
+	int flags = (write ? SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE : SQLITE_OPEN_READONLY) | SQLITE_OPEN_NOFOLLOW;
+	if (sqlite3_open_v2(path, db, flags, NULL) != SQLITE_OK) {
+		sqlite3_close(*db);
+		*db = NULL;
+		return false;
+	}
+	if (sqlite3_exec(*db, "PRAGMA cache_size=-256; PRAGMA page_size=4096; PRAGMA max_page_count=2048; PRAGMA journal_mode=DELETE;", NULL, NULL, NULL) != SQLITE_OK) {
+		sqlite3_close(*db);
+		*db = NULL;
+		return false;
+	}
+	return true;
+}
+static bool order_matches(sqlite3 *db, const char *key, int *total) {
+	sqlite3_stmt *st = NULL;
+	bool ok = sqlite3_prepare_v2(db, "SELECT total FROM order_identity WHERE key=? AND version=1", -1, &st, NULL) == SQLITE_OK;
+	if (ok) {
+		sqlite3_bind_text(st, 1, key, -1, SQLITE_TRANSIENT);
+		ok = sqlite3_step(st) == SQLITE_ROW && sqlite3_column_int64(st, 0) >= 0 && sqlite3_column_int64(st, 0) <= INT_MAX;
+		if (ok)
+			*total = sqlite3_column_int(st, 0);
+	}
+	sqlite3_finalize(st);
+	return ok;
+}
+static bool order_build(nd_store_t *s, int64_t gen, const nd_query_t *q, const char *path, const char *temp, const char *key) {
+	if (s->current && !s->current(s->current_user))
+		return false;
+	sqlite3 *db = NULL;
+	unlink(temp); // generated staging name, under the exclusive catalogue lock
+	bool ok = order_open(temp, &db, true);
+	if (ok)
+		ok = sqlite3_exec(db, "BEGIN; CREATE TABLE order_identity(key TEXT,version INT,total INT); CREATE TABLE position(n INTEGER PRIMARY KEY,handle INTEGER NOT NULL);", NULL, NULL, NULL) == SQLITE_OK;
+	sqlite3_stmt *read = NULL, *insert = NULL;
+	char text[2200], order[768], pattern[515];
+	if (ok && *q->search)
+		ok = library_search_pattern(q->search, pattern, sizeof(pattern)) && sqlite3_create_function(s->db, "nd_fold", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, search_fold, NULL, NULL) == SQLITE_OK;
+	snprintf(text, sizeof(text), "SELECT e.rowid FROM browse_entity e JOIN snapshot s ON s.id=e.gen %s WHERE e.gen=?1 AND e.kind=1 AND s.scope=?2 AND s.complete=1 %s %s %s ORDER BY %s", query_sort_join(q), *q->filter ? "AND e.album=?3" : "", q->favorites && !*q->filter ? "AND e.starred=1" : "", *q->search ? "AND nd_fold(e.title) LIKE ?4 ESCAPE '\\'" : "", query_order(s, q, order));
+	if (ok)
+		ok = prepare(s, &read, text) && sqlite3_prepare_v2(db, "INSERT INTO position VALUES(?,?)", -1, &insert, NULL) == SQLITE_OK;
+	if (ok) {
+		sqlite3_bind_int64(read, 1, gen);
+		bind(read, 2, s->scope);
+		if (*q->filter)
+			bind(read, 3, q->filter);
+		if (*q->search)
+			bind(read, 4, pattern);
+	}
+	int rc = SQLITE_DONE, total = 0;
+	while (ok && (rc = sqlite3_step(read)) == SQLITE_ROW) {
+		if (total == INT_MAX || (s->current && !s->current(s->current_user))) {
+			ok = false;
+			break;
+		}
+		sqlite3_reset(insert);
+		sqlite3_bind_int(insert, 1, total++);
+		sqlite3_bind_int64(insert, 2, sqlite3_column_int64(read, 0));
+		ok = sqlite3_step(insert) == SQLITE_DONE;
+	}
+	ok = ok && rc == SQLITE_DONE;
+	sqlite3_finalize(read);
+	sqlite3_finalize(insert);
+	insert = NULL;
+	if (ok)
+		ok = sqlite3_prepare_v2(db, "INSERT INTO order_identity VALUES(?,1,?)", -1, &insert, NULL) == SQLITE_OK;
+	if (ok) {
+		sqlite3_bind_text(insert, 1, key, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_int(insert, 2, total);
+		ok = sqlite3_step(insert) == SQLITE_DONE;
+	}
+	sqlite3_finalize(insert);
+	if (ok && s->current)
+		ok = s->current(s->current_user);
+	if (ok)
+		ok = sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK;
+	if (db)
+		sqlite3_close(db);
+	if (ok)
+		ok = s->publish_order ? s->publish_order(s->current_user, temp, path) : rename(temp, path) == 0;
+	if (!ok)
+		unlink(temp);
+	return ok;
+}
+bool nd_store_query_cached(nd_store_t *s, int64_t gen, const nd_query_t *q, int offset, nd_row_t rows[ND_WINDOW], int *count, int *total, bool writable) {
+	if (!grouped_tracks(q) || q->favorites != s->favorites || offset < 0 || !s->path[0])
+		return nd_store_query(s, gen, q, offset, rows, count, total);
+	const char *prior_error = s->error;
+	if (!read_view(s, gen))
+		return false;
+	char path[1200], temp[1220], lock_path[1220], key[3000];
+	struct stat source, wal = {0};
+	bool eligible = !lstat(s->path, &source) && S_ISREG(source.st_mode);
+	int n = snprintf(path, sizeof(path), "%s", s->path);
+	char *slash = strrchr(path, '/');
+	if (!eligible || n < 0 || n >= (int)sizeof(path) || !slash)
+		return nd_store_query(s, gen, q, offset, rows, count, total);
+	snprintf(slash + 1, sizeof(path) - (slash + 1 - path), "browse-order.db");
+	snprintf(temp, sizeof(temp), "%s.tmp", path);
+	snprintf(lock_path, sizeof(lock_path), "%s.lock", path);
+	char wal_path[1100];
+	snprintf(wal_path, sizeof(wal_path), "%s-wal", s->path);
+	(void)lstat(wal_path, &wal);
+	n = snprintf(key, sizeof(key), "v1:%s:%lld:%llu:%llu:%lld:%ld:%lld:%llu:%lld:%ld:%lld:%d:%d:%d:%d:%zu:%s:%zu:%s:%zu:%s", s->scope, (long long)gen, (unsigned long long)source.st_dev, (unsigned long long)source.st_ino, (long long)source.st_mtim.tv_sec, source.st_mtim.tv_nsec, (long long)source.st_size, (unsigned long long)wal.st_ino, (long long)wal.st_mtim.tv_sec, wal.st_mtim.tv_nsec, (long long)wal.st_size, q->kind, q->favorites, q->filter_kind, q->order, strlen(q->filter), q->filter, strlen(q->search), q->search, strlen(s->path), s->path);
+	if (n < 0 || n >= (int)sizeof(key))
+		return nd_store_query(s, gen, q, offset, rows, count, total);
+	pthread_mutex_lock(&order_lock);
+	order_register(s->db);
+	sqlite3 *db = NULL;
+	bool ok = order_open(path, &db, false) && order_matches(db, key, total);
+	if (!ok && writable) {
+		if (db) {
+			sqlite3_close(db);
+			db = NULL;
+		}
+		int fd = open(lock_path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
+		if (fd >= 0 && !flock(fd, LOCK_EX | LOCK_NB)) {
+			ok = order_build(s, gen, q, path, temp, key) && order_open(path, &db, false) && order_matches(db, key, total);
+			flock(fd, LOCK_UN);
+		}
+		if (fd >= 0)
+			close(fd);
+	}
+	sqlite3_stmt *positions = NULL, *metadata = NULL;
+	if (ok)
+		ok = sqlite3_prepare_v2(db, "SELECT handle FROM position WHERE n>=? ORDER BY n LIMIT 16", -1, &positions, NULL) == SQLITE_OK && prepare(s, &metadata, "SELECT e.id,e.title,e.artist,e.cover,e.duration,e.disc,e.track,e.details FROM browse_entity e WHERE e.rowid=?1 AND e.gen=?2 AND e.kind=1");
+	*count = 0;
+	if (ok) {
+		sqlite3_bind_int(positions, 1, offset);
+		int rc;
+		while (ok && (rc = sqlite3_step(positions)) == SQLITE_ROW) {
+			sqlite3_reset(metadata);
+			sqlite3_bind_int64(metadata, 1, sqlite3_column_int64(positions, 0));
+			sqlite3_bind_int64(metadata, 2, gen);
+			ok = sqlite3_step(metadata) == SQLITE_ROW;
+			if (!ok)
+				break;
+			nd_row_t *row = &rows[(*count)++];
+			memset(row, 0, sizeof(*row));
+			char *fields[] = {row->id, row->title, row->artist, row->cover};
+			size_t caps[] = {sizeof(row->id), sizeof(row->title), sizeof(row->artist), sizeof(row->cover)};
+			for (int i = 0; i < 4; i++) {
+				const char *value = (const char *)sqlite3_column_text(metadata, i);
+				snprintf(fields[i], caps[i], "%s", value ? value : "");
+			}
+			row->duration = sqlite3_column_int(metadata, 4);
+			row->disc = sqlite3_column_int(metadata, 5);
+			row->track = sqlite3_column_int(metadata, 6);
+			row->details = sqlite3_column_int(metadata, 7);
+			if (s->favorites)
+				row->favorite_known = nd_store_annotation(s, gen, ND_TRACKS, row->id, &row->favorite);
+		}
+		int expected = offset >= *total ? 0 : *total - offset < ND_WINDOW ? *total - offset : ND_WINDOW;
+		ok = ok && rc == SQLITE_DONE && *count == expected;
+	}
+	sqlite3_finalize(positions);
+	sqlite3_finalize(metadata);
+	if (db)
+		sqlite3_close(db);
+	bool current = !s->current || s->current(s->current_user);
+	if (!ok && current) {
+		s->error = prior_error; // Disposable acceleration failure is not user-data failure.
+		ok = nd_store_query(s, gen, q, offset, rows, count, total);
+	}
+	order_register(NULL);
+	pthread_mutex_unlock(&order_lock);
+	return ok && current && (!s->current || s->current(s->current_user));
 }
 
 bool nd_store_play_index(nd_store_t *s, int64_t gen, const nd_query_t *q, const char *selected, int64_t **handles, int *count, int *start) {

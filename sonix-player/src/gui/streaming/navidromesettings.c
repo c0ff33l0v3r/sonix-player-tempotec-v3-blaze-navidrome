@@ -1,8 +1,9 @@
-#include "navidromepage.h"
 #include "navidromesettings.h"
-#include "navidromedownloadpage.h"
 #include "navidromealbum.h"
+#include "navidromedownloadpage.h"
+#include "navidromepage.h"
 #include "src/gui/nowplaying/player.h"
+#include "src/system/device/power.h"
 
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/confirm.h"
@@ -38,7 +39,7 @@ static lv_obj_t *lock_button, *forget_button, *change_button, *pass_button;
 static bool updating, pass_waiting;
 static lv_obj_t *sync_button, *sync_cancel_button, *library_status, *sync_status;
 static lv_obj_t *cache_clear, *cache_total, *cache_values[2], *cache_bars[2];
-static uint32_t cache_last_request;
+static bool cache_usage_needed;
 static unsigned cache_notice;
 static bool cache_was_clearing;
 static unsigned clear_card_epoch, clear_profile_epoch;
@@ -53,6 +54,7 @@ static void actions(void);
 static void save_cb(lv_event_t *e);
 static void pass_accept_cb(lv_event_t *e);
 static void sync_actions(void);
+static void cache_refresh(void);
 
 static void wipe_field(lv_obj_t *field) {
 	// LVGL owns this mutable storage (including pwd_tmp in password mode).
@@ -439,6 +441,7 @@ static void cache_clear_confirmed(void *unused) {
 	if (nd_cache_clear_request(&lib, navidromeplay_cache_reader_active)) {
 		navidromeplay_cache_stop();
 		cache_was_clearing = true;
+		cache_refresh();
 	} else gui_notify_popup(lib.writable ? "nd_cache_busy" : "nd_cache_readonly");
 }
 static void cache_clear_cb(lv_event_t *event) {
@@ -451,11 +454,20 @@ static void cache_clear_cb(lv_event_t *event) {
 	if (!available) { gui_notify_popup("nd_unlock_required"); return; }
 	confirm_show("nd_cache_clear", "nd_cache_clear_confirm", "nd_cache_clear", cache_clear_confirmed, NULL);
 }
+static lv_timer_t *refresh_timer;
 static void cache_refresh(void) {
 	nd_library_t lib;
 	navidrome_library_snapshot(&lib);
 	nd_cache_usage_t usage;
 	nd_cache_usage_snapshot(&usage);
+	if (refresh_timer) {
+		navidrome_snapshot_t activity;
+		navidrome_snapshot(&activity);
+		if (activity.busy || usage.busy)
+			lv_timer_resume(refresh_timer);
+		else
+			lv_timer_pause(refresh_timer);
+	}
 	if (cache_was_clearing && !usage.busy && usage.revision != cache_notice) {
 		cache_notice = usage.revision;
 		cache_was_clearing = false;
@@ -486,9 +498,12 @@ static void cache_refresh(void) {
 		lv_bar_set_value(cache_bars[i], ready ? (int)(bytes[i] >= budgets[i] ? 100 : bytes[i] * 100 / budgets[i]) : 0, LV_ANIM_OFF);
 		lv_obj_set_style_bg_color(cache_bars[i], theme()->accent, LV_PART_INDICATOR);
 	}
-	if (!usage.busy && snapshot.unlocked && *lib.path && lv_tick_elaps(cache_last_request) >= 2000) {
-		cache_last_request = lv_tick_get();
-		nd_cache_usage_request(&lib);
+	if (!usage.busy && snapshot.unlocked && *lib.path && cache_usage_needed) {
+		if (nd_cache_usage_request(&lib)) {
+			cache_usage_needed = false;
+			if (refresh_timer)
+				lv_timer_resume(refresh_timer);
+		}
 	}
 }
 static void cache_card_build(void) {
@@ -671,8 +686,10 @@ static void encrypt_cb(lv_event_t *e) {
 }
 
 static void settings_loaded_cb(lv_event_t *e) {
+	cache_usage_needed = true;
 	(void)e;
 	actions();
+	cache_refresh();
 }
 
 static void debug_cb(lv_event_t *e) {
@@ -773,5 +790,8 @@ void navidromesettings_init(gui_config_t *cfg) {
 	pass_form.keyboard = keyboard_create(pass_form.screen, cfg->screen_width, ui_px(316), pass_form.fields[0], NULL, "ok", pass_accept_cb, NULL);
 	keyboard_visible(&pass_form, false);
 	lv_obj_add_event_cb(pass_form.screen, pass_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
-	lv_timer_create(refresh_tick, 250, NULL);
+	refresh_timer = lv_timer_create(refresh_tick, 250, NULL);
+	power_slow_in_standby(refresh_timer, 1000);
+	lv_timer_pause(refresh_timer);
+	nd_cache_set_listener(navidromesettings_refresh);
 }

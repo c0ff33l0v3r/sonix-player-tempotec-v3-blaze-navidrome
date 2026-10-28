@@ -12,7 +12,7 @@ ${CC:-cc} -std=gnu11 -DHOST_BUILD -DLV_CONF_INCLUDE_SIMPLE -DLV_FONT_UNSCII_8=1 
     -Wall -Wextra -Werror -O1 -g -ffunction-sections -fdata-sections ${NAVIDROME_CHECK_FLAGS:-} -I. -Ilvgl \
     tools/navidrome_downloaduicheck.c src/gui/streaming/navidromedownloadmenu.c \
     src/gui/streaming/navidromethumb.c src/gui/shell/icons.c src/gui/library/folderpicker.c src/gui/shell/settingsrow.c src/gui/shell/keyboard.c src/system/input/kblayout.c src/system/core/config.c \
-    src/system/streaming/navidromedownloadstore.c src/system/streaming/navidromeaudio.c \
+    src/system/streaming/navidromedownloadstore.c src/system/device/workactivity.c src/system/streaming/navidromeaudio.c \
     lvgl/src/font/lv_font_unscii_8.c @"$check_dir/objects" \
     -pthread -ldl -lm $(pkg-config --libs freetype2 sdl2) \
     -Wl,--gc-sections,--wrap=config_save -o "$check_dir/check"

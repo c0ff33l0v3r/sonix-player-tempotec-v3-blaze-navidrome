@@ -1,6 +1,7 @@
 #define _GNU_SOURCE 1
 
 #include "http.h"
+#include "src/system/device/workactivity.h"
 #include <ctype.h>
 
 #include "src/system/core/lang.h"
@@ -1379,6 +1380,8 @@ void http_stream_close(http_stream_t *st) {
 #define FINITE_WIRE (8u * 1024u * 1024u)
 #define FINITE_DECODED (16u * 1024u * 1024u)
 struct http_session {
+	work_activity_t activity;
+	void (*diagnostic)(const char *);
 	conn_t conn;
 	url_t origin;
 	bool (*current)(void *);
@@ -1388,7 +1391,7 @@ struct http_session {
 	bool binary;
 	bool no_redirect, artwork, lyrics;
 	size_t wire_limit, decoded_limit, declared;
-	int deadline_ms;
+	int deadline_ms, body_deadline_ms;
 	char content_type[64];
 	int status;
 	size_t remaining, chunk, pos, end;
@@ -1747,6 +1750,13 @@ bool http_session_binary(http_session_t *s, size_t max_bytes, int seconds) {
 	s->deadline_ms = seconds * 1000;
 	return true;
 }
+bool http_session_audio(http_session_t *s, size_t max_bytes) {
+	if (!http_session_binary(s, max_bytes, 1800))
+		return false;
+	s->body_deadline_ms = s->deadline_ms;
+	s->deadline_ms = HTTP_FINITE_DEADLINE_MS;
+	return true;
+}
 bool http_session_artwork(http_session_t *s, size_t max_bytes) {
 	if (!http_session_binary(s, max_bytes, 8))
 		return false;
@@ -1775,6 +1785,7 @@ void http_session_free(http_session_t *s) {
 	if (!s)
 		return;
 	finite_close(s);
+	work_activity_end(&s->activity);
 	gzip_reader_free(s->gzip);
 	memset(s, 0, sizeof(*s));
 	free(s);
@@ -1784,8 +1795,11 @@ const char *http_session_error(const http_session_t *s) { return s->error; }
 int http_session_status(const http_session_t *s) { return s->status; }
 void http_session_stats(const http_session_t *s, http_session_stats_t *out) { *out = s->stats; }
 int http_session_read(http_session_t *s, void *out, size_t size) {
-	if (s->error || !finite_current(s))
+	if (s->error || !finite_current(s)) {
+		finite_close(s);
+		work_activity_end(&s->activity);
 		return -1;
+	}
 	double start = finite_now();
 	int n = s->gzip ? gzip_reader_read(s->gzip, out, size) : finite_encoded(s, out, size);
 	s->stats.transfer_seconds += finite_now() - start;
@@ -1793,19 +1807,28 @@ int http_session_read(http_session_t *s, void *out, size_t size) {
 		if (!s->error)
 			s->error = "encoding_corrupt";
 		finite_close(s);
+		work_activity_end(&s->activity);
 		return -1;
 	}
 	if ((size_t)n > s->decoded_limit - s->stats.decoded) {
 		s->error = "decoded_limit";
 		finite_close(s);
+		work_activity_end(&s->activity);
 		return -1;
 	}
 	s->stats.decoded += n;
 	if (!n && (s->closing || s->pos != s->end))
 		finite_close(s);
+	if (!n)
+		work_activity_end(&s->activity);
 	return n;
 }
-bool http_session_get(http_session_t *s, const char *url, bool gzip, bool reuse) {
+static bool finite_request(http_session_t *s, const char *url, const char *form, bool gzip, bool reuse) {
+	work_activity_end(&s->activity);
+	if (!work_activity_begin(&s->activity, WORK_NETWORK)) {
+		s->error = "admission";
+		return false;
+	}
 	if (!s->complete && s->conn.fd >= 0)
 		finite_close(s);
 	gzip_reader_free(s->gzip);
@@ -1817,6 +1840,7 @@ bool http_session_get(http_session_t *s, const char *url, bool gzip, bool reuse)
 	char current[2600];
 	if (snprintf(current, sizeof(current), "%s", url) >= (int)sizeof(current)) {
 		s->error = "address";
+		work_activity_end(&s->activity);
 		return false;
 	}
 	for (int hop = 0; hop <= HTTP_MAX_REDIRECTS; hop++) {
@@ -1843,9 +1867,16 @@ bool http_session_get(http_session_t *s, const char *url, bool gzip, bool reuse)
 		s->status = 0;
 		s->declared = 0;
 		s->content_type[0] = 0;
-		char request[3000], host[300];
+		char request[3000], host[300], form_headers[128] = "";
+		size_t form_size = form ? strlen(form) : 0;
+		if (form_size > 2u * 1024u * 1024u) {
+			s->error = "body_limit";
+			break;
+		}
+		if (form)
+			snprintf(form_headers, sizeof(form_headers), "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: %zu\r\n", form_size);
 		host_header_value(&u, host, sizeof(host));
-		int length = snprintf(request, sizeof(request), "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: " HTTP_USER_AGENT "\r\nAccept: %s\r\nAccept-Encoding: %s\r\nConnection: %s\r\n\r\n", u.path, host, s->binary ? "*/*" : "application/json", gzip ? "gzip, identity" : "identity", reuse ? "keep-alive" : "close");
+		int length = snprintf(request, sizeof(request), "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: " HTTP_USER_AGENT "\r\nAccept: %s\r\nAccept-Encoding: %s\r\nConnection: %s\r\n%s\r\n", form ? "POST" : "GET", u.path, host, s->binary ? "*/*" : "application/json", gzip ? "gzip, identity" : "identity", reuse ? "keep-alive" : "close", form_headers);
 		if (length < 0 || length >= (int)sizeof(request)) {
 			s->error = "address";
 			break;
@@ -1859,6 +1890,18 @@ bool http_session_get(http_session_t *s, const char *url, bool gzip, bool reuse)
 		}
 		memset(request, 0, sizeof(request));
 		if (sent != length)
+			break;
+		size_t form_sent = 0;
+		while (form_sent < form_size) {
+			size_t amount = form_size - form_sent;
+			if (amount > 65536)
+				amount = 65536;
+			int n = finite_io(s, (void *)(form + form_sent), amount, true);
+			if (n <= 0)
+				break;
+			form_sent += n;
+		}
+		if (form_sent != form_size)
 			break;
 		char line[2048], location[2048] = "";
 		size_t headers = 0;
@@ -1927,6 +1970,11 @@ bool http_session_get(http_session_t *s, const char *url, bool gzip, bool reuse)
 				snprintf(location, sizeof(location), "%s", value);
 			}
 		}
+		if (s->diagnostic) {
+			http_req_t logging = {.diagnostic = s->diagnostic};
+			const char *type = strcasestr(s->content_type, "html") ? "html" : strcasestr(s->content_type, "json") ? "json" : strcasestr(s->content_type, "xml") ? "xml" : "other";
+			protected_diagnostic(&logging, "http: protected response status=%d content_type=%s encoding=%s framing=%s declared_bytes=%zu\n", s->status, type, compressed ? "gzip" : "identity", has_transfer ? "chunked" : has_length ? "content_length" : "close", s->remaining);
+		}
 		if (s->error)
 			break;
 		if (has_transfer && has_length) {
@@ -1934,10 +1982,16 @@ bool http_session_get(http_session_t *s, const char *url, bool gzip, bool reuse)
 			break;
 		}
 		if (s->status >= 300 && s->status < 400 && *location) {
+			if (s->diagnostic) {
+				http_req_t logging = {.diagnostic = s->diagnostic};
+				protected_diagnostic(&logging, "http: protected redirect status=%d destination=%s\n", s->status, location[0] == '/' ? "relative" : "absolute");
+			}
 			if (s->no_redirect) {
 				s->error = "redirect";
 				break;
 			}
+			if (s->status == 303 || (form && (s->status == 301 || s->status == 302)))
+				form = NULL;
 			finite_close(s);
 			int n = location[0] == '/' ? snprintf(current, sizeof(current), "%s://%s:%d%s", u.secure ? "https" : "http", u.host, u.port, location) : snprintf(current, sizeof(current), "%s", location);
 			if (n >= (int)sizeof(current)) {
@@ -1966,6 +2020,8 @@ bool http_session_get(http_session_t *s, const char *url, bool gzip, bool reuse)
 				break;
 			}
 		}
+		if (s->body_deadline_ms)
+			s->deadline = finite_now() + s->body_deadline_ms / 1000.0;
 		memset(current, 0, sizeof(current));
 		return true;
 	}
@@ -1973,5 +2029,70 @@ bool http_session_get(http_session_t *s, const char *url, bool gzip, bool reuse)
 		s->error = "redirect_or_request";
 	memset(current, 0, sizeof(current));
 	finite_close(s);
+	work_activity_end(&s->activity);
 	return false;
+}
+
+bool http_session_get(http_session_t *s, const char *url, bool gzip, bool reuse) { return finite_request(s, url, NULL, gzip, reuse); }
+bool http_session_form(http_session_t *s, const char *url, const char *form) { return finite_request(s, url, form ? form : "", false, false); }
+bool http_finite_request(const char *url, const char *form, bool (*current)(void *), void *user, char **out, size_t *size, size_t limit, int *status, const char **reason, bool *too_large, void (*diagnostic)(const char *)) {
+	*out = NULL;
+	*size = 0;
+	*status = 0;
+	*reason = NULL;
+	*too_large = false;
+	http_session_t *s = http_session_new(current, user);
+	if (!s) {
+		*reason = "allocation_failed";
+		return false;
+	}
+	s->wire_limit = s->decoded_limit = limit;
+	s->diagnostic = diagnostic;
+	bool ok = finite_request(s, url, form, false, false);
+	char *body = ok ? malloc(limit) : NULL;
+	if (ok && !body) {
+		s->error = "allocation_failed";
+		ok = false;
+	}
+	while (ok) {
+		unsigned char chunk[4096];
+		int n = http_session_read(s, chunk, sizeof(chunk));
+		if (n < 0) {
+			ok = false;
+			break;
+		}
+		if (!n)
+			break;
+		if ((size_t)n >= limit - *size) {
+			s->error = "body_limit";
+			ok = false;
+			break;
+		}
+		memcpy(body + *size, chunk, n);
+		*size += n;
+	}
+	if (ok && s->status >= 500) {
+		ok = false;
+		s->error = "server_status";
+	}
+	if (!ok && s->diagnostic) {
+		http_req_t logging = {.diagnostic = s->diagnostic};
+		const char *failure = s->error ? s->error : "incomplete_body";
+		if (s->chunked && !strcmp(failure, "framing"))
+			failure = "incomplete_or_invalid_chunks";
+		protected_diagnostic(&logging, "http: protected body rejected reason=%s received_bytes=%zu limit=%zu\n", failure, *size, limit);
+	}
+	*status = s->status;
+	*reason = s->error;
+	*too_large = s->error && (!strcmp(s->error, "body_limit") || !strcmp(s->error, "decoded_limit"));
+	if (ok) {
+		body[*size] = 0;
+		*out = body;
+	} else {
+		if (body)
+			wipe_stream_request(body, *size);
+		free(body);
+	}
+	http_session_free(s);
+	return ok;
 }

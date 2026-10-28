@@ -518,6 +518,10 @@ static void delivered(void *data) {
 		free(result);
 	free(job);
 }
+static void completion_notice(void *unused) {
+	(void)unused;
+	navidrome_star_poll();
+}
 void navidrome_star_poll(void) {
 	pthread_mutex_lock(&mutex);
 	job_t *job = deferred;
@@ -537,6 +541,7 @@ static void *run(void *data) {
 		pthread_mutex_lock(&mutex);
 		deferred = job;
 		pthread_mutex_unlock(&mutex);
+		gui_post_signal(completion_notice, NULL);
 	}
 	pthread_mutex_lock(&mutex);
 	busy = false;

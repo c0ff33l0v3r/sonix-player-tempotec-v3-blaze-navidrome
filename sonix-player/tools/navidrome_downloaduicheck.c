@@ -10,6 +10,11 @@
 #include <assert.h>
 #include <unistd.h>
 
+void power_slow_in_standby(lv_timer_t *timer, uint32_t period) {
+	(void)timer;
+	(void)period;
+}
+void navidromedownloads_set_listener(void (*listener)(void)) { (void)listener; }
 extern const lv_font_t lv_font_unscii_8;
 int32_t ui_panel_width = 320;
 lv_font_t font_ui_14, font_ui_16, font_ui_18, font_ui_20, font_ui_22, font_ui_24, font_ui_24_bold, font_ui_26, font_ui_28, font_ui_32;

@@ -1,6 +1,6 @@
+#include "navidromebrowse.h"
 #include "navidromealbum.h"
 #include "navidromeart.h"
-#include "navidromebrowse.h"
 #include "navidromefavorites.h"
 #include "navidromeofflinebadge.h"
 #include "navidromepage.h"
@@ -21,7 +21,9 @@
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
+#include "src/system/device/power.h"
 #include "src/system/streaming/navidrome.h"
+#include "src/system/streaming/navidromecache.h"
 #include "src/system/streaming/navidromedownloads.h"
 #include "src/system/streaming/navidromeplay.h"
 #include "src/system/streaming/navidromeplaylists.h"
@@ -29,6 +31,7 @@
 #include "src/system/streaming/navidromestars.h"
 #include <limits.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -68,7 +71,7 @@ typedef struct {
 	int page, first, count, total;
 	int return_page, artist_parent;
 	char artist[ND_ID_MAX]; // Owned ancestor identity; never read GUI pages on the worker.
-	unsigned serial;
+	unsigned serial, worker_revision, cache_epoch;
 	nd_library_t library;
 	nd_query_t query;
 	nd_row_t rows[ND_WINDOW];
@@ -88,6 +91,7 @@ static pthread_mutex_t window_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t window_ready = PTHREAD_COND_INITIALIZER;
 static bool worker_started, pending;
 static window_t request;
+static atomic_uint worker_revision;
 static void submit_window(browse_page_t *page);
 static void browse_selection_ui(browse_page_t *p);
 static void browse_album_action(void *user, nd_album_action_t action);
@@ -280,6 +284,21 @@ static void window_done(void *value) {
 	free(result);
 }
 
+static bool window_current(void *data) {
+	window_t *result = data;
+	if (result->worker_revision != atomic_load(&worker_revision) || !nd_cache_io_current(result->cache_epoch))
+		return false;
+	nd_library_t library;
+	if (result->query.favorites)
+		navidrome_favorites_snapshot(&library);
+	else
+		navidrome_library_snapshot(&library);
+	return library.ready && library.epoch == result->library.epoch && library.card_epoch == result->library.card_epoch && library.generation == result->library.generation;
+}
+static bool window_publish(void *data, const char *temp, const char *path) {
+	window_t *result = data;
+	return window_current(data) && navidrome_cache_publish(result->library.epoch, result->library.card_epoch, temp, path);
+}
 static void *read_windows(void *unused) {
 	(void)unused;
 	thread_be_background("navidrome lists");
@@ -296,8 +315,12 @@ static void *read_windows(void *unused) {
 		pending = false;
 		pthread_mutex_unlock(&window_lock);
 		nd_store_t store = {0};
-		bool leased = navidrome_cache_begin(result->library.epoch, result->library.card_epoch);
+		bool cache_io = nd_cache_io_begin(result->cache_epoch);
+		bool leased = cache_io && navidrome_cache_begin(result->library.epoch, result->library.card_epoch);
 		result->ok = leased && nd_store_open_source(&store, result->library.path, result->library.scope, false, false, result->query.favorites);
+		store.current = window_current;
+		store.current_user = result;
+		store.publish_order = window_publish;
 		result->filter_exists = true;
 		if (result->ok && *result->query.filter)
 			result->filter_exists = nd_store_contains(&store, result->library.generation, result->query.filter_kind, result->query.filter);
@@ -319,8 +342,9 @@ static void *read_windows(void *unused) {
                 result->ok = nd_store_album_window(&store, result->library.generation, &result->query,
                     LV_MAX(0, result->offset - (result->restore ? 0 : 2 * result->pitch)), result->pitch,
                     result->disc_pitch, result->rows, &result->count, &result->total, &result->album);
-            else result->ok = nd_store_query(&store, result->library.generation, &result->query, result->first, result->rows, &result->count, &result->total);
-        }
+			else
+				result->ok = nd_store_query_cached(&store, result->library.generation, &result->query, result->first, result->rows, &result->count, &result->total, result->library.writable);
+		}
         if (!result->filter_exists) result->ok = true;
 
 		if (result->ok && result->query.favorites && result->query.kind == ND_TRACKS && result->query.filter[0]) {
@@ -365,6 +389,8 @@ static void *read_windows(void *unused) {
 		}
 		if (leased)
 			navidrome_cache_end();
+		if (cache_io)
+			nd_cache_io_end();
 		if (!gui_post(window_done, result))
 			free(result);
 		pthread_mutex_lock(&window_lock);
@@ -382,6 +408,8 @@ static void submit_window(browse_page_t *p) {
 	p->loading = true;
 	p->submitted = lv_tick_get();
 	p->serial++;
+	atomic_fetch_add(&worker_revision, 1);
+	nd_store_cancel_reads();
 	pthread_mutex_lock(&window_lock);
 	memset(&request, 0, sizeof(request));
 	request.page = (int)(p - pages);
@@ -396,6 +424,8 @@ static void submit_window(browse_page_t *p) {
 		}
 	}
 	request.serial = p->serial;
+	request.worker_revision = atomic_load(&worker_revision);
+	request.cache_epoch = nd_cache_epoch();
 	request.alternate = navidromealbum_enabled() && p->query.kind == ND_TRACKS && p->query.filter_kind == ND_ALBUMS && *p->query.filter;
 	request.layout_revision = navidromealbum_revision();
 	request.pitch = pitch; request.disc_pitch = ui_px(ND_ALBUM_DISC_HEIGHT);
@@ -518,6 +548,8 @@ static void unloaded(lv_event_t *e) {
 	browse_page_t *p = lv_event_get_user_data(e);
 	navidromeofflinebadge_release(&p->offline);
 	p->serial++;
+	atomic_fetch_add(&worker_revision, 1);
+	nd_store_cancel_reads();
 	p->loading = false;
 	p->map_bound = false;
 	azindex_set_rows(p->index, NULL, 0, false);
@@ -693,6 +725,8 @@ bool navidromebrowse_album(const char *id, const char *title) {
 	lv_obj_scroll_to_y(p->list, 0, LV_ANIM_OFF);
 	if (lv_screen_active() == p->screen) {
 		p->serial++;
+		atomic_fetch_add(&worker_revision, 1);
+		nd_store_cancel_reads();
 		p->loading = false;
 		release_art(p);
 		navidromealbum_release(&p->album);
@@ -726,6 +760,8 @@ bool navidromebrowse_artist(const char *id, const char *title) {
 	lv_obj_scroll_to_y(p->list, 0, LV_ANIM_OFF);
 	if (lv_screen_active() == p->screen) {
 		p->serial++;
+		atomic_fetch_add(&worker_revision, 1);
+		nd_store_cancel_reads();
 		p->loading = false;
 		release_art(p);
 		navidromealbum_release(&p->album);
@@ -1051,6 +1087,8 @@ static void browse_sort_pick(void *value) {
 	}
 	p->query.order = order;
 	p->serial++;
+	atomic_fetch_add(&worker_revision, 1);
+	nd_store_cancel_reads();
 	p->map_ready = p->map_bound = false;
 	azindex_set_rows(p->index, NULL, 0, false);
 	p->count = p->total = 0;
@@ -1199,6 +1237,7 @@ void navidromebrowse_init(gui_config_t *cfg) {
 		player_sheet_attach_drag(p->list, true);
 	}
 	browse_timer = lv_timer_create(tick, 100, NULL);
+	power_pause_in_standby(browse_timer);
 	lv_timer_pause(browse_timer);
 }
 
