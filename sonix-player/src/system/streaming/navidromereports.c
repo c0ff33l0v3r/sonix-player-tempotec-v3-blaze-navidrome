@@ -33,7 +33,7 @@ static atomic_bool stopping;
 static pthread_t worker;
 static bool started;
 static lv_timer_t *timer;
-static atomic_int wake_fd = ATOMIC_VAR_INIT(-1);
+static atomic_int wake_fd = -1;
 static atomic_uint wake_users;
 static void close_doorbell(void) {
 	int fd = atomic_exchange(&wake_fd, -1);
