@@ -88,6 +88,7 @@ void thread_be_background(const char *name) {
 	scheduler_worker_gate();
 #endif
 }
+void thread_be_low_priority(const char *name) { thread_be_background(name); }
 const char *navidrome_validate(const char *host, const char *user, const char *password, char normalized[ND_HOST_MAX]) {
 	(void)user;
 	(void)password;

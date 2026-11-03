@@ -9,6 +9,9 @@ typedef bool (*nd_audio_current_cb)(void *user);
 typedef void (*nd_audio_ready_cb)(const char *path, void *user);
 const char *nd_audio_fetch(const nd_library_t *library, const nd_context_t *context, const nd_playrow_t *track, bool progressive_start, nd_audio_current_cb current, nd_audio_ready_cb ready, void *user);
 void nd_audio_cancel(void);
+// Optional in standalone audio fixtures. Only the current progressive transfer
+// path can publish a sample; milliseconds=-1 revokes unknown headroom.
+void nd_audio_artwork_headroom(const char *path, int milliseconds) __attribute__((weak));
 void nd_audio_protect(const char *const paths[3]);
 bool nd_audio_owns(const char *path);
 // Source binding is independent of disposable-file ownership.

@@ -310,7 +310,7 @@ static void search_cover_regression(search_page_t *p, const nd_library_t *lib) {
 	for (int i = 0; i < p->data.count; i++)
 		footer_geometry(p->details[i], p->durations[i], NULL, p->data.rows[i].duration);
 	lv_obj_t *widget = p->rows[1];
-	void *pixels = p->art[1].pixels;
+	void *pixels = p->thumbs[1].cover.pixels;
 	assert(pixels);
 	nd_search_result_t *next = malloc(sizeof(*next));
 	assert(next);
@@ -324,7 +324,7 @@ static void search_cover_regression(search_page_t *p, const nd_library_t *lib) {
 	p->data = *next;
 	free(next);
 	search_paint_rows(p);
-	assert(p->rows[0] == widget && p->art[0].pixels == pixels);
+	assert(p->rows[0] == widget && p->thumbs[0].cover.pixels == pixels);
 	assert_cover_rendered(p->images[0]);
 	navidromesearch_refresh();
 	strcpy(search_query, "fixture");

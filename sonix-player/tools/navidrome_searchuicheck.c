@@ -249,7 +249,8 @@ int main(int argc, char **argv) {
 	}
 	assert(search_pages[0].data.total == 17000 && !keyboard_is_visible(search_keyboard));
 	assert(lv_obj_get_height(search_pages[0].rows[0]) == ui_px(100));
-	assert(lv_obj_get_width(search_pages[0].images[0]) == ui_px(ND_ART_THUMB_SIZE));
+	assert(lv_obj_get_width(search_pages[0].thumbs[0].frame) == ui_px(ND_ART_THUMB_SIZE));
+	assert(lv_obj_get_width(search_pages[0].images[0]) == ui_px(32));
 	assert(lv_image_get_inner_align(search_pages[0].images[0]) == LV_IMAGE_ALIGN_CONTAIN);
 	unsigned selections_before = playback_selections;
 	search_tap(display, search_pages[0].rows[0]);

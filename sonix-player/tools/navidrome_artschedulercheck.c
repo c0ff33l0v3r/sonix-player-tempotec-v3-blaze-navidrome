@@ -11,6 +11,7 @@
 #include "src/gui/streaming/navidromethumb.h"
 #include <limits.h>
 #include <poll.h>
+#include <dlfcn.h>
 static pthread_mutex_t gate_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t gate_changed = PTHREAD_COND_INITIALIZER;
 static bool gate_open;
@@ -27,9 +28,10 @@ static void open_gate(void) {
 	pthread_mutex_unlock(&gate_lock);
 }
 static bool decode_gated;
-static atomic_int active_decoders, active_requests;
+static atomic_int active_decoders, active_requests, total_decoders;
 static unsigned decode_entered, decode_released;
 static void scheduler_decode_gate(void) {
+	atomic_fetch_add(&total_decoders, 1);
 	assert(atomic_fetch_add(&active_decoders, 1) == 0);
 	pthread_mutex_lock(&gate_lock);
 	if (decode_gated) {
@@ -108,6 +110,29 @@ static bool always(void *unused) {
 	(void)unused;
 	return true;
 }
+static atomic_bool sampling;
+static atomic_int sample_headroom;
+static void *headroom_samples(void *unused) {
+	(void)unused;
+	void *module = NULL;
+	void (*step)(void) = NULL, (*end)(void) = NULL;
+	const char *probe = getenv("SONIX_ART_PCM_PROBE");
+	if (probe) {
+		module = dlopen(probe, RTLD_NOW | RTLD_LOCAL);
+		assert(module && "PCM probe must load without interposing artwork symbols");
+		void (*begin)(void) = (void (*)(void))dlsym(module, "art_pcm_begin");
+		step = (void (*)(void))dlsym(module, "art_pcm_step"); end = (void (*)(void))dlsym(module, "art_pcm_end");
+		assert(begin && step && end); begin();
+	}
+	while (atomic_load(&sampling)) {
+		if (step) step();
+		if (streamturn_artwork_headroom && streamturn_playback_token)
+			streamturn_artwork_headroom(streamturn_playback_token(), atomic_load(&sample_headroom));
+		usleep(20000);
+	}
+	if (end) { end(); dlclose(module); }
+	return NULL;
+}
 static void display_flush(lv_display_t *d, const lv_area_t *a, uint8_t *p) {
 	(void)a;
 	(void)p;
@@ -141,7 +166,161 @@ int main(int argc, char **argv) {
 	art_slot_t seed = fixture_bind("cached", 48, true);
 	fetch("cached", 48, true, true);
 	navidromeart_release(0);
-	if (!strcmp(mode, "cached")) {
+#ifdef NAVIDROME_ART_FOLLOWUP
+	if (!strncmp(mode, "prepared-", 9)) {
+		open_gate();
+		navidromeart_request(0, &seed.library, "cached", 48);
+		assert(take_until(0, 2));
+		char source[1200], prepared_path[1200], directory[1100];
+		assert(prepared_names(&slots[0], source, prepared_path, directory));
+		int count = atomic_load(&total_decoders);
+		if (!strcmp(mode, "prepared-corrupt")) {
+			int fd = open(prepared_path, O_RDWR); assert(fd >= 0);
+			unsigned char byte; assert(pread(fd, &byte, 1, PREP_HEADER) == 1); byte ^= 0x40;
+			assert(pwrite(fd, &byte, 1, PREP_HEADER) == 1); close(fd);
+		} else if (!strcmp(mode, "prepared-revision")) {
+			struct stat st; assert(!stat(source, &st));
+			struct timespec times[2] = {st.st_atim, st.st_mtim}; times[1].tv_sec++;
+			assert(!utimensat(AT_FDCWD, source, times, 0));
+		} else if (!strcmp(mode, "prepared-readonly")) {
+			seed.library.writable = false; online = false;
+		} else if (!strcmp(mode, "prepared-render")) {
+			cold();
+			navidromeart_request(0, &seed.library, "cached", 64);
+			assert(take_until(0, 2)); assert(atomic_load(&total_decoders) == count + 1);
+			cold(); count++;
+		} else if (!strcmp(mode, "prepared-publication")) {
+			assert(!unlink(prepared_path)); publish_ok = false;
+		} else if (!strcmp(mode, "prepared-unpublished")) {
+			assert(!unlink(prepared_path));
+			int fd = open(source, O_WRONLY); assert(fd >= 0);
+			unsigned char corrupt[8] = {0}; assert(pwrite(fd, corrupt, sizeof(corrupt), ART_HEADER) == sizeof(corrupt)); close(fd);
+			cold(); publish_ok = false;
+			navidromeart_request(0, &seed.library, "cached", 48);
+			assert(take_until(0, 3));
+			assert(access(prepared_path, F_OK) && "unpublished replacement must not inherit older source revision");
+			count = atomic_load(&total_decoders);
+		} else if (!strcmp(mode, "prepared-budget")) {
+			char garbage[1240]; snprintf(garbage, sizeof(garbage), "%s/%032d.img.tmp", directory, 7);
+			int fd = open(garbage, O_CREAT | O_WRONLY, 0600); assert(fd >= 0);
+			assert(!ftruncate(fd, ART_BUDGET)); close(fd);
+			struct timespec old[2] = {{.tv_sec = 1}, {.tv_sec = 1}}; assert(!utimensat(AT_FDCWD, garbage, old, 0));
+			navidromeart_request(0, &seed.library, "cached", 64);
+			assert(take_until(0, 2));
+			assert(access(garbage, F_OK));
+			DIR *dir = opendir(directory); assert(dir); size_t used = 0; struct dirent *entry;
+			while ((entry = readdir(dir))) if (cache_name(entry->d_name)) {
+				char name[1500]; struct stat st; snprintf(name, sizeof(name), "%s/%s", directory, entry->d_name);
+				assert(!lstat(name, &st) && S_ISREG(st.st_mode)); used += st.st_size;
+			}
+			closedir(dir); assert(used <= ART_BUDGET); count++;
+		}
+		navidromeart_request(0, &seed.library, "cached", 48);
+		assert(take_until(0, 2));
+		bool must_decode = !strcmp(mode, "prepared-corrupt") || !strcmp(mode, "prepared-revision") || !strcmp(mode, "prepared-publication") || !strcmp(mode, "prepared-unpublished");
+		assert(atomic_load(&total_decoders) == count + (must_decode ? 1 : 0));
+	} else if (!strcmp(mode, "binding-ui")) {
+		font_ui_14 = lv_font_unscii_8; lv_init(); lv_style_init(&theme_style_icon);
+		lv_display_t *d = lv_display_create(ui_panel_width, atoi(argv[5]));
+		static uint32_t pixels[480 * 32];
+		lv_display_set_buffers(d, pixels, NULL, sizeof(pixels), LV_DISPLAY_RENDER_MODE_PARTIAL);
+		lv_display_set_flush_cb(d, display_flush);
+		lv_obj_t *row = lv_obj_create(lv_screen_active()); lv_obj_set_size(row, 200, 100);
+		nd_thumb_t thumbs[2] = {0};
+		open_gate();
+		for (int i = 0; i < 2; i++) {
+			navidromethumb_init(&thumbs[i], row, i);
+			navidromethumb_bind(&thumbs[i], &seed.library, 1, "cached");
+		}
+		double until = now() + 3;
+		while ((!thumbs[0].finished || !thumbs[1].finished) && now() < until) {
+			for (int i = 0; i < 2; i++) navidromethumb_tick(&thumbs[i]);
+			usleep(1000);
+		}
+		assert(thumbs[0].cover.pixels && thumbs[1].cover.pixels && thumbs[0].cover.pixels != thumbs[1].cover.pixels);
+		int count = atomic_load(&total_decoders); unsigned serial = slots[0].serial;
+		for (int i = 0; i < 20; i++) { navidromethumb_bind(&thumbs[0], &seed.library, 1, "cached"); navidromethumb_repaint(&thumbs[0]); }
+		assert(slots[0].serial == serial && atomic_load(&total_decoders) == count);
+		nd_thumb_t swap = thumbs[0]; thumbs[0] = thumbs[1]; thumbs[1] = swap;
+		for (int i = 0; i < 2; i++) { navidromethumb_repaint(&thumbs[i]); assert(lv_image_get_src(thumbs[i].image) == &thumbs[i].cover.dsc); }
+		void *retained = thumbs[1].cover.pixels;
+		navidromethumb_release(&thumbs[0]);
+		assert(lv_image_get_src(thumbs[0].image) == &icon_music_note && thumbs[1].cover.pixels == retained);
+		navidromethumb_bind(&thumbs[0], &seed.library, 1, "held"); scheduler_control("wait=held");
+		navidromethumb_bind(&thumbs[0], &seed.library, 1, "cached"); scheduler_control("closed=held"); scheduler_control("release=held");
+		until = now() + 2;
+		while (!thumbs[0].finished && now() < until) { navidromethumb_tick(&thumbs[0]); usleep(1000); }
+		assert(thumbs[0].cover.pixels && thumbs[1].cover.pixels == retained);
+		maintenance++; serial = slots[thumbs[0].slot].serial;
+		navidromethumb_bind(&thumbs[0], &seed.library, 1, "cached");
+		assert(thumbs[0].finished && !thumbs[0].cover.pixels && !slots[thumbs[0].slot].pending);
+		navidromethumb_bind(&thumbs[0], &seed.library, 1, "cached"); assert(slots[thumbs[0].slot].serial == serial + 1);
+		for (int i = 0; i < 2; i++) navidromethumb_release(&thumbs[i]);
+		lv_obj_delete(row); lv_display_delete(d); lv_deinit();
+	} else
+#endif
+	if (!strcmp(mode, "buffered") || !strcmp(mode, "buffered-preempt")) {
+		assert(streamturn_acquire_current(always, NULL));
+		sampling = true;
+		sample_headroom = 10000;
+		pthread_t samples;
+		assert(!pthread_create(&samples, NULL, headroom_samples, NULL));
+		open_gate();
+		bool held = !strcmp(mode, "buffered-preempt");
+		navidromeart_request_player(&seed.library, held ? "held" : "buffered-player", 128, 0, 0);
+		if (held) {
+			scheduler_control("wait=held");
+			sample_headroom = 1000;
+			scheduler_control("closed=held");
+			sample_headroom = 10000;
+			scheduler_control("release=held");
+		}
+		bool ok = take_until(ND_ART_PLAYER_SLOT, 3);
+		sampling = false;
+		pthread_join(samples, NULL);
+		bool idle;
+		streamturn_observe_playback(&idle);
+		assert(!idle && "audio turn must remain active until cover delivery");
+		streamturn_release();
+		assert(ok && "buffered player cover must finish before audio transfer ends");
+	} else if (!strcmp(mode, "headroom-boundaries")) {
+		assert(streamturn_acquire_current(always, NULL));
+		unsigned token = streamturn_playback_token();
+		bool eligible;
+		streamturn_observe_artwork(true, &eligible); assert(!eligible);
+		streamturn_artwork_headroom(token, 7999);
+		streamturn_observe_artwork(true, &eligible); assert(!eligible);
+		streamturn_artwork_headroom(token, 8000);
+		streamturn_observe_artwork(true, &eligible); assert(eligible);
+		streamturn_observe_artwork(false, &eligible); assert(!eligible);
+		streamturn_artwork_headroom(token, 4001);
+		streamturn_observe_artwork(true, &eligible); assert(eligible);
+		streamturn_artwork_headroom(token, 4000);
+		streamturn_observe_artwork(true, &eligible); assert(!eligible);
+		streamturn_artwork_headroom(token + 1, 9000);
+		streamturn_observe_artwork(true, &eligible); assert(!eligible);
+		streamturn_artwork_headroom(token, 9000);
+		streamturn_artwork_urgent();
+		streamturn_observe_artwork(true, &eligible); assert(!eligible);
+		streamturn_artwork_headroom(token, 9000);
+		usleep(550000); // Deliberately cross the declared freshness deadline.
+		streamturn_observe_artwork(true, &eligible); assert(!eligible);
+		streamturn_artwork_headroom(token, -1);
+		streamturn_observe_artwork(true, &eligible); assert(!eligible);
+		streamturn_release();
+		assert(streamturn_acquire_current(always, NULL));
+		streamturn_artwork_headroom(token, 9000);
+		streamturn_observe_artwork(true, &eligible); assert(!eligible);
+		streamturn_release();
+	} else if (!strcmp(mode, "warm")) {
+		open_gate();
+		navidromeart_request(0, &seed.library, "cached", 48);
+		assert(take_until(0, 2));
+		int decodes = atomic_load(&total_decoders);
+		navidromeart_request(0, &seed.library, "cached", 48);
+		assert(take_until(0, 2));
+		assert(atomic_load(&total_decoders) == decodes && "prepared hit must not decode compressed source again");
+	} else if (!strcmp(mode, "cached")) {
 		open_gate();
 		navidromeart_request(0, &seed.library, "held", 48);
 		scheduler_control("wait=held");
@@ -307,7 +486,9 @@ int main(int argc, char **argv) {
 		await_decode(1);
 		navidromeart_request(0, &seed.library, "cached", 48);
 		for (unsigned n = 1; n <= 12; n++) {
-			navidromeart_request_player(&seed.library, "cached", 48, 0, 0);
+			// Distinct render sizes keep this a ready-decode fairness test;
+			// repeated prepared hits intentionally do not enter the decoder.
+			navidromeart_request_player(&seed.library, "cached", 48 + (int)n, 0, 0);
 			release_decode(n);
 			await_decode(n + 1);
 			pthread_mutex_lock(&art_lock);

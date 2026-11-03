@@ -133,6 +133,7 @@ const char *tr(const char *s) {
 	return s;
 }
 void nd_wipe(void *p, size_t n) { memset(p, 0, n); }
+unsigned nd_cache_epoch(void) { return 1; } // This isolated UI fixture has no Clear operation.
 bool navidrome_context(nd_context_t *out, bool network) {
 	(void)network;
 	*out = life;

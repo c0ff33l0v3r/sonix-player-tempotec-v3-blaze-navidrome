@@ -429,7 +429,14 @@ network worker lets cached covers and thumbnails finish while an unrelated
 remote image is slow. Playback can interrupt artwork acquisition; a still-visible
 thumbnail or player request resumes after playback transfer demand settles,
 without scrolling or reopening the page. Genuine failures retain their cooldown.
-Local decoding stays serialized and at low priority. This change does not
+Visible workers use the same nice-10 policy as Music; local decoding stays
+serialized. Prepared RGB565 thumbnails and player cover/backdrop pairs reuse
+Music’s pixel I/O behind Navidrome-specific identity and lifecycle checks. Their
+validated records share the existing 32-MiB artwork budget with encoded sources.
+Warm hits avoid compressed decoding. Current-player acquisition can also proceed
+while the active audio reader reports fresh sufficient buffered media; startup,
+seek, low-buffer and stale observations defer it again. Scrolling coalesces new
+viewport demand while useful metadata reads finish. This change does not
 establish a fix for audio cuts; Blaze latency and playback overhead still require
 paired device checks. Focused regression commands and their limits are documented
 in [the artwork test runbook](sonix-player/tools/navidrome-artwork-tests.md).

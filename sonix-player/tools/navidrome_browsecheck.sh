@@ -36,3 +36,6 @@ ${CC:-cc} -DNAVIDROME_NATIVE_SORT_ICONS -I"$check_dir" -std=gnu11 -Wall -Wextra 
     -Wl,--wrap=http_finite_request,--wrap=http_request,--wrap=http_last_error,--wrap=http_clear_request_metadata,--wrap=http_url_encode,--wrap=http_file_open -Wl,--gc-sections,--wrap=rename,--wrap=fsync,--wrap=unlink -o "$check_dir/check"
 SONIX_CHECK_WIDTH=320 "$check_dir/check"
 SONIX_CHECK_WIDTH=480 "$check_dir/check"
+if [ "${SONIX_SCROLL_CHECK_THREE_SIZES:-0}" = 1 ]; then
+    SONIX_CHECK_WIDTH=480 SONIX_CHECK_HEIGHT=720 "$check_dir/check"
+fi

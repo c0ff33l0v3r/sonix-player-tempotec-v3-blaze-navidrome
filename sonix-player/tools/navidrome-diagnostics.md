@@ -165,3 +165,11 @@ foreground-only artwork gate. Existing reporting observation stays independent.
 Use [the artwork test runbook](navidrome-artwork-tests.md) for deterministic
 ordering/recovery checks and separate device acceptance. No new whole-device
 latency or audio-cut claim follows from these host fixtures.
+
+Prepared RGB565 reuse reports artwork `cache_hit kind=1`; encoded-source reuse
+retains its existing classification. A prepared hit avoids compressed decoding,
+so interpret decode counts separately from source hits. Current-player admission
+can proceed during a foreground transfer only with fresh matching buffered-media
+observations (8000-ms admission, 4000-ms revocation, 500-ms freshness). Unknown or
+stale observations remain deferred; a priority wait is not by itself proof of CPU
+starvation. Source/network/decode durations remain wall times, not CPU samples.

@@ -3868,6 +3868,7 @@ static struct {
 	char scope[33], id[ND_ID_MAX];
 	int size, backdrop_w, backdrop_h;
 } navidrome_cover_key;
+static unsigned navidrome_cover_policy;
 static void refresh_cover(const char *filepath) {
 	if (!cover_img)
 		return;
@@ -3885,6 +3886,7 @@ static void refresh_cover(const char *filepath) {
 			cover_drop_current(true);
 		backdrop_is_studio = layout_studio_now;
 		bool same = navidrome_cover_key.bound && navidrome_cover_key.epoch == library.epoch &&
+			navidrome_cover_policy == cover_render_policy() &&
 			navidrome_cover_key.card == library.card_epoch && !strcmp(navidrome_cover_key.scope, library.scope) &&
 			!strcmp(navidrome_cover_key.id, track.row.cover) && navidrome_cover_key.size == size &&
 			navidrome_cover_key.backdrop_w == backdrop_w && navidrome_cover_key.backdrop_h == bh;
@@ -3897,6 +3899,7 @@ static void refresh_cover(const char *filepath) {
 		DIAGNOSTIC_ATTACH(cover_diagnostic);
 		navidromeart_release(ND_ART_PLAYER_SLOT);
 		navidrome_cover_key.bound = true;
+		navidrome_cover_policy = cover_render_policy();
 		navidrome_cover_key.epoch = library.epoch;
 		navidrome_cover_key.card = library.card_epoch;
 		snprintf(navidrome_cover_key.scope, sizeof(navidrome_cover_key.scope), "%s", library.scope);
