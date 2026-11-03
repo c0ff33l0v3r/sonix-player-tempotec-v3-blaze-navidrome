@@ -39,7 +39,7 @@ ${CC:-cc} $baseline_flags -DNAVIDROME_BROWSE_SOURCE=\"${SONIX_BROWSE_SOURCE:-src
     tools/navidrome_playlistuicheck.c tools/navidrome_test_support.c src/system/streaming/navidromemembership.c "$check_dir/download-icon.c" lvgl/src/font/lv_font_unscii_8.c \
     src/system/streaming/navidromedebug.c src/system/device/workactivity.c src/system/streaming/navidrome.c src/system/streaming/navidromeapi.c src/system/streaming/navidromebatch.c \
     src/system/streaming/navidromeplaycatalog.c src/system/streaming/navidromeplaylists.c src/system/streaming/navidromeplayliststore.c src/system/core/sha256.c \
-    src/system/streaming/navidromedownloadstore.c \
+    src/system/streaming/navidromedownloadstore.c src/system/library/filepublication.c \
     src/system/streaming/navidromestars.c src/system/streaming/navidromestore.c src/system/streaming/navidromelibrary.c \
     src/system/streaming/navidromecrypto.c src/system/streaming/navidromevault.c \
     src/system/net/gzip.c src/system/image/png_scaled.c src/gb/miniz/miniz.c src/system/net/http.c src/system/net/tls.c src/system/core/json.c src/system/core/md5.c "$check_sqlite" \

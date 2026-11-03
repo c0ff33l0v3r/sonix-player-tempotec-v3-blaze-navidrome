@@ -4,6 +4,7 @@
 #include "navidrome_owned_fixture.h"
 #include "src/system/decode/decode.h"
 #include "src/system/device/workactivity.h"
+#include "src/system/library/filepublication.h"
 #include "src/system/library/metadata.h"
 #include "src/system/streaming/navidromeaudio.h"
 #include "src/system/streaming/navidromedownloads.h"
@@ -33,11 +34,25 @@ static pthread_mutex_t posts_lock = PTHREAD_MUTEX_INITIALIZER;
 static void (*posts[32])(void *);
 static void *post_users[32];
 static int post_count;
-static bool captured, capture_ok, unsupported, reject_posts, after_rename;
+static bool captured, capture_ok, unsupported, publication_error, reject_posts, after_rename;
 static int expected = 2;
+static atomic_bool copy_failed, copy_entered, copy_released;
+static atomic_int publication_commits;
+static char protected_copy[ND_DL_PATH], retained_stage[ND_DL_PATH];
 static int callback_skipped;
 static char destination[256] = "Music/Navidrome";
 static char mode[40];
+static atomic_bool screen_entered, screen_released;
+static bool screen_dark;
+void fixture_screen_off(void);
+void fixture_screen_on(void);
+static void screen_phase(const char *phase) {
+	if (strcmp(mode, phase) || atomic_exchange(&screen_entered, true))
+		return;
+	assert(work_activity_busy() && !work_activity_suspend_begin());
+	while (!atomic_load(&screen_released))
+		usleep(1000);
+}
 static int64_t saved_playlist;
 static bool changed_saved;
 static fixture_owned_t *search_rows;
@@ -81,6 +96,39 @@ static bool own_partial(int fd) {
 }
 ssize_t __real_write(int, const void *, size_t);
 ssize_t __wrap_write(int fd, const void *data, size_t n) {
+	if (own_partial(fd))
+		screen_phase("screen_network");
+	else if (!strcmp(mode, "screen_copy")) {
+		char link[64], name[1024];
+		snprintf(link, sizeof(link), "/proc/self/fd/%d", fd);
+		ssize_t size = readlink(link, name, sizeof(name) - 1);
+		if (size >= 0) {
+			name[size] = 0;
+			if (strstr(name, "/Track 1.wav"))
+				screen_phase("screen_copy");
+		}
+	}
+	if ((!strcmp(mode, "copy_retry") || !strcmp(mode, "copy_pause") || !strcmp(mode, "copy_cancel") || !strcmp(mode, "copy_stop")) && !atomic_load(&copy_failed)) {
+		char link[64], name[1024];
+		snprintf(link, sizeof(link), "/proc/self/fd/%d", fd);
+		ssize_t size = readlink(link, name, sizeof(name) - 1);
+		if (size >= 0) {
+			name[size] = 0;
+			if (strstr(name, "/Track 1.wav")) {
+				assert(work_activity_busy() && !navidromedownloads_network_wanted());
+				atomic_store(&copy_failed, true);
+				if (strcmp(mode, "copy_retry")) {
+					atomic_store(&copy_entered, true);
+					while (!atomic_load(&copy_released))
+						usleep(1000);
+					errno = ECANCELED;
+					return -1;
+				}
+				errno = ENOSPC;
+				return -1;
+			}
+		}
+	}
 	if (!strcmp(mode, "write_fail") && own_partial(fd)) {
 		errno = ENOSPC;
 		return -1;
@@ -117,6 +165,11 @@ void metadata_read(const char *path, song_metadata_t *out) {
 decode_format_t decode_detect_format(const char *path) {
 	(void)path;
 	return DECODE_FORMAT_UNKNOWN;
+}
+decoder_t *decoder_open_info_owned_staging(const char *p, decode_format_t f) {
+	(void)p;
+	(void)f;
+	return NULL;
 }
 decoder_t *decoder_open_info(const char *p, decode_format_t f) {
 	(void)p;
@@ -215,14 +268,34 @@ const char *navidrome_validate(const char *host, const char *u, const char *p, c
 	return NULL;
 }
 int nd_download_publish_test_call(int directory, const char *part, const char *final) {
-	if (unsupported) {
-		errno = EOPNOTSUPP;
+	if (unsupported || publication_error) {
+		errno = publication_error ? EIO : EOPNOTSUPP;
 		return -1;
 	}
 	int rc = syscall(SYS_renameat2, directory, part, directory, final, 1U);
 	if (!rc && after_rename && !strncmp(part, ".nd-", 4))
 		alive = false;
 	return rc;
+}
+bool fp_test_commit(bool after) {
+	// Production journal callbacks run under real worker activity, including
+	// after transport has closed. No GUI timer or network keepalive is needed.
+	assert(work_activity_busy() && !work_activity_suspend_begin());
+	assert(!navidromedownloads_network_wanted());
+	if (!after && !strncmp(mode, "screen_", 7)) {
+		int phase = atomic_fetch_add(&publication_commits, 1);
+		if (phase == 0)
+			screen_phase("screen_intent");
+		if (phase == 1)
+			screen_phase("screen_owned");
+		if (phase == 2)
+			screen_phase("screen_complete");
+	}
+	if (after && !strcmp(mode, "after_complete") && atomic_fetch_add(&publication_commits, 1) == 2) {
+		alive = false; // crash/credential invalidation after durable COMPLETE
+		return false;  // acknowledgement was lost; account association not done
+	}
+	return true;
 }
 static double now(void) {
 	struct timespec t;
@@ -374,9 +447,9 @@ int main(int argc, char **argv) {
 	snprintf(mode, sizeof(mode), "%s", argv[3]);
 	if (!strcmp(mode, "root"))
 		destination[0] = 0;
-	unsupported = !strcmp(mode, "unsupported");
+	unsupported = !strncmp(mode, "screen_", 7) || getenv("NAVIDROME_FORCE_COMPAT") || !strcmp(mode, "unsupported") || !strcmp(mode, "copy_retry") || !strcmp(mode, "copy_pause") || !strcmp(mode, "copy_cancel") || !strcmp(mode, "copy_stop") || !strcmp(mode, "after_complete");
 	if (!strcmp(mode, "large_batch") || !strcmp(mode, "playlist_large")) {
-		unsupported = true;
+		publication_error = true;
 		expected = !strcmp(mode, "large_batch") ? 17000 : 2;
 	}
 	reject_posts = !strcmp(mode, "reject_post");
@@ -579,10 +652,52 @@ int main(int argc, char **argv) {
 		expected = 1; // The first completed job is hidden; the second keeps running.
 	}
 	for (;;) {
-		pump();
+		if (atomic_load(&screen_entered) && !atomic_load(&screen_released)) {
+			fixture_screen_off();
+			screen_dark = true;
+			atomic_store(&screen_released, true);
+		}
+		if (!screen_dark)
+			pump();
 		counts(values);
 		bool finished;
-		if (!strcmp(mode, "after_rename"))
+		if (atomic_load(&copy_entered) && !atomic_load(&copy_released)) {
+            if (!strcmp(mode, "copy_stop")) {
+                // Inject the context retirement/cancellation boundary shared by
+                // credential Lock and shutdown; execute no host power action.
+                alive = false;
+                navidromedownloads_cancel();
+                atomic_store(&copy_released, true);
+                navidromedownloads_shutdown();
+            } else {
+                submit(!strcmp(mode, "copy_pause") ? NDDL_PAUSE : NDDL_CANCEL);
+                atomic_store(&copy_released, true);
+            }
+		}
+		if (!strcmp(mode, "copy_pause") && values[NDDL_PAUSED] == 2 && !work_activity_busy()) {
+			submit(NDDL_RESUME);
+			finished = false;
+			strcpy(mode, "copy_resumed");
+		} else if (!strcmp(mode, "copy_stop")) {
+            finished = atomic_load(&copy_released) && !work_activity_busy();
+        } else if (!strcmp(mode, "copy_cancel")) {
+			finished = values[NDDL_CANCELLED] == 2 && !work_activity_busy();
+		} else if (!strcmp(mode, "copy_retry") && atomic_load(&copy_failed) && values[NDDL_PAUSED] > 0 && !work_activity_busy()) {
+			nd_dl_store_t store;
+			nd_dl_job_t job;
+			assert(nd_dl_open(&store, &library, false) && nd_dl_get(&store, 1, &job));
+			assert(snprintf(protected_copy, sizeof(protected_copy), "%s/%s", argv[2], job.path) < (int)sizeof(protected_copy));
+			assert(snprintf(retained_stage, sizeof(retained_stage), "%s/%s", argv[2], job.partial) < (int)sizeof(retained_stage));
+			nd_dl_close(&store);
+			assert(!access(retained_stage, F_OK) && fp_read_begin(protected_copy) < 0);
+			// No server access is possible on Retry. It must use the saved,
+			// already validated staging and a different final filename.
+			online = false;
+			expected = 1;
+			strcpy(mode, "copy_retried");
+			submit(NDDL_RETRY);
+			finished = false;
+		} else if (!strcmp(mode, "after_rename") || !strcmp(mode, "after_complete"))
 			finished = !alive && values[NDDL_INTENT] == 1 && !navidromedownloads_network_wanted();
 		else if (!strcmp(mode, "partial_retry") && values[NDDL_FAILED] == 1 && values[NDDL_COMPLETE] == 1) {
 			submit(NDDL_RETRY);
@@ -596,7 +711,7 @@ int main(int argc, char **argv) {
 			finished = values[NDDL_PAUSED] == 2;
 		else if (!strcmp(mode, "cancel") || !strcmp(mode, "preempt") || !strcmp(mode, "preempt_headers"))
 			finished = values[NDDL_CANCELLED] == 2;
-		else if (!strcmp(mode, "playlist_badmeta") || !strcmp(mode, "error") || !strcmp(mode, "truncated") || !strcmp(mode, "oversize") || unsupported || !strcmp(mode, "json") || !strcmp(mode, "html") || !strcmp(mode, "chunk_bad") || !strcmp(mode, "gzip") || !strcmp(mode, "unknown_limit") || !strcmp(mode, "auth") || !strcmp(mode, "write_fail") || !strcmp(mode, "flush_fail") || !strcmp(mode, "full"))
+		else if (!strcmp(mode, "playlist_badmeta") || !strcmp(mode, "error") || !strcmp(mode, "truncated") || !strcmp(mode, "oversize") || publication_error || !strcmp(mode, "json") || !strcmp(mode, "html") || !strcmp(mode, "chunk_bad") || !strcmp(mode, "gzip") || !strcmp(mode, "unknown_limit") || !strcmp(mode, "auth") || !strcmp(mode, "write_fail") || !strcmp(mode, "flush_fail") || !strcmp(mode, "full"))
 			finished = values[NDDL_FAILED] > 0;
 		else
 			finished = values[NDDL_COMPLETE] == expected;
@@ -608,7 +723,26 @@ int main(int argc, char **argv) {
 		}
 		usleep(2000);
 	}
-	if (!strcmp(mode, "after_rename")) {
+	if (!strcmp(mode, "copy_stop")) {
+        nd_dl_store_t store;
+        nd_dl_job_t job;
+        assert(nd_dl_open(&store, &library, false) && nd_dl_get(&store, 1, &job));
+        assert(job.state == NDDL_INTENT && job.digest[0]);
+        assert(snprintf(protected_copy, sizeof(protected_copy), "%s/%s", argv[2], job.path) < (int)sizeof(protected_copy));
+        assert(fp_read_begin(protected_copy) < 0);
+        nd_dl_close(&store);
+        assert(!leases && !cache_users && !work_activity_busy());
+    }
+	if (!strncmp(mode, "screen_", 7)) {
+		assert(screen_dark && values[NDDL_COMPLETE] == expected);
+		fixture_screen_on();
+		screen_dark = false;
+		pump();
+		nd_dl_view_t *woken = folder_request(NDDL_VIEW, "", NULL);
+		assert(!woken->error[0] && woken->counts[NDDL_COMPLETE] == expected);
+		free(woken);
+	}
+	if (!strcmp(mode, "after_rename") || !strcmp(mode, "after_complete")) {
 		navidromedownloads_shutdown();
 		alive = true;
 		online = false;
@@ -631,6 +765,12 @@ int main(int argc, char **argv) {
 			assert(!access(cache_paths[0], F_OK) && !access(cache_paths[1], F_OK));
 		char path[512];
 		assert(nd_download_resolve(&library, &context, "track/1?", path));
+		if (!strcmp(mode, "copy_retried")) {
+			assert(strcmp(path, protected_copy));
+			struct stat incomplete;
+			assert(!stat(protected_copy, &incomplete) && incomplete.st_size == 0);
+			assert(fp_read_begin(protected_copy) < 0 && !access(retained_stage, F_OK));
+		}
 		if (!strcmp(mode, "same_title")) {
 			char other[ND_DL_PATH];
 			assert(strstr(path, "/Same title.wav"));

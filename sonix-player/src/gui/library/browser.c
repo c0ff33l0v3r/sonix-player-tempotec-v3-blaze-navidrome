@@ -1,4 +1,5 @@
 #include "browser.h"
+#include "src/system/library/filepublication.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -1138,12 +1139,19 @@ static void listing_place_tracks(const char *path, listing_t *list) {
 // in it, as the browser lists them. `sheets` is a buffer for parsing its cue
 // sheets (NULL leaves them unsplit) and `claims` room for CUE_CLAIM_MAX names.
 // False when the folder cannot be opened. Off the UI thread.
+
 static bool list_directory(const char *path, listing_t *out, cue_sheet_t *sheets, char (*claims)[512]) {
 	out->count = 0;
 	out->pool_used = 0;
 
 	DIR *dir = opendir(path);
 	if (!dir) {
+		return false;
+	}
+	fp_guard_t protection;
+	if (!fp_guard_open(&protection, dirfd(dir), false, false)) {
+		fp_guard_close(&protection);
+		closedir(dir);
 		return false;
 	}
 
@@ -1171,6 +1179,10 @@ static bool list_directory(const char *path, listing_t *out, cue_sheet_t *sheets
 			if (!cue_parse(sheet_path, sheets) || sheets->split) {
 				continue; // not a sheet this player can follow: leave the folder as it is
 			}
+			int admission = fp_read_begin(sheets->audio_path);
+			if (admission < 0)
+				continue;
+			fp_admission_end(admission);
 
 			for (int t = 0; t < sheets->track_count; t++) {
 				char file[300];
@@ -1240,6 +1252,12 @@ static bool list_directory(const char *path, listing_t *out, cue_sheet_t *sheets
 		if (!is_dir && !is_playable_file(de->d_name)) {
 			continue; // unplayable files are not listed
 		}
+		if (!is_dir) {
+			bool visible = fp_guard_lookup(&protection, de->d_name) == FP_SAFE;
+			errno = 0;
+			if (!visible)
+				continue;
+		}
 
 		if (!is_dir) {
 			bool claimed = false;
@@ -1276,6 +1294,7 @@ static bool list_directory(const char *path, listing_t *out, cue_sheet_t *sheets
 		fprintf(stderr, "browser: '%s' holds more than %d entries, %zu not shown\n", path, MAX_ENTRIES, skipped);
 	}
 
+	fp_guard_close(&protection);
 	listing_place_tracks(path, out);
 
 	sort_pool = out->pool;

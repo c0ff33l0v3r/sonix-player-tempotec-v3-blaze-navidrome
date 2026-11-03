@@ -25,14 +25,14 @@
   deliberately not inlined: it is 6.5 MB, the page is perfectly readable
   without it, and the browser caches it.
 
-  It talks to the firmware's own six CGI programs, whose paths and parameter
-  names are compiled into them and cannot be changed:
+  It talks to guarded application CGI endpoints. Listing returns X-Sonix-Card;
+  downloads and mutations must send that epoch to reject a replaced card:
 
     GET  list?path=<dir>      -> [{"path","name","ctime"[,"size"]}, ...]
                                  no "size" means it is a directory, and its
                                  "path" ends in "/"; "ctime" is a string
     GET  download?path=<file> -> the file, as an attachment
-    POST upload               -> multipart: "path" + "files[]"
+    POST upload?path=<file>&epoch=<epoch> -> raw application/octet-stream
     POST create               -> urlencoded: "path"
     POST move                 -> urlencoded: "oldPath", "newPath"
     POST delete               -> urlencoded: "path"
@@ -627,12 +627,9 @@ var openMenu = null;
 // .Spotlight-V100 and a ._ twin for every track.
 var showHidden = false;
 
-// The firmware's list.cgi cannot show hidden entries -- it drops any name whose
-// first character is a dot, in compiled code -- so the player publishes its own
-// listing at sonix-list and that is what this asks first. If it is not there (an
-// older player, a document root the symlink could not be made in), the stock one
-// answers and the eye simply has nothing to reveal.
+// All requests use guarded handlers; failures never fall back to stock CGIs.
 var lister = "sonix-list";
+var cardEpoch = "";
 var deviceName = "";
 
 var $ = function (id) { return document.getElementById(id); };
@@ -867,7 +864,8 @@ document.addEventListener("keydown", function (e) {
 
 /* --- talking to the CGIs ------------------------------------------------- */
 
-function post(endpoint, fields) {
+function post(endpoint, fields, epoch) {
+  fields.epoch = epoch === undefined ? cardEpoch : epoch;
   var body = Object.keys(fields).map(function (k) {
     return encodeURIComponent(k) + "=" + encodeURIComponent(fields[k]);
   }).join("&");
@@ -882,21 +880,16 @@ function post(endpoint, fields) {
   });
 }
 
-// One directory, from whichever lister is answering. The first failure of
-// sonix-list is taken as "this player does not have it" and the firmware's own is
-// used from then on -- one probe, not one per navigation.
 function listing(target) {
-  var url = lister + "?path=" + encodeURIComponent(target) +
-            (lister === "sonix-list" && showHidden ? "&hidden=1" : "");
-
+  var url = lister + "?path=" + encodeURIComponent(target) + (showHidden ? "&hidden=1" : "");
   return fetch(url, { cache: "no-store" }).then(function (res) {
-    if (res.ok) { return res.json(); }
-    if (lister === "sonix-list") {
-      lister = "list";
-      updateHiddenButton();
-      return listing(target);
-    }
-    throw new Error("HTTP " + res.status);
+    if (!res.ok) { throw new Error("HTTP " + res.status); }
+    var epoch = res.headers.get("X-Sonix-Card");
+    if (!epoch) { throw new Error("Missing card identity"); }
+    // A picker from a replaced card must not silently retarget existing rows.
+    if (cardEpoch && epoch !== cardEpoch) { window.location.reload(); throw new Error("Card changed"); }
+    cardEpoch = epoch;
+    return res.json();
   });
 }
 
@@ -1063,7 +1056,7 @@ function showMenu(anchor, entry) {
     item("open", "{{js|Apri}}", null, function () { load(entry.path); });
   } else {
     item("download", "{{js|Scarica}}", null, function () {
-      window.location = "download?path=" + encodeURIComponent(entry.path);
+      window.location = "download?path=" + encodeURIComponent(entry.path) + "&epoch=" + encodeURIComponent(cardEpoch);
     });
   }
 
@@ -1192,7 +1185,7 @@ function ensureDirs(job) {
     chain = chain.then(function () {
       if (madeDirs[target]) { return; }
       madeDirs[target] = true;
-      return post("create", { path: target }).catch(function () {});
+      return post("create", { path: target }, job.epoch).catch(function () {});
     });
   });
 
@@ -1212,7 +1205,7 @@ function enqueue(files, fromFolder) {
         toast(fill('{{js|"{1}" non è un formato che il player legge; lo carico comunque.}}', file.name));
       }
     }
-    queue.push({ file: file, dir: path, rel: rel });
+    queue.push({ file: file, dir: path, rel: rel, epoch: cardEpoch });
   });
 
   if (fromFolder && unknown) {
@@ -1250,12 +1243,9 @@ function pump() {
 }
 
 function send(job, card) {
-  var form = new FormData();
-  form.append("path", jobDir(job));
-  form.append("files[]", job.file, job.file.name);
-
   var xhr = new XMLHttpRequest();
-  xhr.open("POST", "upload", true);
+  xhr.open("POST", "upload?path=" + encodeURIComponent(jobDir(job) + job.file.name) + "&epoch=" + encodeURIComponent(job.epoch), true);
+  xhr.setRequestHeader("Content-Type", "application/octet-stream");
 
   xhr.upload.onprogress = function (e) {
     if (!e.lengthComputable) { return; }
@@ -1282,7 +1272,7 @@ function send(job, card) {
 
   card.querySelector(".head2 button").onclick = function () { xhr.abort(); };
 
-  xhr.send(form);
+  xhr.send(job.file);
 }
 
 $("pick").onclick = function () { $("files").click(); };

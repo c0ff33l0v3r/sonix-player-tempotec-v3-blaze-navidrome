@@ -14,6 +14,7 @@ import threading
 import time
 import urllib.parse
 import wave
+from navidrome_screenfixture import screen_fixture
 
 player = Path(__file__).resolve().parent.parent
 compiler = shlex.split(os.environ.get("CC", "cc"))
@@ -108,10 +109,10 @@ with tempfile.TemporaryDirectory(prefix="sonix-download-check-") as temporary:
     sqlite = player / "build_host/system/db/sqlite3_impl.o"
     if not sqlite.exists():
         sqlite = root / "sqlite.o"
-        subprocess.run(compiler + ["-std=gnu11", "-w", "-I", str(player), "-c", str(player / "src/system/db/sqlite3_impl.c"), "-o", str(sqlite)] + extra, check=True)
+        subprocess.run(compiler + ["-std=gnu11", "-O2", "-w", "-I", str(player), "-c", str(player / "src/system/db/sqlite3_impl.c"), "-o", str(sqlite)] + extra, check=True)
     sources = [
         "tools/navidrome_downloadcheck.c", "tools/navidrome_test_support.c",
-        "src/system/streaming/navidromedownloads.c", "src/system/streaming/navidromeplaycatalog.c", "src/system/streaming/navidromedownloadstore.c",
+        "src/system/streaming/navidromedownloads.c", "src/system/streaming/navidromedownloadcopy.c", "src/system/library/filepublicationcard.c", "src/system/streaming/navidromeplaycatalog.c", "src/system/streaming/navidromedownloadstore.c", "src/system/library/filepublication.c",
         "src/system/streaming/navidromedownloadfile.c", "src/system/streaming/navidromeaudio.c",
         "src/system/streaming/navidromeapi.c", "src/system/streaming/navidromecrypto.c",
         "src/system/streaming/navidromestore.c", "src/system/streaming/navidromeplayliststore.c",
@@ -119,8 +120,11 @@ with tempfile.TemporaryDirectory(prefix="sonix-download-check-") as temporary:
         "src/system/core/json.c", "src/system/core/md5.c", "src/system/core/sha256.c",
         "src/system/device/workactivity.c", "src/system/net/http.c", "src/system/net/tls.c", "src/system/net/gzip.c", "src/gb/miniz/miniz.c", "src/system/image/png_scaled.c",
     ]
+    screen = root / "screen.c"
+    screen.write_text(screen_fixture(player))
+    sources.append(str(screen))
     binary = root / "downloadcheck"
-    compile_args = compiler + ["-std=gnu11", "-DHOST_BUILD", "-DLV_CONF_INCLUDE_SIMPLE", "-D_FILE_OFFSET_BITS=64", "-DNAVIDROME_DOWNLOAD_PUBLISH_TEST", "-Wall", "-Wextra", "-Werror", "-O1", "-g", "-ffunction-sections", "-fdata-sections", "-I", str(player), "-I", str(player / "lvgl")] + extra + [str(player / source) for source in sources] + [str(sqlite), "-Wl,--gc-sections,--wrap=write,--wrap=fsync,--wrap=fstatvfs64,--wrap=nd_pl_play_window", "-pthread", "-ldl", "-lm", "-lresolv"]
+    compile_args = compiler + ["-std=gnu11", "-DHOST_BUILD", "-DLV_CONF_INCLUDE_SIMPLE", "-D_FILE_OFFSET_BITS=64", "-DNAVIDROME_DOWNLOAD_PUBLISH_TEST", "-DFILEPUBLICATION_TEST", "-Wall", "-Wextra", "-Werror", "-O1", "-g", "-ffunction-sections", "-fdata-sections", "-I", str(player), "-I", str(player / "lvgl")] + extra + [str(player / source) for source in sources] + [str(sqlite), "-Wl,--gc-sections,--wrap=write,--wrap=fsync,--wrap=fstatvfs64,--wrap=nd_pl_play_window", "-pthread", "-ldl", "-lm", "-lresolv"]
     subprocess.run(compile_args + ["-o", str(binary)], check=True)
     limited = root / "downloadcheck-limit"
     subprocess.run(compile_args + ["-DND_DL_MAX_BYTES=65536", "-o", str(limited)], check=True)
@@ -129,7 +133,7 @@ with tempfile.TemporaryDirectory(prefix="sonix-download-check-") as temporary:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        fixtures = ("remote_album", "remote_album_wrong", "remote_album_readonly", "clear_history", "clear_active", "deleted_again", "deleted_history", "deleted_retry", "folders", "success", "same_title", "offline", "active_cache", "unknown", "collision", "error", "json", "html", "truncated", "oversize", "unsupported", "pause", "cancel", "preempt", "preempt_headers", "resume", "single_multi", "current", "current_remote", "recover", "after_rename", "readonly", "reject_post", "large", "chunk", "chunk_bad", "gzip", "unknown_limit", "auth", "write_fail", "flush_fail", "full", "favorites", "selection", "case_collision", "capture_refresh", "large_batch", "fallback", "modified", "partial_retry", "root", "playlist", "playlist_remote", "playlist_stale", "playlist_changed", "playlist_deleted", "playlist_large", "playlist_badmeta", "playlist_offline")
+        fixtures = ("remote_album", "remote_album_wrong", "remote_album_readonly", "clear_history", "clear_active", "deleted_again", "deleted_history", "deleted_retry", "folders", "success", "same_title", "offline", "active_cache", "unknown", "collision", "error", "json", "html", "truncated", "oversize", "unsupported", "copy_retry", "copy_pause", "copy_cancel", "copy_stop", "screen_network", "screen_copy", "screen_intent", "screen_owned", "screen_complete", "after_complete", "pause", "cancel", "preempt", "preempt_headers", "resume", "single_multi", "current", "current_remote", "recover", "after_rename", "readonly", "reject_post", "large", "chunk", "chunk_bad", "gzip", "unknown_limit", "auth", "write_fail", "flush_fail", "full", "favorites", "selection", "case_collision", "capture_refresh", "large_batch", "fallback", "modified", "partial_retry", "root", "playlist", "playlist_remote", "playlist_stale", "playlist_changed", "playlist_deleted", "playlist_large", "playlist_badmeta", "playlist_offline")
         fixtures += ("search", "search_remote", "search_offline", "search_album_offline")
         selected = os.environ.get("NAVIDROME_DOWNLOAD_CASES")
         if selected:
@@ -145,8 +149,12 @@ with tempfile.TemporaryDirectory(prefix="sonix-download-check-") as temporary:
             result = subprocess.run([str(limited if fixture == "unknown_limit" else binary), f"http://127.0.0.1:{server.server_port}/prefix", str(card), fixture], capture_output=True, text=True, timeout=15)
             assert result.returncode == 0, f"{fixture}: {result.stdout}\n{result.stderr}"
             assert "synthetic-download-password" not in result.stdout + result.stderr
-            if fixture in ("folders", "unsupported", "readonly", "remote_album_readonly", "large_batch", "playlist_large", "playlist_stale", "playlist_changed", "playlist_deleted"):
+            if fixture in ("folders", "readonly", "remote_album_readonly", "large_batch", "playlist_large", "playlist_stale", "playlist_changed", "playlist_deleted"):
                 assert not requests
+            if fixture == "copy_retry":
+                assert request_ids == ["track/1?"]
+            if fixture == "copy_pause":
+                assert request_ids == ["track/1?", "track/2?"]
             if fixture == "playlist":
                 assert request_ids == ["track/1?", "track/2?"]
             if fixture == "playlist_badmeta":

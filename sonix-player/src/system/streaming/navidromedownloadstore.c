@@ -1,14 +1,15 @@
 #define _GNU_SOURCE
 #include "navidromedownloadstore.h"
 #include "src/system/core/sha256.h"
+#include "src/system/library/filepublication.h"
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
-#include <stdatomic.h>
 
 static atomic_uint availability_revision = 1;
 unsigned nd_dl_availability_revision(void) { return atomic_load(&availability_revision); }
@@ -176,14 +177,24 @@ bool nd_dl_mapping_valid(const char *root, const nd_dl_job_t *j, char path[ND_DL
 		return false;
 	*leaf++ = 0;
 	int dir = nd_dl_directory(root, relative, false);
+	fp_guard_t guard;
+	bool visible = fp_guard_open(&guard, dir, false, false) && fp_guard_lookup(&guard, leaf) == FP_SAFE;
 	struct stat st;
-	bool ok = dir >= 0 && !fstatat(dir, leaf, &st, AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode) && st.st_size == j->bytes;
+	bool ok = visible && dir >= 0 && !fstatat(dir, leaf, &st, AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode) && st.st_size == j->bytes;
+	fp_guard_close(&guard);
+	if (!visible)
+		errno = EACCES;
 	if (ok && (st.st_mtime != j->mtime || (int64_t)st.st_ino != j->inode)) {
 		char digest[65];
 		ok = nd_dl_fingerprint(dir, leaf, digest, &st, current, user) && !strcmp(digest, j->digest);
 	}
-	if (ok)
-		ok = snprintf(path, ND_DL_PATH, "%s/%s", root, j->path) < ND_DL_PATH && media(path);
+	if (ok) {
+		// Hashing stays outside short admission. Recheck visibility and the
+		// physical name before resolving a public path after that slow work.
+		struct stat named;
+		ok = fp_guard_open(&guard, dir, false, false) && fp_guard_lookup(&guard, leaf) == FP_SAFE && !fstatat(dir, leaf, &named, AT_SYMLINK_NOFOLLOW) && S_ISREG(named.st_mode) && named.st_dev == st.st_dev && named.st_ino == st.st_ino && named.st_size == st.st_size && snprintf(path, ND_DL_PATH, "%s/%s", root, j->path) < ND_DL_PATH && media(path);
+		fp_guard_close(&guard);
+	}
 	if (dir >= 0)
 		close(dir);
 	return ok && (!current || current(user));
@@ -204,7 +215,7 @@ int nd_dl_probe(nd_dl_store_t *s, const char *id, bool (*media)(const char *), b
 		decode(st, &job);
 		errno = 0;
 		if (nd_dl_mapping_valid(s->root, &job, path, media, current, user)) { result = 1; break; }
-		if (errno == EACCES || errno == EIO || errno == EMFILE || errno == ENFILE || errno == ENOMEM)
+		if (errno == EACCES || errno == EIO || errno == EBUSY || errno == EAGAIN || errno == EMFILE || errno == ENFILE || errno == ENOMEM)
 			result = -1;
 	}
 	if ((rc != SQLITE_ROW && rc != SQLITE_DONE) || (current && !current(user)))
@@ -355,6 +366,11 @@ int nd_dl_directory(const char *root, const char *relative, bool create) {
 	int fd = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
 	if (fd < 0)
 		return -1;
+	struct stat root_st;
+	if (fstat(fd, &root_st)) {
+		close(fd);
+		return -1;
+	}
 	char copy[ND_DL_PATH];
 	snprintf(copy, sizeof(copy), "%s", relative);
 	char *save = NULL;
@@ -373,6 +389,12 @@ int nd_dl_directory(const char *root, const char *relative, bool create) {
 		fd = next;
 		if (fd < 0)
 			return -1;
+		struct stat child;
+		if (fstat(fd, &child) || child.st_dev != root_st.st_dev) {
+			close(fd);
+			errno = EXDEV;
+			return -1;
+		}
 	}
 	return fd;
 }

@@ -2,27 +2,31 @@
 
 #include "src/system/core/respath.h"
 
+#include <arpa/inet.h>
 #include <dirent.h>
 #include <errno.h>
-#include <pthread.h>
-#include <stdio.h>
-#include <string.h>
 #include <limits.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
-#include <arpa/inet.h>
 #include <time.h>
 #include <unistd.h>
 
-#include "src/system/net/mdns.h"
-#include "src/system/device/system.h"
-#include "src/system/net/webpage.h"
-#include "src/system/net/wifi.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/logging.h"
+#include "src/system/device/system.h"
+#include "src/system/device/workactivity.h"
+#include "src/system/library/filepublicationcard.h"
+#include "src/system/net/mdns.h"
+#include "src/system/net/webpage.h"
+#include "src/system/net/wifi.h"
 
-// The port is the stock player's, and it is not arbitrary: HiBy's phone app
+// Retain the stock port for bookmarked browser addresses. HiBy's phone app
 // looks for the beacon on it, and the address printed on screen has to be the
 // one the firmware's own page is served from or nothing else about this
 // matches.
@@ -39,9 +43,7 @@
 #define UDP_SERVER_BIN "/usr/bin/udp_server"
 #define CGIC_DISABLE "/usr/bin/cgic_disable"
 
-#define WEB_SRC "/usr/share/web"	   // read-only, as shipped
-#define WEB_PARENT "/usr/data/share"   // where the stock script puts its copy
-#define WEB_DIR WEB_PARENT "/web"
+static char prepared_root[64];
 
 // The two colour literals the template carries, and what a replacement must
 // look like. Kept next to each other because they are one contract with
@@ -56,13 +58,8 @@
 #define CONF_PATH "/tmp/sonix-thttpd.conf"
 #define CONF_NAMED "/tmp/sonix-thttpd-80.conf"
 
-// Where the CGI programs look for the card. Not a choice: it is compiled into
-// all six of them, along with sd_1 and the two udisk names.
-#define CGI_CARD_ROOT "/data/mnt/sd_0"
-
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-static bool g_enabled;
-static bool g_card_bound;
+static atomic_bool g_enabled;
 
 // ---------------------------------------------------------------------------
 // running things
@@ -127,97 +124,8 @@ static bool process_running(const char *name) {
 
 static bool exists(const char *path) { return access(path, F_OK) == 0; }
 
-// ---------------------------------------------------------------------------
-// putting the card where the CGIs will find it
-//
-// The six CGI programs have their four paths compiled in -- /data/mnt/sd_0,
-// /data/mnt/sd_1, /data/mnt/udisk_0, /data/mnt/udisk_1 -- and there is no way
-// to tell them about another one.
-//
-// HiBy OS has three names for the same directory (/mnt, /data/mnt,
-// /usr/data/mnt) and which of them are symlinks to which differs between
-// builds. This player mounts the card on whichever of the three it finds, which
-// on this firmware is /mnt/sd_0 -- a different directory from /data/mnt/sd_0,
-// so the CGIs would read an empty one.
-//
-// Rather than guess at the symlink layout, the mount point is bound into place:
-// same directory, two names, no copying and no second mount of the card itself.
-// It goes away with the server.
-// ---------------------------------------------------------------------------
-
-static bool same_directory(const char *a, const char *b) {
-	struct stat sa, sb;
-	if (stat(a, &sa) != 0 || stat(b, &sb) != 0) {
-		return false;
-	}
-	return sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
-}
-
-static void bind_card(void) {
-	const char *root = storage_sd_root();
-	if (!root || !root[0]) {
-		printf("wifitransfer: no card mounted; the page will have nothing to show\n");
-		return;
-	}
-
-	if (same_directory(root, CGI_CARD_ROOT)) {
-		return; // already one and the same: nothing to do
-	}
-
-	mkdir("/data", 0755);
-	mkdir("/data/mnt", 0755);
-	mkdir(CGI_CARD_ROOT, 0755);
-
-	if (mount(root, CGI_CARD_ROOT, NULL, MS_BIND, NULL) == 0) {
-		g_card_bound = true;
-		printf("wifitransfer: %s is also %s now (bind mount)\n", root, CGI_CARD_ROOT);
-	} else {
-		printf("wifitransfer: cannot bind %s onto %s: %s\n", root, CGI_CARD_ROOT, strerror(errno));
-	}
-}
-
-static void unbind_card(void) {
-	if (!g_card_bound) {
-		return;
-	}
-
-	if (umount(CGI_CARD_ROOT) != 0 && umount2(CGI_CARD_ROOT, MNT_DETACH) != 0) {
-		printf("wifitransfer: cannot unbind %s: %s\n", CGI_CARD_ROOT, strerror(errno));
-	}
-	g_card_bound = false;
-}
-
-// ---------------------------------------------------------------------------
-// the document root
-//
-// There are two places the stock page lives, which is worth being clear about:
-//
-//   /usr/share/web        as shipped, read-only, with the six CGI programs
-//   /usr/data/share/web   the copy thttpd is actually pointed at
-//                         (dir= in /etc/thttpd.conf), made once by cgic_enable
-//
-// cgic_enable copies the first onto the second only when the second is missing,
-// then overwrites index.html and js/index.js with the Chinese or English
-// variant from pages/, chosen from /usr/data/region. So a player that has ever
-// had the feature on keeps whatever tree it got the first time -- which is why
-// the stock page can be several firmware versions old.
-//
-// The copy still has to happen here, because the CGI programs must sit in the
-// document root and the shipped directory is where they are. What does not
-// happen here is the language dance: the page written into the root is this
-// player's own (webpage.h, generated from web/index.html), every start. It has
-// no CSS or JS files of its own -- everything is in the one file -- so the
-// css/, js/ and pages/ directories that come along with the copy are simply
-// never asked for.
-//
-// The one thing the page does fetch is the typeface, and that is why fonts/
-// gets built below.
-//
-// If the copy will not go -- a full userdata partition being the realistic
-// reason -- the shipped tree is served read-only instead, and then the page is
-// whatever HiBy shipped, in Chinese. Everything still works.
-// ---------------------------------------------------------------------------
-
+// A new document root contains only the generated page, fixed font links and
+// guarded endpoints. Stock CGI binaries and static card links are never copied.
 // The player draws with /usr/resource/sonix/fonts/default.otf (MiSans Regular, see
 // src/gui/fonts/fonts.c). The page asks for it as fonts/default.otf so it can
 // render in the same face as the screen it came from.
@@ -237,51 +145,21 @@ static void unbind_card(void) {
 
 // The player, linked into the document root as a CGI.
 //
-// The firmware's list.cgi drops every entry whose name starts with a dot -- it
-// is a byte compare on d_name[0] in a compiled MIPS binary, so "show hidden
-// files" cannot be answered by the page. This gives thttpd a listing program
-// that can: the player itself, which recognises the name and prints JSON
-// instead of starting up (see src/system/webcgi.h).
-//
-// Symlinked, so it is always the running build, and named distinctly so it
-// never shadows the firmware's own.
-static void link_self_as_cgi(const char *web_root) {
+static bool link_self_as_cgi(const char *web_root) {
+	static const char *const names[] = {"sonix-list", "list", "upload", "download", "create", "move", "delete"};
 	char exe[PATH_MAX];
 	ssize_t len = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-	if (len <= 0) {
-		printf("wifitransfer: cannot find my own path; the listing falls back to the firmware's\n");
-		return;
+	if (len <= 0 || len >= (ssize_t)sizeof(exe) - 1)
+		return false;
+	exe[len] = 0;
+	for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+		char to[PATH_MAX];
+		if (snprintf(to, sizeof(to), "%s/%s", web_root, names[i]) >= (int)sizeof(to))
+			return false;
+		if (link(exe, to) && symlink(exe, to))
+			return false;
 	}
-	exe[len] = '\0';
-
-	char to[PATH_MAX];
-	snprintf(to, sizeof(to), "%s/sonix-list", web_root);
-
-	// Always point it at this build, never at a link left behind by another.
-	unlink(to);
-
-	// And the older name for the same thing, so a document root that has seen
-	// an earlier build is not left with a link to a binary that is not there.
-	char legacy[PATH_MAX];
-	if (snprintf(legacy, sizeof(legacy), "%s/ohp-list", web_root) < (int)sizeof(legacy)) {
-		unlink(legacy);
-	}
-
-	// A hard link if the two are on the same filesystem, because then there is
-	// no symlink for thttpd to resolve and refuse (see write_config below).
-	// Usually they are not, so the symlink is the normal case and the config
-	// line is what makes it work.
-	if (link(exe, to) == 0) {
-		printf("wifitransfer: %s == %s (directory listing)\n", to, exe);
-		return;
-	}
-
-	if (symlink(exe, to) != 0) {
-		printf("wifitransfer: cannot link %s -> %s: %s\n", to, exe, strerror(errno));
-		return;
-	}
-
-	printf("wifitransfer: %s -> %s (directory listing)\n", to, exe);
+	return true;
 }
 
 static void link_fonts(const char *web_root) {
@@ -559,32 +437,61 @@ static void open_up_web_root(const char *web_root) {
 	}
 }
 
+static void discard_web_root(void) {
+	if (!prepared_root[0])
+		return;
+	DIR *dir = opendir(prepared_root);
+	if (dir) {
+		struct dirent *de;
+		while ((de = readdir(dir))) {
+			if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+				continue;
+			char path[512];
+			snprintf(path, sizeof(path), "%s/%s", prepared_root, de->d_name);
+			if (!strcmp(de->d_name, "fonts")) {
+				DIR *fonts = opendir(path);
+				if (fonts) {
+					struct dirent *font;
+					while ((font = readdir(fonts))) {
+						if (!strcmp(font->d_name, ".") || !strcmp(font->d_name, ".."))
+							continue;
+						unlinkat(dirfd(fonts), font->d_name, 0);
+					}
+					closedir(fonts);
+				}
+				rmdir(path);
+			} else
+				unlink(path);
+		}
+		closedir(dir);
+	}
+	rmdir(prepared_root);
+	prepared_root[0] = 0;
+}
 static const char *prepare_web_root(void) {
-	if (!exists(WEB_DIR)) {
-		mkdir(WEB_PARENT, 0755);
-
-		char *const argv[] = {(char *)"cp", (char *)"-a", (char *)WEB_SRC, (char *)WEB_PARENT "/", NULL};
-		int rc = run("/bin/cp", argv);
-		if (rc != 0) {
-			// Serve the shipped tree instead. This player's page still goes in
-			// if that partition happens to be mounted writable; if it does not,
-			// what gets served is HiBy's own page, in Chinese, and everything
-			// still works. That is the one case where dropping web/index.html
-			// into /usr/share/web by hand is worth doing.
-			printf("wifitransfer: could not copy the web tree (cp -> %d); serving %s\n", rc, WEB_SRC);
-			install_page(WEB_SRC);
-			link_fonts(WEB_SRC);
-			link_self_as_cgi(WEB_SRC);
-			open_up_web_root(WEB_SRC);
-			return WEB_SRC;
+	discard_web_root();
+	snprintf(prepared_root, sizeof(prepared_root), "/tmp/sonix-web-XXXXXX");
+	if (!mkdtemp(prepared_root)) {
+		prepared_root[0] = 0;
+		return NULL;
+	}
+	if (!install_page(prepared_root) || !link_self_as_cgi(prepared_root)) {
+		discard_web_root();
+		return NULL;
+	}
+	link_fonts(prepared_root);
+	char path[128], hostname[128];
+	if (!gethostname(hostname, sizeof(hostname))) {
+		hostname[sizeof(hostname) - 1] = 0;
+		snprintf(path, sizeof(path), "%s/hostname", prepared_root);
+		FILE *file = fopen(path, "w");
+		if (file) {
+			fprintf(file, "%s\n", hostname);
+			fclose(file);
 		}
 	}
-
-	install_page(WEB_DIR);
-	link_fonts(WEB_DIR);
-	link_self_as_cgi(WEB_DIR);
-	open_up_web_root(WEB_DIR);
-	return WEB_DIR;
+	open_up_web_root(prepared_root);
+	return prepared_root;
 }
 
 // Everything /etc/thttpd.conf says, plus a cgipat that also matches the six
@@ -604,7 +511,7 @@ static bool write_config(const char *web_root, int port, const char *conf_path, 
 	fprintf(f, "port=%d\n", port);
 	fprintf(f, "pidfile=%s\n", pidfile);
 	fprintf(f, "logfile=/dev/null\n");
-	fprintf(f, "cgipat=**.cgi|list|upload|download|create|move|delete|sonix-list\n");
+	fprintf(f, "cgipat=list|upload|download|create|move|delete|sonix-list\n");
 
 	// Nothing served here may be cached without asking first.
 	//
@@ -618,19 +525,8 @@ static bool write_config(const char *web_root, int port, const char *conf_path, 
 	// the new one.
 	fprintf(f, "max_age=0\n");
 
-	// And the line without which `sonix-list` answers 403 every single time.
-	//
-	// thttpd resolves symlinks in the requested path itself, and refuses
-	// anything that ends up outside the document root -- "The requested URL
-	// resolves to a file outside the permitted web server directory tree". The
-	// listing program IS such a symlink: it points at the player binary, which
-	// lives nowhere near /usr/data/share/web. The check normally defaults to
-	// on, because the stock config leaves `nosymlink` commented out.
-	//
-	// Nothing is given away by switching it off here that the server does not
-	// already give away: it runs as root, without chroot, without a password,
-	// and its own CGIs hand request paths to system(). It also only exists
-	// while the transfer page is open.
+	// Only fixed links to the current player and packaged fonts exist in this
+	// private root. No user-controlled directory or stock static route is served.
 	fprintf(f, "nosymlinkcheck\n");
 
 	fclose(f);
@@ -673,22 +569,31 @@ static void stop_server(void) {
 		}
 	}
 
-	// After the programs that were reading through it, not before.
-	unbind_card();
+	// Also stop our guarded handlers when the stock teardown script exists.
+	// Invalidate chunk admission before waiting for active local writes to drain.
+	fp_transfer_set_enabled(false);
+	static const char *const own[] = {"thttpd", "sonix-transfer"};
+	for (unsigned i = 0; i < sizeof(own) / sizeof(own[0]); i++) {
+		char *const argv[] = {(char *)"killall", (char *)own[i], NULL};
+		run("/usr/bin/killall", argv);
+	}
+	while (process_running("thttpd") || process_running("sonix-transfer"))
+		usleep(100000);
+	fp_card_drain();
+	discard_web_root();
 }
 
 static bool start_server(void) {
-	bind_card();
-
-	if (process_running("thttpd")) {
-		return true; // already up; nothing to do
-	}
-
+	// A stock server left running must not expose unguarded aliases alongside
+	// the new handlers. Stop it before publishing the isolated document root.
+	stop_server();
 	const char *web_root = prepare_web_root();
+	if (!web_root || !fp_transfer_set_enabled(true))
+		return false;
 
 	// The beacon first, the way cgic_enable orders them. It daemonises itself,
 	// so this returns straight away. Not fatal if it is missing: it is only
-	// how HiBy's app finds the player, and a typed address does not need it.
+	// a discovery beacon; guarded transfer requires the bundled browser page.
 	if (exists(UDP_SERVER_BIN)) {
 		char port[16];
 		snprintf(port, sizeof(port), "%d", WT_PORT);
@@ -702,8 +607,8 @@ static bool start_server(void) {
 	// say "and the port is 4399". So for "http://sonix-transfer.local" to work
 	// with nothing typed after it, something has to be on port 80.
 	//
-	// 4399 stays as well, because that is the port HiBy's own phone app expects
-	// after finding the udp_server beacon, and there is no reason to break it.
+	// Keep port 4399 for existing browser bookmarks and typed addresses.
+	// Legacy phone-app multipart requests cannot bypass the guarded handlers.
 	start_thttpd(web_root, WT_PORT_NAMED, CONF_NAMED, "/var/run/thttpd-80.pid");
 	start_thttpd(web_root, WT_PORT, CONF_PATH, "/var/run/thttpd.pid");
 
@@ -734,7 +639,10 @@ static void apply(bool on) {
 }
 
 static void *apply_thread(void *arg) {
-	apply(arg != NULL);
+	work_activity_t *activity = arg;
+	apply(atomic_load(&g_enabled));
+	work_activity_end(activity);
+	free(activity);
 	return NULL;
 }
 
@@ -742,23 +650,30 @@ static void *apply_thread(void *arg) {
 // public
 // ---------------------------------------------------------------------------
 
-bool wifitransfer_available(void) { return exists(THTTPD_BIN) && (exists(WEB_DIR) || exists(WEB_SRC)); }
+bool wifitransfer_available(void) { return exists(THTTPD_BIN); }
 
 // Bumped by every change of intent, so the cached answer below is thrown away
 // rather than outliving the toggle by up to a second.
 static uint32_t running_cache_generation;
 
 void wifitransfer_set_enabled(bool on) {
-	g_enabled = on;
-	running_cache_generation++;
-
 	if (!wifitransfer_available()) {
 		return;
 	}
 
+	work_activity_t *activity = calloc(1, sizeof(*activity));
 	pthread_t thread;
-	if (pthread_create(&thread, NULL, apply_thread, on ? (void *)1 : NULL) != 0) {
-		apply(on); // no thread to be had: do it here rather than not at all
+	if (!activity || !work_activity_begin(activity, WORK_JOB)) {
+		free(activity);
+		return;
+	}
+	bool previous = atomic_exchange(&g_enabled, on);
+	running_cache_generation++;
+	if (pthread_create(&thread, NULL, apply_thread, activity) != 0) {
+		atomic_store(&g_enabled, previous);
+		work_activity_end(activity);
+		free(activity);
+		fprintf(stderr, "wifitransfer: worker unavailable\n");
 		return;
 	}
 	pthread_detach(thread);

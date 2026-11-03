@@ -19,7 +19,13 @@
 // A supported syscall alone is insufficient; the mounted filesystem must also
 // implement RENAME_NOREPLACE. In particular, stock Linux 4.4 VFAT does not.
 static int publish_call(int directory, const char *part, const char *final) {
-#ifdef NAVIDROME_DOWNLOAD_PUBLISH_TEST
+#if defined(NAVIDROME_DOWNLOAD_NO_RENAMEAT2)
+	(void)directory;
+	(void)part;
+	(void) final;
+	errno = ENOSYS;
+	return -1;
+#elif defined(NAVIDROME_DOWNLOAD_PUBLISH_TEST)
 	extern int nd_download_publish_test_call(int, const char *, const char *);
 	return nd_download_publish_test_call(directory, part, final);
 #elif defined(SYS_renameat2)
@@ -34,6 +40,19 @@ static int publish_call(int directory, const char *part, const char *final) {
 }
 
 static bool basename_valid(const char *name) { return name && name[0] && strcmp(name, ".") && strcmp(name, "..") && !strchr(name, '/') && !strchr(name, '\\'); }
+
+int nd_download_file_create(int directory, const char *final) {
+	if (!basename_valid(final) || final[0] == '.') {
+		errno = EINVAL;
+		return -1;
+	}
+	return openat(directory, final, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+}
+
+bool nd_download_file_owned(int directory, const char *final, int fd) {
+	struct stat held, named;
+	return basename_valid(final) && !fstat(fd, &held) && S_ISREG(held.st_mode) && held.st_nlink == 1 && !fstatat(directory, final, &named, AT_SYMLINK_NOFOLLOW) && S_ISREG(named.st_mode) && named.st_dev == held.st_dev && named.st_ino == held.st_ino;
+}
 
 nd_download_publish_result_t nd_download_file_publish(int directory, const char *part, const char *final) {
 	DIAGNOSTIC_SCOPE(D_DOWNLOAD);

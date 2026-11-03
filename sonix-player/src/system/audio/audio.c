@@ -1,18 +1,19 @@
 #include "audio.h"
 #include "src/system/audio/alsa-controls.h"
-#include "src/system/bluetooth/bluetooth.h"
-#include "src/system/decode/decode.h"
-#include "src/system/decode/growfile.h"
-#include "src/system/decode/sndfile.h"
+#include "src/system/audio/decimate.h"
+#include "src/system/audio/eq.h"
 #include "src/system/audio/replaygain.h"
 #include "src/system/audio/speed.h"
 #include "src/system/audio/swvolume.h"
 #include "src/system/audio/usbaudio.h"
-#include "src/system/audio/eq.h"
-#include "src/system/audio/decimate.h"
+#include "src/system/bluetooth/bluetooth.h"
 #include "src/system/core/config.h"
-#include "src/system/device/power.h"
 #include "src/system/core/utils.h"
+#include "src/system/decode/decode.h"
+#include "src/system/decode/growfile.h"
+#include "src/system/decode/sndfile.h"
+#include "src/system/device/power.h"
+#include "src/system/library/filepublication.h"
 
 #include "src/system/core/diagnostic.h"
 #include <errno.h>
@@ -688,7 +689,11 @@ static uint32_t le32(const unsigned char *p) {
 #define WAVE_FORMAT_EXTENSIBLE 0xFFFE
 
 static int parse_wav(const char *filepath, wav_info_t *info, FILE **file_out) {
+	int admission = fp_read_begin(filepath);
+	if (admission < 0)
+		return WAV_BAD;
 	FILE *f = fopen(filepath, "rb");
+	fp_admission_end(admission);
 	if (!f) {
 		fprintf(stderr, "Audio: Failed to open file: %s\n", "media");
 		return WAV_BAD;

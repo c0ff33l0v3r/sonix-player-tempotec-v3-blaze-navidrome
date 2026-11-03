@@ -26,7 +26,7 @@ Path(sys.argv[1]).write_text('#include "src/gui/shell/icons.h"\n' + '\n'.join(as
 PY
 ${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -O1 -g -ffunction-sections -fdata-sections ${NAVIDROME_CHECK_FLAGS:-} \
     -DHOST_BUILD -DNAVIDROME_TEST -DLV_CONF_INCLUDE_SIMPLE -DLV_FONT_UNSCII_8=1 -I. -Ilvgl \
-    tools/navidrome_discoveryuicheck.c "$check_dir/refresh-icon.c" src/system/streaming/navidromediscovery.c src/gui/shell/gridpage.c tools/navidrome_test_support.c src/system/streaming/navidromemembership.c src/system/streaming/navidromedownloadstore.c src/system/streaming/navidromeaudio.c lvgl/src/font/lv_font_unscii_8.c \
+    tools/navidrome_discoveryuicheck.c "$check_dir/refresh-icon.c" src/system/streaming/navidromediscovery.c src/gui/shell/gridpage.c tools/navidrome_test_support.c src/system/streaming/navidromemembership.c src/system/streaming/navidromedownloadstore.c src/system/library/filepublication.c src/system/streaming/navidromeaudio.c lvgl/src/font/lv_font_unscii_8.c \
     src/system/streaming/navidromesearch.c src/system/streaming/navidromedebug.c src/system/streaming/navidromestars.c src/system/streaming/navidromeplaycatalog.c src/system/streaming/navidromeplaylists.c src/system/streaming/navidromeplayliststore.c src/system/core/sha256.c \
     src/system/device/workactivity.c src/system/streaming/navidrome.c src/system/streaming/navidromeapi.c src/system/streaming/navidromebatch.c src/system/streaming/navidromestore.c \
     src/system/streaming/navidromelibrary.c src/system/streaming/navidromecrypto.c src/system/streaming/navidromevault.c \

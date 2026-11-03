@@ -13,7 +13,7 @@ check_limit=
 if [ "$mode" = limit ]; then check_limit=-DND_ACTION_PAGES=8; fi
 ${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -O1 -g -ffunction-sections -fdata-sections ${NAVIDROME_CHECK_FLAGS:-} $check_limit \
     -DHOST_BUILD -DNAVIDROME_TEST -DLV_CONF_INCLUDE_SIMPLE -I. -Ilvgl \
-    tools/navidrome_actioncheck.c src/system/library/library.c src/system/streaming/navidromeactions.c \
+    tools/navidrome_actioncheck.c src/system/library/library.c src/system/library/filepublication.c src/system/streaming/navidromeactions.c \
     src/system/streaming/navidromeplaylists.c src/system/streaming/navidromeplayliststore.c src/system/core/sha256.c \
     src/system/streaming/navidromestars.c src/system/streaming/navidromesearch.c src/system/streaming/navidromemembership.c src/system/streaming/navidromedebug.c \
     src/system/streaming/navidromeplaycatalog.c src/system/device/workactivity.c src/system/streaming/navidrome.c src/system/streaming/navidromeapi.c src/system/streaming/navidromebatch.c src/system/streaming/navidromestore.c \

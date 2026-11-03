@@ -188,6 +188,11 @@ static void discovery_refresh_pixels(void) {
 	}
 }
 decode_format_t decode_detect_format(const char *path) { (void)path; return DECODE_FORMAT_UNKNOWN; }
+decoder_t *decoder_open_info_owned_staging(const char *p, decode_format_t f) {
+	(void)p;
+	(void)f;
+	return NULL;
+}
 decoder_t *decoder_open_info(const char *path, decode_format_t format) { (void)path; (void)format; return NULL; }
 int decoder_sample_rate(const decoder_t *decoder) { (void)decoder; return 0; }
 int decoder_channels(const decoder_t *decoder) { (void)decoder; return 0; }

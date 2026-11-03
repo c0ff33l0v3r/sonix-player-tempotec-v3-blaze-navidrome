@@ -92,10 +92,13 @@ int main(int argc, char **argv) {
 		assert(faccessat(directory, "unsupported.flac", F_OK, AT_SYMLINK_NOFOLLOW) == -1 && errno == ENOENT);
 		contents(directory, ".conflict.part", 'n');
 	}
-	injected_error = EIO;
-	assert(nd_download_file_publish(directory, ".conflict.part", "io.flac") == ND_DOWNLOAD_PUBLISH_ERROR);
-	assert(faccessat(directory, "io.flac", F_OK, AT_SYMLINK_NOFOLLOW) == -1 && errno == ENOENT);
-	contents(directory, ".conflict.part", 'n');
+	int errors[] = {EIO, EACCES, EPERM, EROFS, ENOSPC, EDQUOT, EMFILE};
+	for (size_t i = 0; i < sizeof(errors) / sizeof(*errors); i++) {
+		injected_error = errors[i];
+		assert(nd_download_file_publish(directory, ".conflict.part", "io.flac") == ND_DOWNLOAD_PUBLISH_ERROR);
+		assert(faccessat(directory, "io.flac", F_OK, AT_SYMLINK_NOFOLLOW) == -1 && errno == ENOENT);
+		contents(directory, ".conflict.part", 'n');
+	}
 	injected_error = 0;
 	puts("PASS unsupported and I/O failures never use a replacing fallback");
 
@@ -123,8 +126,25 @@ int main(int argc, char **argv) {
 	}
 	assert(winners == 1);
 	assert(!pthread_barrier_destroy(&barrier));
-	assert(!close(directory));
 	puts("PASS 16 concurrent publishers: one winner, 15 unchanged partials");
-	puts("6 publication checks passed; no target-filesystem claim");
+
+	assert(nd_download_file_create(directory, "existing.flac") == -1 && errno == EEXIST);
+	assert(nd_download_file_create(directory, "link.flac") == -1 && errno == EEXIST);
+	assert(nd_download_file_create(directory, "../escape") == -1 && errno == EINVAL);
+	assert(nd_download_file_create(directory, ".hidden") == -1 && errno == EINVAL);
+	contents(directory, "existing.flac", 'o');
+	int owned = nd_download_file_create(directory, "owned.flac");
+	assert(owned >= 0 && (fcntl(owned, F_GETFD) & FD_CLOEXEC));
+	assert(nd_download_file_owned(directory, "owned.flac", owned));
+	assert(write(owned, "a", 1) == 1);
+	assert(!unlinkat(directory, "owned.flac", 0));
+	create(directory, "owned.flac", 'r');
+	assert(!nd_download_file_owned(directory, "owned.flac", owned));
+	assert(write(owned, "b", 1) == 1);
+	contents(directory, "owned.flac", 'r');
+	assert(!close(owned));
+	puts("PASS exclusive creation preserves collisions and descriptor writes cannot truncate a replacement");
+	assert(!close(directory));
+	puts("7 publication checks passed; no target-filesystem claim");
 	return 0;
 }

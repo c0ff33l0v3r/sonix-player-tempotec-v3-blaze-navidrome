@@ -332,6 +332,20 @@ int main(int argc, char **argv) {
 	unsigned requests_before = art_requests, releases_before = art_releases;
 	assert(strstr(lv_label_get_text(job_sizes[0]), "1.50 / 3.00 MiB"));
 	assert(!lv_obj_has_state(header_actions[0], LV_STATE_DISABLED) && !lv_obj_has_state(header_actions[1], LV_STATE_DISABLED));
+	// A single local finalization remains pausable, then exposes Resume once
+	// the worker reports an interrupted publication, including after wake.
+	int saved_counts[9];
+	memcpy(saved_counts, result.counts, sizeof(saved_counts));
+	memset(result.counts, 0, sizeof(result.counts));
+	result.counts[NDDL_INTENT] = 1;
+	manager_paint();
+	assert(!lv_obj_has_state(header_actions[1], LV_STATE_DISABLED));
+	result.counts[NDDL_INTENT] = 0;
+	result.counts[NDDL_PAUSED] = 1;
+	manager_paint();
+	assert(!lv_obj_has_state(header_actions[0], LV_STATE_DISABLED));
+	memcpy(result.counts, saved_counts, sizeof(saved_counts));
+	manager_paint();
 	request(NDDL_VIEW);
 	assert(loading && !lv_obj_has_state(header_actions[0], LV_STATE_DISABLED) && !lv_obj_has_state(header_actions[1], LV_STATE_DISABLED));
 	assert(thumbnails[0].cover.pixels == pixels && art_requests == requests_before && art_releases == releases_before);

@@ -94,7 +94,7 @@ static void batch_done_cb(void *arg) {
 	batch_t *b = arg;
 	toast_busy_end();
 	if (b->added == b->count) {
-		toast_success("playlist_tracks_added");
+		toast_success(b->count == 1 ? "playlist_track_added" : "playlist_tracks_added");
 	} else if (b->added > 0) {
 		toast_error("playlist_some_tracks_not_added");
 	} else {
@@ -323,8 +323,8 @@ static void row_clicked_cb(lv_event_t *e) {
 		return;
 	}
 
-	if (playlists_add_track(name, pending_track)) {
-		toast_success("playlist_track_added");
+	const char *paths[] = {pending_track};
+	if (playlistpage_add_tracks_to(name, paths, 1)) {
 		back_btn_cb(NULL); // straight back to where the track was tapped
 	} else {
 		gui_notify_popup("playlist_cannot_add_the_track");
@@ -1169,8 +1169,8 @@ static void name_accept_cb(lv_event_t *e) {
 	}
 
 	if (picking && pending_track[0]) {
-		if (playlists_add_track(name, pending_track)) {
-			toast_success("playlist_track_added");
+		const char *paths[] = {pending_track};
+		if (playlistpage_add_tracks_to(name, paths, 1)) {
 			back_btn_cb(NULL); // straight back to where the track was tapped
 			return;
 		}

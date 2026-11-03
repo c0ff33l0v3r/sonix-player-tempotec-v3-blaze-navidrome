@@ -1,4 +1,5 @@
 #include "library.h"
+#include "src/system/library/filepublication.h"
 
 #include "src/system/library/albumart.h"
 #include "src/system/core/frameprof.h"
@@ -4839,6 +4840,7 @@ static bool folder_unchanged(const char *path, const folder_sig_t *sig) {
 //
 // Returns false when the sheet is unusable, and the caller then treats it as
 // an ordinary file it cannot index.
+
 static bool scan_cue_sheet(const char *path, const struct stat *st) {
 	// A sheet is thirty-five kilobytes. This runs several frames deep in a
 	// directory walk, on the scan thread, so it goes on the heap.
@@ -4849,6 +4851,11 @@ static bool scan_cue_sheet(const char *path, const struct stat *st) {
 	// A sheet over files already split one per track leaves them to be
 	// indexed as the files they are.
 	if (!cue_parse(path, cue) || cue->split) {
+		free(cue);
+		return false;
+	}
+	int admission = fp_read_begin(cue->audio_path);
+	if (admission < 0) {
 		free(cue);
 		return false;
 	}
@@ -4892,10 +4899,11 @@ static bool scan_cue_sheet(const char *path, const struct stat *st) {
 	printf("library: %s holds %d tracks\n", path, cue->track_count);
 	bool indexed = cue->track_count > 0;
 	free(cue);
+	fp_admission_end(admission);
 	return indexed;
 }
 
-static void scan_one_file(const char *child, const char *name, const struct stat *st) {
+static void scan_one_file_unprotected(const char *child, const char *name, const struct stat *st) {
 	// Before the file is touched, not after: what is wanted is the name of the
 	// file the player was on when it died, and by then no code here runs.
 	crumb_set(child);
@@ -4924,6 +4932,14 @@ static void scan_one_file(const char *child, const char *name, const struct stat
 	song_metadata_t tags;
 	metadata_read(child, &tags);
 	scan_indexed(child, name, &tags, st);
+}
+
+static void scan_one_file(const char *child, const char *name, const struct stat *st) {
+	int admission = fp_read_begin(child);
+	if (admission < 0)
+		return;
+	scan_one_file_unprotected(child, name, st);
+	fp_admission_end(admission);
 }
 
 // One directory open at a time.

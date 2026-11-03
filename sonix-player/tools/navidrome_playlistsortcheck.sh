@@ -10,7 +10,7 @@ if [ ! -f "$check_sqlite" ]; then
 fi
 ${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -O1 -g -ffunction-sections -fdata-sections \
     ${NAVIDROME_CHECK_FLAGS:-} -I. tools/navidrome_playlistsortcheck.c \
-    src/system/streaming/navidromeplayliststore.c src/system/library/library.c \
+    src/system/streaming/navidromeplayliststore.c src/system/library/library.c src/system/library/filepublication.c \
     src/system/core/sha256.c src/system/core/json.c "$check_sqlite" \
     -pthread -ldl -lm -Wl,--gc-sections,--wrap=sqlite3_step,--wrap=calloc,--wrap=sqlite3_exec -o "$check_dir/check"
 "$check_dir/check" write "$check_dir"

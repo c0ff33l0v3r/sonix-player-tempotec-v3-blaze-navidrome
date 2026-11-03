@@ -12,6 +12,6 @@ if [ ! -f "$check_sqlite" ]; then
     check_sqlite=$check_sqlite_temp
 fi
 ${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -O1 -g -ffunction-sections -fdata-sections ${NAVIDROME_CHECK_FLAGS:-} -I. \
- tools/navidrome_playliststorecheck.c src/system/streaming/navidromeplayliststore.c src/system/library/library.c \
+ tools/navidrome_playliststorecheck.c src/system/streaming/navidromeplayliststore.c src/system/library/library.c src/system/library/filepublication.c \
  src/system/core/json.c src/system/core/sha256.c "$check_sqlite" -pthread -ldl -lm -Wl,--gc-sections -o "$check_binary"
 "$check_binary"
