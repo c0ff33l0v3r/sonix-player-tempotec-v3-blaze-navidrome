@@ -23,6 +23,8 @@ bool nd_audio_cached(const nd_library_t *library, const nd_context_t *context, c
 // Original-media validation shared with permanent downloads; worker/card lease.
 const char *nd_audio_extension(const unsigned char *bytes, size_t size);
 bool nd_audio_valid(const char *path);
+// Validation of an owned hidden .nd- original under the caller's card lease.
+bool nd_audio_valid_owned_staging(const char *path);
 bool nd_audio_write_original(int fd, const void *bytes, size_t size); // <=64 KiB, caller owns FD/lease
 // One bulk copy owns streamturn before acquiring this reservation.
 bool nd_audio_copy_acquire(const nd_library_t *library, const nd_context_t *context, const char *id, char path[512]);

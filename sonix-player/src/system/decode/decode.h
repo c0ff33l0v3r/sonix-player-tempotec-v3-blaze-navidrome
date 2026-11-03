@@ -62,6 +62,10 @@ decoder_t *decoder_open(const char *filepath, decode_format_t format);
 // is a read of the file's headers up to the track, which a question about the
 // format does not need.
 decoder_t *decoder_open_info(const char *filepath, decode_format_t format);
+// Internal download validation only. Caller owns a hidden staged original and
+// its card lease; this bypasses public-file admission, never resolves CUE paths,
+// and must not be used for playback, queue or browser paths.
+decoder_t *decoder_open_info_owned_staging(const char *filepath, decode_format_t format);
 
 int decoder_channels(const decoder_t *dec);
 int decoder_source_bits(const decoder_t *dec); // 16 for mp3/ogg, the real depth for flac

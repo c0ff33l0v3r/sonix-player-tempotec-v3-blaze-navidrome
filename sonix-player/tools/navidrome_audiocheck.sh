@@ -17,7 +17,7 @@ ${CC:-cc} -std=gnu11 -Wall -Wextra -Wno-missing-field-initializers -O1 -g \
     tools/navidrome_audiocheck.c src/system/streaming/navidromeaudio.c \
     src/system/streaming/navidromeapi.c src/system/streaming/navidromecrypto.c src/system/streaming/streamturn.c \
     src/system/core/md5.c src/system/device/workactivity.c src/system/image/png_scaled.c src/system/net/gzip.c src/gb/miniz/miniz.c src/system/net/http.c src/system/net/tls.c \
-    src/system/decode/decode.c src/system/decode/growfile.c \
+    src/system/decode/decode.c src/system/decode/growfile.c src/system/library/filepublication.c src/system/db/sqlite3_impl.c \
     build_host/system/library/cue.o build_host/system/core/utils.o @"$check_dir/objects" \
     -Wl,--gc-sections,--wrap=write,--wrap=close,--wrap=statvfs -pthread -ldl -lresolv -lm $(pkg-config --libs opusfile wavpack) -o "$check_dir/check"
 python3 tools/navidrome_audiocheck.py "$check_dir/check"

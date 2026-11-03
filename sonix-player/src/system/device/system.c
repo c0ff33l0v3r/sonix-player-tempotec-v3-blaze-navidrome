@@ -23,36 +23,36 @@
 #include "src/gui/nowplaying/cover.h"
 #include "src/gui/settings/screensaver.h"
 #include "src/gui/shell/gui.h"
-#include "src/system/device/sysinfo.h"
+#include "src/system/audio/alsa-controls.h"
+#include "src/system/audio/audio.h"
+#include "src/system/audio/eq.h"
 #include "src/system/bluetooth/bluetooth.h"
 #include "src/system/bluetooth/btlog.h"
 #include "src/system/bluetooth/btplayer.h"
-#include "src/system/audio/audio.h"
-#include "src/system/audio/alsa-controls.h"
-#include "src/system/playback/device_state.h"
-#include "src/system/library/audiobookdb.h"
-#include "src/system/audio/eq.h"
-#include "src/system/remote/dlna.h"
+#include "src/system/core/logging.h"
+#include "src/system/core/panel.h"
+#include "src/system/core/utils.h"
+#include "src/system/device/power.h"
+#include "src/system/device/screenshot.h"
+#include "src/system/device/sysinfo.h"
+#include "src/system/device/sysserver.h"
+#include "src/system/device/usb.h"
 #include "src/system/gearboy/gbdb.h"
 #include "src/system/input/hookclicks.h"
 #include "src/system/input/keymap.h"
-#include "src/system/core/panel.h"
-#include "src/system/streaming/qobuzcache.h"
+#include "src/system/library/audiobookdb.h"
+#include "src/system/library/filepublicationcard.h"
+#include "src/system/library/library.h"
+#include "src/system/library/playlists.h"
+#include "src/system/playback/device_state.h"
+#include "src/system/remote/dlna.h"
+#include "src/system/streaming/navidrome.h"
 #include "src/system/streaming/podcastcache.h"
-#include "src/system/streaming/podcastsubs.h"
 #include "src/system/streaming/podcaststate.h"
+#include "src/system/streaming/podcastsubs.h"
+#include "src/system/streaming/qobuzcache.h"
 #include "src/system/streaming/radio.h"
 #include "src/system/streaming/tidalcache.h"
-#include "src/system/streaming/navidrome.h"
-#include "src/system/library/library.h"
-#include "src/system/core/logging.h"
-#include "src/system/library/playlists.h"
-#include "src/system/device/usb.h"
-#include "src/system/device/power.h"
-#include "src/system/device/screenshot.h"
-#include "src/system/device/sysserver.h"
-#include "src/system/core/utils.h"
-#include "src/system/core/utils.h"
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -866,9 +866,12 @@ static bool card_attached = true; // the card is mounted before this thread star
 
 bool storage_card_attached(void) { return card_attached; }
 
-static void card_databases_detach(void) {
-	if (!card_attached) {
-		return;
+static bool card_databases_detach(void) {
+	if (!card_attached)
+		return true;
+	if (!fp_card_set_root(NULL)) {
+		fprintf(stderr, "storage: could not drain local file operations\n");
+		return false;
 	}
 	card_attached = false;
 	navidrome_set_root(NULL);
@@ -890,10 +893,15 @@ static void card_databases_detach(void) {
 	library_close();
 	audiobookdb_close();
 	printf("storage: card databases closed for removal\n");
+	return true;
 }
 
 static void card_databases_attach(const char *root) {
 	if (card_attached) {
+		return;
+	}
+	if (!fp_card_set_root(root)) {
+		fprintf(stderr, "storage: local publication lifetime unavailable\n");
 		return;
 	}
 	card_attached = true;
@@ -995,7 +1003,10 @@ void storage_recheck_card(void) {
 	}
 
 	fprintf(stderr, "storage: the card is not readable; putting it back\n");
-	card_databases_detach();
+	if (!card_databases_detach()) {
+		pthread_mutex_unlock(&card_lock);
+		return;
+	}
 
 	if (sd_root[0] && is_mounted(sd_root)) {
 		force_unmount(sd_root);
@@ -1119,7 +1130,11 @@ void storage_release_for_shutdown(void) {
 		return;
 	}
 
-	card_databases_detach(); // playback, the log, the library and audiobook databases
+	if (!card_databases_detach()) {
+		card_released = false;
+		pthread_mutex_unlock(&card_lock);
+		return;
+	}
 	cover_set_cache_dir(NULL); // the thumbnail cache moves to /tmp
 	radio_store_close();
 	sync();
@@ -1223,8 +1238,8 @@ void *sd_hotplug_thread(void *arg) {
 				printf("SD Card Removed\n");
 				pthread_mutex_lock(&card_lock);
 				bool was_attached = card_attached;
-				card_databases_detach();
-				unmount_sd(storage_cfg);
+				if (card_databases_detach())
+					unmount_sd(storage_cfg);
 				pthread_mutex_unlock(&card_lock);
 				if (was_attached) {
 					send_notification(runtime, "sd_card_removed");

@@ -361,10 +361,10 @@ bool nd_audio_write_original(int fd, const void *data, size_t size) {
 	}
 	return true;
 }
-bool nd_audio_valid(const char *path) {
+static bool valid_original(const char *path, bool owned_staging) {
 	decode_format_t format = decode_detect_format(path);
 	if (format != DECODE_FORMAT_UNKNOWN) {
-		decoder_t *decoder = decoder_open_info(path, format);
+		decoder_t *decoder = owned_staging ? decoder_open_info_owned_staging(path, format) : decoder_open_info(path, format);
 		bool valid = decoder && decoder_sample_rate(decoder) > 0 && decoder_channels(decoder) > 0;
 		if (decoder)
 			decoder_close(decoder);
@@ -400,6 +400,8 @@ bool nd_audio_valid(const char *path) {
 	fclose(f);
 	return valid && fmt && data;
 }
+bool nd_audio_valid(const char *path) { return valid_original(path, false); }
+bool nd_audio_valid_owned_staging(const char *path) { return valid_original(path, true); }
 typedef struct {
 	const nd_context_t *context;
 	nd_audio_current_cb current;

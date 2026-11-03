@@ -54,6 +54,11 @@ decode_format_t decode_detect_format(const char *path) {
 	(void)path;
 	return DECODE_FORMAT_UNKNOWN;
 }
+decoder_t *decoder_open_info_owned_staging(const char *p, decode_format_t f) {
+	(void)p;
+	(void)f;
+	return NULL;
+}
 decoder_t *decoder_open_info(const char *p, decode_format_t f) {
 	(void)p;
 	(void)f;

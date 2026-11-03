@@ -336,9 +336,43 @@ verified permanent download before its disposable cache or the server. Missing
 or observably changed files lose their association without being deleted.
 Server-side replacements under the same ID are not detected automatically.
 Files larger than **2 GiB minus one byte** are rejected on host and target.
-Publication requires native atomic no-replace rename support from the running
-kernel and card filesystem; unsupported storage reports an error with no unsafe
-fallback. Actual Blaze/card support still needs device verification.
+Downloads use native atomic no-replace rename when available. On filesystems
+such as stock Blaze exFAT where that operation is unsupported, Sonix validates
+the hidden original and copies it into an exclusively created final file.
+The compatibility path needs space for both files, a 16 MiB free-space reserve
+and up to 4 MiB of journal overhead; it adds a full write and verification read.
+Other storage errors still stop the job.
+
+Files being received stay beside their destination as
+`.nd-<job>-<random>.ext` inside the selected artist/album/disc directory.
+A small `.sonix-download-publication.db` journal protects unfinished final copies
+from Sonix discovery, playback and file operations, independently of Navidrome
+credentials, history and cache cleanup. Finalization keeps Pause and Cancel
+available. After interruption, **Resume** checks saved completion evidence or
+retries the local copy from a validated original. Failed network reception
+restarts at byte zero; HTTP byte-range resume is not implemented. Ambiguous old
+outputs are preserved and Retry uses a fresh filename, so interrupted attempts
+can consume extra card space. The journal permits at most 128 retained attempts
+per directory and fails safely at capacity. Do not delete its metadata to expose
+an unfinished file; back up the card before inspecting/removing abandoned files
+with an external computer.
+
+Automatic device lock/screen-off allows admitted downloads to continue without
+keeping the display lit. Local finalization retains storage/job activity but
+releases network demand. Explicit Navidrome credential Lock, Pause/Cancel,
+shutdown and card removal still interrupt work.
+
+Wi-Fi browser transfer remains available with partial downloads, including when
+Navidrome is disconnected. Conflicting files and ancestor operations are blocked;
+unrelated files remain transferable. The bundled page uses guarded endpoints
+and a card identity to reject stale requests after card replacement. Stock CGI
+aliases and direct card URLs are disabled. Legacy third-party/HiBy transfer
+clients using the old multipart protocol are not supported by these endpoints.
+
+These protections apply to this Sonix version. External readers, USB hosts and
+older firmware can see partial files; avoid opening unfinished copies there.
+Focused host checks cover the compatibility path; full builds and actual
+Blaze/exFAT, power-loss and physical screen-lock behavior still need verification.
 
 Track, album and saved-playlist rows show a small download icon beside their
 secondary text. Green means a track is permanently downloaded, or every track

@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "navidromedownloads.h"
 #include "navidromeaudio.h"
+#include "navidromedownloadcopy.h"
 #include "navidromedownloadfile.h"
 #include "navidromeplaycatalog.h"
 #include "navidromeplayliststore.h"
@@ -10,6 +11,7 @@
 #include "src/system/core/sha256.h"
 #include "src/system/core/utils.h"
 #include "src/system/device/workactivity.h"
+#include "src/system/library/filepublicationcard.h"
 #include "src/system/library/library.h"
 #include "src/system/library/metadata.h"
 #include "streamturn.h"
@@ -62,6 +64,7 @@ typedef struct {
 	nd_context_t context;
 	nd_library_t library;
 	unsigned serial;
+	uint64_t card_lifetime;
 	bool network;
 	struct {
 		char id[ND_ID_MAX], artist[ND_TEXT_MAX];
@@ -80,7 +83,7 @@ static bool current(void *data) {
 	pthread_mutex_lock(&mutex);
 	bool ok = !stopping && armed && serial == r->serial;
 	pthread_mutex_unlock(&mutex);
-	return ok && navidrome_playback_current(&r->context, r->network);
+	return ok && (!r->card_lifetime || fp_card_local_current(r->card_lifetime)) && navidrome_playback_current(&r->context, r->network);
 }
 static bool commit_sql(void *data) { return sqlite3_exec(data, "COMMIT", NULL, NULL, NULL) == SQLITE_OK; }
 static bool context_current(void *data) {
@@ -244,9 +247,12 @@ bool nd_download_resolve(const nd_library_t *lib, const nd_context_t *ctx, const
 	if (!navidrome_playback_begin(ctx))
 		return false;
 	char root[ND_DL_PATH], db[1200];
+	errno = 0;
 	bool ok = nd_dl_paths(lib, root, db) && mapping_valid(root, &j, path, &r);
+	int validation_error = errno;
 	navidrome_cache_end();
-	if (!ok) {
+	bool uncertain = validation_error == EACCES || validation_error == EIO || validation_error == EAGAIN || validation_error == EBUSY || validation_error == EMFILE || validation_error == ENFILE || validation_error == ENOMEM || validation_error == ESTALE;
+	if (!ok && !uncertain) {
 		nd_dl_availability_changed();
 		pthread_mutex_lock(&mutex);
 		unsigned slot = retired_next++ % 32;
@@ -635,13 +641,12 @@ static void *manage(void *unused) {
 		if (!error && q.action == NDDL_CAPTURE && !capture(&r, &q, &added, &skipped))
 			error = "nd_dl_capture_error";
 		if (!error && q.action >= NDDL_PAUSE && q.action <= NDDL_RETRY) {
-			if (q.action == NDDL_PAUSE || q.action == NDDL_CANCEL)
-				reconcile(&r);
+			reconcile(&r);
 			nd_dl_store_t s;
 			if (!open_store(&r, &s, true))
 				error = "nd_dl_store_error";
 			else {
-				const char *sql = q.action == NDDL_PAUSE ? "UPDATE job SET state=5 WHERE state IN(0,1,2,8)" : q.action == NDDL_CANCEL ? "UPDATE job SET state=7 WHERE state NOT IN(3,4)" : q.action == NDDL_RETRY ? "UPDATE job SET state=0,error='' WHERE state=6 AND key=(SELECT max(newer.key) FROM job newer WHERE newer.track=job.track) AND NOT EXISTS(SELECT 1 FROM history_hidden WHERE kind=0 AND key=job.key)" : "UPDATE job SET state=0,error='' WHERE state=5";
+				const char *sql = q.action == NDDL_PAUSE ? "UPDATE job SET state=5 WHERE state IN(0,1,2,8)" : q.action == NDDL_CANCEL ? "UPDATE job SET state=7 WHERE state NOT IN(3,4)" : q.action == NDDL_RETRY ? "UPDATE job SET state=0,error='' WHERE (state=6 OR (state=5 AND digest<>'' AND error='nd_dl_registration_pending')) AND key=(SELECT max(newer.key) FROM job newer WHERE newer.track=job.track) AND NOT EXISTS(SELECT 1 FROM history_hidden WHERE kind=0 AND key=job.key)" : "UPDATE job SET state=0,error='' WHERE state=5";
 				if (!nd_dl_sql(&s, "BEGIN IMMEDIATE") || !nd_dl_sql(&s, sql) || !navidrome_playback_action(&r.context, false, commit_sql, s.db))
 					error = "nd_dl_store_error";
 				close_store(&s);
@@ -1005,48 +1010,65 @@ typedef struct {
 } publication_t;
 static bool publish(void *data) {
 	publication_t *p = data;
+	fp_guard_t guard;
+	bool safe = fp_guard_open(&guard, p->directory, false, false) && fp_guard_lookup(&guard, p->leaf) == FP_SAFE;
+	// Read admission suffices for atomic no-replace publication: a competing
+	// cooperative writer cannot create a reservation while it is held.
 	pthread_mutex_lock(&mutex);
-	if (!stopping && armed && serial == p->serial)
-		p->result = nd_download_file_publish(p->directory, p->part, p->leaf);
+	bool admitted = !stopping && armed && serial == p->serial;
 	pthread_mutex_unlock(&mutex);
+	if (safe && admitted)
+		p->result = nd_download_file_publish(p->directory, p->part, p->leaf);
+	fp_guard_close(&guard);
 	return p->result == ND_DOWNLOAD_PUBLISHED;
 }
 
-static const char *probe_publication(run_t *r) {
-	DIAGNOSTIC_SCOPE(D_DOWNLOAD);
-	// Probe the actual selected filesystem before fetching a potentially large
-	// original. Both probe names live beneath the hidden feature directory.
-	if (!navidrome_playback_begin(&r->context))
-		DIAGNOSTIC_RETURN_ERROR("nd_audio_cancelled");
-	char root[512], db[1200], part[80], leaf[80], nonce[33];
+static nd_download_publish_result_t probe_directory(int directory) {
 	uint8_t random[16];
-	int dir = nd_dl_paths(&r->library, root, db) ? nd_dl_directory(root, ".local/navidrome", false) : -1;
-	const char *error = "nd_dl_storage";
-	if (dir >= 0 && nd_random(random, sizeof(random))) {
+	char nonce[33], part[80], leaf[80];
+	int admission = fp_admission_begin(true);
+	if (admission < 0)
+		return ND_DOWNLOAD_PUBLISH_ERROR;
+	nd_download_publish_result_t result = ND_DOWNLOAD_PUBLISH_ERROR;
+	if (nd_random(random, sizeof(random))) {
 		for (int i = 0; i < 16; i++)
 			snprintf(nonce + 2 * i, 3, "%02x", random[i]);
 		snprintf(part, sizeof(part), ".publish-%s", nonce);
 		snprintf(leaf, sizeof(leaf), "publish-%s", nonce);
-		int fd = openat(dir, part, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+		int fd = openat(directory, part, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
 		if (fd >= 0) {
-			bool closed = close(fd) == 0;
-			nd_download_publish_result_t result = closed ? nd_download_file_publish(dir, part, leaf) : ND_DOWNLOAD_PUBLISH_ERROR;
-			if (result == ND_DOWNLOAD_PUBLISHED) {
-				unlinkat(dir, leaf, 0);
-				error = NULL;
-			} else {
-				unlinkat(dir, part, 0);
-				error = result == ND_DOWNLOAD_PUBLISH_UNSUPPORTED ? "nd_dl_atomic_unsupported" : "nd_dl_storage";
-			}
+			bool closed = !close(fd);
+			result = closed ? nd_download_file_publish(directory, part, leaf) : ND_DOWNLOAD_PUBLISH_ERROR;
+			if (result == ND_DOWNLOAD_PUBLISHED)
+				unlinkat(directory, leaf, 0);
+			else
+				unlinkat(directory, part, 0);
 		}
 	}
-	if (dir >= 0)
-		close(dir);
-	navidrome_cache_end();
-	DIAGNOSTIC_RETURN_ERROR(error);
+	fp_admission_end(admission);
+	return result;
 }
+static const char *probe_publication(run_t *r) {
+	DIAGNOSTIC_SCOPE(D_DOWNLOAD);
+	if (!navidrome_playback_begin(&r->context))
+		DIAGNOSTIC_RETURN_ERROR("nd_audio_cancelled");
+	char root[512], db[1200];
+	int directory = nd_dl_paths(&r->library, root, db) ? nd_dl_directory(root, ".local/navidrome", false) : -1;
+	nd_download_publish_result_t result = directory >= 0 ? probe_directory(directory) : ND_DOWNLOAD_PUBLISH_ERROR;
+	if (directory >= 0)
+		close(directory);
+	navidrome_cache_end();
+	// This preflight avoids starting HTTP on a broken/read-only card. The
+	// actual destination is probed again under its physical lifetime lease.
+	DIAGNOSTIC_RETURN_ERROR(result == ND_DOWNLOAD_PUBLISHED || result == ND_DOWNLOAD_PUBLISH_UNSUPPORTED ? NULL : "nd_dl_storage");
+}
+static bool seal_copy(bool (*seal)(void *), void *data, void *user) {
+	run_t *r = user;
+	return current(r) && navidrome_playback_action(&r->context, false, seal, data);
+}
+
 static void remove_partial(run_t *r, const nd_dl_job_t *j) {
-	if (!j->partial[0] || j->inode <= 0 || j->state == NDDL_INTENT || !navidrome_playback_begin(&r->context))
+	if (!j->partial[0] || j->inode <= 0 || j->digest[0] || j->state == NDDL_INTENT || !navidrome_playback_begin(&r->context))
 		return;
 	char root[512], db[1200], relative[512], prefix[48];
 	snprintf(relative, sizeof(relative), "%s", j->partial);
@@ -1064,11 +1086,157 @@ static void remove_partial(run_t *r, const nd_dl_job_t *j) {
 	navidrome_cache_end();
 }
 
+static const char *finalize_download(run_t *r, nd_dl_job_t *j, const char *root, const char *relative, const char *part, const char *leaf) {
+	j->state = NDDL_INTENT;
+	if (!save_job(r, j))
+		return "nd_dl_store_error";
+	if (!navidrome_playback_begin(&r->context))
+		return "nd_audio_cancelled";
+	int lease = fp_card_local_begin(r->card_lifetime);
+	int directory = lease != -1 ? nd_dl_directory(root, relative, false) : -1;
+	nd_download_publish_result_t result = directory >= 0 && current(r) ? probe_directory(directory) : ND_DOWNLOAD_PUBLISH_ERROR;
+	bool compatibility = result == ND_DOWNLOAD_PUBLISH_UNSUPPORTED;
+	DIAG(diagnostic_current(), D_PROBE, result == ND_DOWNLOAD_PUBLISHED || compatibility ? D_OK : D_FAILED, DV(D_STRATEGY, compatibility ? 1 : 0));
+	int64_t source_inode = j->inode;
+	nd_download_copy_t copy = {.directory = directory, .current = current, .commit = seal_copy, .user = r};
+	if (compatibility) {
+		unsigned char random[16];
+		if (nd_random(random, sizeof(random))) {
+			for (int i = 0; i < 16; i++)
+				snprintf(copy.record.operation + 2 * i, 3, "%02x", random[i]);
+			snprintf(copy.record.part, sizeof(copy.record.part), "%s", part);
+			snprintf(copy.record.final, sizeof(copy.record.final), "%s", leaf);
+			snprintf(copy.record.digest, sizeof(copy.record.digest), "%s", j->digest);
+			copy.record.bytes = j->bytes;
+			result = nd_download_copy(&copy);
+		} else
+			result = ND_DOWNLOAD_PUBLISH_ERROR;
+	} else if (result == ND_DOWNLOAD_PUBLISHED) {
+		publication_t publication = {.directory = directory, .part = part, .leaf = leaf, .serial = r->serial, .result = ND_DOWNLOAD_PUBLISH_ERROR};
+		navidrome_playback_action(&r->context, false, publish, &publication);
+		result = publication.result;
+	}
+	bool ok = result == ND_DOWNLOAD_PUBLISHED;
+	struct stat final;
+	if (ok)
+		ok = !fstatat(directory, leaf, &final, AT_SYMLINK_NOFOLLOW) && S_ISREG(final.st_mode) && final.st_size == j->bytes;
+	if (ok) {
+		j->mtime = final.st_mtime;
+		j->inode = final.st_ino;
+	}
+	if (directory >= 0 && ok && fsync(directory))
+		ok = false;
+	const char *error = ok ? NULL : !current(r) ? "nd_audio_cancelled" : result == ND_DOWNLOAD_PUBLISH_CONFLICT ? "nd_dl_conflict" : "nd_dl_storage";
+	// The independent COMPLETE record precedes account association. A failed
+	// account commit leaves a safe file which restart can settle locally.
+	if (ok) {
+		j->state = NDDL_COMPLETE;
+		j->error[0] = 0;
+		bool registered = save_job(r, j);
+		DIAG(diagnostic_current(), D_REGISTER, registered ? D_OK : D_UNCERTAIN);
+		if (!registered) {
+			j->state = NDDL_INTENT;
+			error = "nd_dl_registration_pending";
+		} else {
+			pthread_mutex_lock(&mutex);
+			saved_pending = true;
+			saved_library = r->library;
+			pthread_mutex_unlock(&mutex);
+			if (compatibility) {
+				fp_guard_t guard;
+				if (fp_guard_open(&guard, directory, true, false)) {
+					// A previous ambiguous attempt can still need the same
+					// validated staging. Preserve it until that guard is settled.
+					struct stat staged;
+					bool present = !fstatat(directory, part, &staged, AT_SYMLINK_NOFOLLOW);
+					bool absent = !present && errno == ENOENT;
+					if (present && fp_guard_part_pending(&guard, part) == 0 && S_ISREG(staged.st_mode) && (int64_t)staged.st_ino == source_inode && staged.st_size == j->bytes)
+						absent = !unlinkat(directory, part, 0);
+					if (absent || fp_guard_part_pending(&guard, part) == 1)
+						fp_guard_retire_complete(&guard, copy.record.operation);
+				}
+				fp_guard_close(&guard);
+			}
+		}
+	}
+	if (directory >= 0)
+		close(directory);
+	fp_card_end(lease);
+	navidrome_cache_end();
+	return error;
+}
+
+// Explicit Resume/Retry can reuse only a fully validated hidden original.
+// Ambiguous public outputs remain untouched; each attempt gets a new name.
+static bool retry_staging(run_t *r, nd_dl_job_t *j, const char **error) {
+	if (strlen(j->digest) != 64 || !j->partial[0] || j->bytes <= 0 || !j->extension[0])
+		return false;
+	if (!navidrome_playback_begin(&r->context)) {
+		*error = "nd_audio_cancelled";
+		return true;
+	}
+	int lease = fp_card_local_begin(r->card_lifetime);
+	char root[512], db[1200], relative[512], part[FP_NAME], leaf[FP_NAME], physical[ND_DL_PATH];
+	snprintf(relative, sizeof(relative), "%s", j->partial);
+	char *slash = strrchr(relative, '/');
+	bool layout = slash && strlen(slash + 1) < sizeof(part);
+	if (layout) {
+		strcpy(part, slash + 1);
+		*slash = 0;
+	}
+	int directory = lease != -1 && layout && nd_dl_paths(&r->library, root, db) ? nd_dl_directory(root, relative, false) : -1;
+	char digest[65];
+	struct stat staged;
+	bool valid = directory >= 0 && nd_dl_fingerprint(directory, part, digest, &staged, current, r) && staged.st_size == j->bytes && !strcmp(digest, j->digest) && snprintf(physical, sizeof(physical), "%s/%s", root, j->partial) < (int)sizeof(physical) && nd_audio_valid_owned_staging(physical);
+	if (valid) {
+		uint8_t random[16];
+		char nonce[33], title[96];
+		valid = nd_random(random, sizeof(random));
+		if (valid) {
+			for (int i = 0; i < 16; i++)
+				snprintf(nonce + 2 * i, 3, "%02x", random[i]);
+			nd_dl_safe_name(j->source.row.title, "Track", title);
+			valid = snprintf(leaf, sizeof(leaf), "%s [%s]%s", title, nonce, j->extension) < (int)sizeof(leaf) && snprintf(j->path, sizeof(j->path), "%s/%s", relative, leaf) < (int)sizeof(j->path) && strlen(root) + 1 + strlen(j->path) < ND_DL_PATH;
+		}
+		if (valid)
+			j->inode = staged.st_ino;
+		else
+			*error = "nd_dl_path_error";
+	}
+	if (directory >= 0)
+		close(directory);
+	fp_card_end(lease);
+	navidrome_cache_end();
+	if (!current(r)) {
+		*error = "nd_audio_cancelled";
+		return true;
+	}
+	if (*error)
+		return true;
+	if (!valid)
+		return false;
+	*error = finalize_download(r, j, root, relative, part, leaf);
+	return true;
+}
+
 static const char *transfer(run_t *r, nd_dl_job_t *j) {
 	DIAGNOSTIC_SCOPE(D_DOWNLOAD);
 	uint64_t transfer_start = diagnostic_clock(), storage_us = 0;
 	if (!nd_dl_destination(j->destination))
 		DIAGNOSTIC_RETURN_ERROR("nd_dl_path_error");
+	if (j->digest[0]) {
+		pthread_mutex_lock(&mutex);
+		if (serial == r->serial)
+			network_wanted = false;
+		pthread_mutex_unlock(&mutex);
+		if (!streamturn_acquire_background(current, r))
+			DIAGNOSTIC_RETURN_ERROR("nd_audio_cancelled");
+		const char *retry_error = NULL;
+		bool reused = retry_staging(r, j, &retry_error);
+		streamturn_release();
+		if (reused)
+			DIAGNOSTIC_RETURN_ERROR(retry_error);
+	}
 	remove_partial(r, j);
 	j->state = NDDL_WAITING;
 	if (!save_job(r, j))
@@ -1195,7 +1363,8 @@ static const char *transfer(run_t *r, nd_dl_job_t *j) {
 			error = "nd_audio_cancelled";
 			break;
 		}
-		int directory = nd_dl_paths(&r->library, root, db) ? nd_dl_directory(root, relative, false) : -1;
+		int admission = fp_admission_begin(true);
+		int directory = admission >= 0 && nd_dl_paths(&r->library, root, db) ? nd_dl_directory(root, relative, false) : -1;
 		uint64_t write_start = diagnostic_clock();
 		int out = directory >= 0 ? openat(directory, part, O_WRONLY | O_NOFOLLOW | (j->bytes ? O_APPEND : O_CREAT | O_EXCL), 0600) : -1;
 		struct stat st;
@@ -1208,6 +1377,7 @@ static const char *transfer(run_t *r, nd_dl_job_t *j) {
 			ok = false;
 		if (directory >= 0)
 			close(directory);
+		fp_admission_end(admission);
 		navidrome_cache_end();
 		if (!ok) {
 			error = "nd_dl_storage";
@@ -1237,6 +1407,11 @@ static const char *transfer(run_t *r, nd_dl_job_t *j) {
 	nd_audio_copy_release();
 	if (error && !current(r))
 		error = "nd_audio_cancelled";
+	if (!error)
+		r->network = false;
+	pthread_mutex_lock(&mutex);
+	network_wanted = false;
+	pthread_mutex_unlock(&mutex);
 	if (!error && (!placed || j->bytes <= 0 || (j->total && j->bytes != j->total)))
 		error = "nd_audio_invalid";
 	if (!error && !current(r))
@@ -1262,8 +1437,11 @@ static const char *transfer(run_t *r, nd_dl_job_t *j) {
 			DIAG(_diagnostic_scope.context, D_FLUSH, ok ? D_OK : D_FAILED, DV(D_DURATION_US, diagnostic_since(flush_start)), DV(D_ERRNO, ok ? 0 : errno));
 			if (!ok)
 				error = "nd_dl_storage";
+			char validated[65];
 			if (ok)
-				ok = n > 0 && n < (int)sizeof(path) && nd_audio_valid(path) && nd_dl_fingerprint(directory, part, j->digest, &st, current, r) && st.st_size == j->bytes && !strcmp(j->digest, transferred);
+				ok = n > 0 && n < (int)sizeof(path) && nd_audio_valid_owned_staging(path) && nd_dl_fingerprint(directory, part, validated, &st, current, r) && st.st_size == j->bytes && !strcmp(validated, transferred);
+			if (ok)
+				snprintf(j->digest, sizeof(j->digest), "%s", validated);
 			DIAG(_diagnostic_scope.context, D_VALIDATE, ok ? D_OK : D_FAILED, DV(D_BYTES, j->bytes));
 			if (directory >= 0)
 				close(directory);
@@ -1273,45 +1451,9 @@ static const char *transfer(run_t *r, nd_dl_job_t *j) {
 		} else if (!error)
 			error = "nd_audio_cancelled";
 	}
-	if (!error) {
-		j->state = NDDL_INTENT;
-		if (!save_job(r, j))
-			error = "nd_dl_store_error";
-	}
-	if (!error && navidrome_playback_begin(&r->context)) {
-		int directory = nd_dl_directory(root, relative, false);
-		publication_t p = {.directory = directory, .part = part, .leaf = leaf, .serial = r->serial, .result = ND_DOWNLOAD_PUBLISH_ERROR};
-		bool ok = directory >= 0 && current(r) && navidrome_playback_action(&r->context, r->network, publish, &p);
-		if (!ok)
-			error = p.result == ND_DOWNLOAD_PUBLISH_UNSUPPORTED ? "nd_dl_atomic_unsupported" : p.result == ND_DOWNLOAD_PUBLISH_CONFLICT ? "nd_dl_conflict" : "nd_dl_storage";
-		struct stat st;
-		if (ok && !fstatat(directory, leaf, &st, AT_SYMLINK_NOFOLLOW)) {
-			j->mtime = st.st_mtime;
-			j->inode = st.st_ino;
-		}
-		if (directory >= 0) {
-			if (ok)
-				fsync(directory);
-			close(directory);
-		}
-		navidrome_cache_end();
-		if (ok) {
-			j->state = NDDL_COMPLETE;
-			j->error[0] = 0;
-			bool registered = save_job(r, j);
-			DIAG(_diagnostic_scope.context, D_REGISTER, registered ? D_OK : D_UNCERTAIN);
-			if (!registered) {
-				j->state = NDDL_INTENT;
-				error = "nd_dl_registration_pending";
-			} else {
-				pthread_mutex_lock(&mutex);
-				saved_pending = true;
-				saved_library = r->library;
-				pthread_mutex_unlock(&mutex);
-			}
-		}
-	} else if (!error)
-		error = "nd_audio_cancelled";
+	if (!error)
+		error = finalize_download(r, j, root, relative, part, leaf);
+
 	pthread_mutex_lock(&mutex);
 	network_wanted = false;
 	view.active_key = 0;
@@ -1347,7 +1489,21 @@ static void reconcile(run_t *r) {
 		int dir = nd_dl_directory(s.root, relative, false);
 		char digest[65];
 		struct stat observed;
-		bool ok = dir >= 0 && nd_dl_fingerprint(dir, leaf, digest, &observed, context_current, r) && j.digest[0] && !strcmp(digest, j.digest) && j.inode == (int64_t)observed.st_ino;
+		fp_guard_t guard;
+		fp_record_t record;
+		bool safe = fp_guard_open(&guard, dir, false, false) && fp_guard_lookup(&guard, leaf) == FP_SAFE;
+		bool guarded = safe && fp_guard_final(&guard, leaf, &record);
+		const char *part = strrchr(j.partial, '/');
+		part = part ? part + 1 : j.partial;
+		bool complete = guarded && record.phase == FP_COMPLETE && !strcmp(record.part, part) && !strcmp(record.digest, j.digest) && record.bytes == j.bytes;
+		fp_guard_close(&guard);
+		// Pending rows are never adopted, even if a crashed output has all its
+		// bytes. Only durable COMPLETE proves the local publication finished.
+		bool ok = safe && (!guarded || complete) && dir >= 0 && nd_dl_fingerprint(dir, leaf, digest, &observed, context_current, r) && j.digest[0] && !strcmp(digest, j.digest) && (complete || j.inode == (int64_t)observed.st_ino);
+		if (ok) {
+			char physical[ND_DL_PATH];
+			ok = snprintf(physical, sizeof(physical), "%s/%s", s.root, j.path) < (int)sizeof(physical) && nd_audio_valid(physical);
+		}
 		if (dir >= 0)
 			close(dir);
 		if (ok) {
@@ -1386,7 +1542,7 @@ static void *download(void *unused) {
 			continue;
 		}
 		DIAGNOSTIC_ATTACH(active_diagnostic);
-		run_t r = {.library = active_library, .context = active_context, .serial = serial};
+		run_t r = {.library = active_library, .context = active_context, .serial = serial, .card_lifetime = fp_card_epoch()};
 		unsigned admission = admissions;
 		pthread_mutex_unlock(&mutex);
 		if (!context_current(&r) || r.context.card_epoch != r.library.card_epoch) {
@@ -1428,6 +1584,11 @@ static void *download(void *unused) {
 				j.state = cancelled ? (resume ? NDDL_QUEUED : NDDL_PAUSED) : NDDL_FAILED;
 			snprintf(j.error, sizeof(j.error), "%s", error);
 			save_job(&r, &j);
+			// Publication I/O has drained. Resolve the durable outcome now so an
+			// interrupted local copy exposes Resume without reopening the page.
+			// Lost completion acknowledgements are checked before another copy.
+			if (j.state == NDDL_INTENT && eligible)
+				reconcile(&r);
 			bool systemic = !strcmp(error, "nd_network_error") || !strcmp(error, "nd_auth_error") || !strcmp(error, "nd_reconnect_required") || !strcmp(error, "nd_dl_storage") || !strcmp(error, "nd_dl_atomic_unsupported") || !strcmp(error, "nd_dl_store_error");
 			if (systemic) {
 				if (r.network && (!strcmp(error, "nd_network_error") || !strcmp(error, "nd_auth_error")))

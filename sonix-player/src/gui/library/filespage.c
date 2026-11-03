@@ -1,5 +1,10 @@
 #include "filespage.h"
 #include "folderpicker.h"
+#include "src/system/device/workactivity.h"
+#include "src/system/library/filepublication.h"
+#include "src/system/library/filepublicationcard.h"
+#include <errno.h>
+#include <fcntl.h>
 
 #include <dirent.h>
 #include <pthread.h>
@@ -68,6 +73,7 @@ static bool gesture_not_tap(void) {
 typedef struct {
 	char *name;	 // in the pool
 	bool dir;
+	int64_t bytes;
 } entry_t;
 
 static char root_path[PATH_MAX_LEN];  // the card, which is as far up as this goes
@@ -77,6 +83,29 @@ static entry_t *entries;
 static int entry_count;
 static int entries_built;  // how many rows are on the list
 static int skipped;		   // entries the cap left out
+
+typedef struct {
+	char path[PATH_MAX_LEN];
+	unsigned visit;
+	uint64_t card_epoch;
+	entry_t *entries;
+	int count, skipped;
+	bool failed;
+} folder_job_t;
+static pthread_mutex_t folder_lock = PTHREAD_MUTEX_INITIALIZER;
+static folder_job_t *folder_pending, *folder_result;
+static bool folder_busy;
+static unsigned folder_visit;
+static uint64_t entries_epoch, op_epoch;
+static void folder_deliver(void *unused);
+static void folder_free(folder_job_t *job) {
+	if (!job)
+		return;
+	for (int i = 0; i < job->count; i++)
+		free(job->entries[i].name);
+	free(job->entries);
+	free(job);
+}
 
 // Set while rebuild() is pulling the list apart and putting it back.
 //
@@ -122,12 +151,16 @@ typedef enum {
 	OP_NONE = 0,
 	OP_MOVE,
 	OP_COPY,
+	OP_DELETE,
+	OP_RENAME,
+	OP_MKDIR,
 } op_t;
 
 static op_t pending_op;
 static char op_source[PATH_MAX_LEN + NAME_MAX + 2];	 // what is being moved or copied
 static char op_target[PATH_MAX_LEN + NAME_MAX + 2];	 // where it is going, name and all
-static bool op_ok;
+static bool op_ok, op_complete;
+static work_activity_t op_activity;
 
 // How far along it is, in bytes rather than in files: a folder holding one
 // album and a hundred cover thumbnails would otherwise stand at 1% and then
@@ -151,6 +184,7 @@ static lv_obj_t *pick_here_label;
 static char pick_path[PATH_MAX_LEN];
 
 static void rebuild(void);
+static void op_finished(void *user);
 
 // ---------------------------------------------------------------------------
 // what a file is
@@ -277,20 +311,28 @@ static int entry_cmp(const void *a, const void *b) {
 	return strcasecmp(x->name, y->name);
 }
 
-static void read_folder(void) {
-	entries_free();
+static void read_folder_contents(folder_job_t *job) {
 
-	DIR *dir = opendir(path);
+	DIR *dir = opendir(job->path);
 	if (!dir) {
+		job->failed = true;
 		return;
 	}
 
-	entries = calloc(MAX_ENTRIES, sizeof(*entries));
-	if (!entries) {
+	job->entries = calloc(MAX_ENTRIES, sizeof(*job->entries));
+	if (!job->entries) {
+		job->failed = true;
 		closedir(dir);
 		return;
 	}
 
+	fp_guard_t protection;
+	if (!fp_guard_open(&protection, dirfd(dir), false, false)) {
+		fp_guard_close(&protection);
+		closedir(dir);
+		job->failed = true;
+		return;
+	}
 	struct dirent *de;
 	while ((de = readdir(dir)) != NULL) {
 		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) {
@@ -300,12 +342,12 @@ static void read_folder(void) {
 		// hides files is not one, and .local is exactly the kind of folder
 		// somebody opens this page to look inside. What stays out is the junk a
 		// desktop leaves behind, which is not the user's and never was.
-		if (playlist_is_junk_name(de->d_name)) {
+		if (playlist_is_junk_name(de->d_name) || fp_guard_lookup(&protection, de->d_name) != FP_SAFE) {
 			continue;
 		}
 
-		if (entry_count >= MAX_ENTRIES) {
-			skipped++;
+		if (job->count >= MAX_ENTRIES) {
+			job->skipped++;
 			continue;
 		}
 
@@ -319,23 +361,72 @@ static void read_folder(void) {
 		} else {
 			char full[PATH_MAX_LEN + NAME_MAX + 2];
 			struct stat st;
-			is_dir = child_path(de->d_name, full, sizeof(full)) && stat(full, &st) == 0 && S_ISDIR(st.st_mode);
+			is_dir = (snprintf(full, sizeof(full), "%s/%s", job->path, de->d_name) < (int)sizeof(full)) && stat(full, &st) == 0 && S_ISDIR(st.st_mode);
 		}
 
-		entries[entry_count].name = strdup(de->d_name);
-		if (!entries[entry_count].name) {
+		struct stat info;
+		if (fstatat(dirfd(dir), de->d_name, &info, AT_SYMLINK_NOFOLLOW))
+			continue;
+		if (S_ISLNK(info.st_mode)) {
+			char full[PATH_MAX_LEN + NAME_MAX + 2];
+			int n = snprintf(full, sizeof(full), "%s/%s", job->path, de->d_name);
+			int admission = n > 0 && n < (int)sizeof(full) ? fp_read_begin(full) : -1;
+			if (admission < 0)
+				continue;
+			fp_admission_end(admission);
+		}
+		job->entries[job->count].bytes = info.st_size;
+		job->entries[job->count].name = strdup(de->d_name);
+		if (!job->entries[job->count].name) {
 			break;
 		}
-		entries[entry_count].dir = is_dir;
-		entry_count++;
+		job->entries[job->count].dir = is_dir;
+		job->count++;
 	}
+	fp_guard_close(&protection);
 	closedir(dir);
 
-	if (skipped > 0) {
-		fprintf(stderr, "files: '%s' holds more than %d entries, %d not listed\n", path, MAX_ENTRIES, skipped);
+	if (job->skipped > 0) {
+		fprintf(stderr, "files: listing limit reached, %d entries omitted\n", job->skipped);
 	}
 
-	qsort(entries, (size_t)entry_count, sizeof(*entries), entry_cmp);
+	qsort(job->entries, (size_t)job->count, sizeof(*job->entries), entry_cmp);
+}
+
+static void read_folder(folder_job_t *job) {
+	work_activity_t activity = {0};
+	if (!work_activity_begin(&activity, WORK_STORAGE)) {
+		job->failed = true;
+		return;
+	}
+	int lease = fp_card_local_begin(job->card_epoch);
+	if (lease != -1)
+		read_folder_contents(job);
+	else
+		job->failed = true;
+	fp_card_end(lease);
+	work_activity_end(&activity);
+}
+
+static void *folder_worker(void *unused) {
+	(void)unused;
+	thread_be_background("file listing");
+	for (;;) {
+		pthread_mutex_lock(&folder_lock);
+		folder_job_t *job = folder_pending;
+		folder_pending = NULL;
+		if (!job)
+			folder_busy = false;
+		pthread_mutex_unlock(&folder_lock);
+		if (!job)
+			return NULL;
+		read_folder(job);
+		pthread_mutex_lock(&folder_lock);
+		folder_free(folder_result);
+		folder_result = job;
+		pthread_mutex_unlock(&folder_lock);
+		gui_post_signal(folder_deliver, NULL);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -345,7 +436,7 @@ static void read_folder(void) {
 // Deletes a folder and everything in it. Written out rather than shelling out
 // to `rm -rf`: there is no shell on the device worth trusting with a path the
 // user typed, and this way a name with a quote in it is just a name.
-static bool remove_tree(const char *target) {
+static bool remove_tree_unprotected(const char *target) {
 	struct stat st;
 	if (lstat(target, &st) != 0) {
 		return false;
@@ -366,12 +457,41 @@ static bool remove_tree(const char *target) {
 		}
 		char child[PATH_MAX_LEN + NAME_MAX + 2];
 		snprintf(child, sizeof(child), "%s/%s", target, de->d_name);
-		if (!remove_tree(child)) {
+		if (!remove_tree_unprotected(child)) {
 			ok = false;
 		}
 	}
 	closedir(dir);
 	return rmdir(target) == 0 && ok;
+}
+
+static bool remove_tree(const char *target) {
+	int admission = fp_mutation_begin(target, NULL, true);
+	if (admission < 0)
+		return false;
+	bool ok = remove_tree_unprotected(target);
+	fp_admission_end(admission);
+	return ok;
+}
+static bool guarded_rename(const char *from, const char *to, bool absent) {
+	int admission = fp_mutation_begin(from, to, true);
+	if (admission < 0)
+		return false;
+	struct stat st;
+	bool available = !absent || (lstat(to, &st) != 0 && errno == ENOENT);
+	bool ok = available && rename(from, to) == 0;
+	int reason = available ? errno : EEXIST;
+	fp_admission_end(admission);
+	errno = reason;
+	return ok;
+}
+static bool guarded_mkdir(const char *target) {
+	int admission = fp_mutation_begin(NULL, target, false);
+	if (admission < 0)
+		return false;
+	bool ok = mkdir(target, 0777) == 0;
+	fp_admission_end(admission);
+	return ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -420,13 +540,30 @@ static void op_advance(size_t bytes) {
 }
 
 static bool copy_file(const char *from, const char *to) {
-	FILE *in = fopen(from, "rb");
-	if (!in) {
+	int admission = fp_mutation_begin(from, to, false);
+	if (admission < 0)
+		return false;
+	int source = open(from, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+	struct stat source_st;
+	if (source < 0 || fstat(source, &source_st) || !S_ISREG(source_st.st_mode)) {
+		if (source >= 0)
+			close(source);
+		fp_admission_end(admission);
 		return false;
 	}
-	FILE *out = fopen(to, "wb");
-	if (!out) {
-		fclose(in);
+	FILE *in = fdopen(source, "rb");
+	int destination = in ? open(to, O_WRONLY | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0666) : -1;
+	struct stat target_st;
+	bool target_ok = destination >= 0 && !fstat(destination, &target_st) && S_ISREG(target_st.st_mode) && (source_st.st_dev != target_st.st_dev || source_st.st_ino != target_st.st_ino) && !ftruncate(destination, 0);
+	FILE *out = target_ok ? fdopen(destination, "wb") : NULL;
+	fp_admission_end(admission);
+	if (!in || !out) {
+		if (in)
+			fclose(in);
+		else
+			close(source);
+		if (destination >= 0 && !out)
+			close(destination);
 		return false;
 	}
 
@@ -434,7 +571,6 @@ static bool copy_file(const char *from, const char *to) {
 	if (!buffer) {
 		fclose(in);
 		fclose(out);
-		unlink(to);
 		return false;
 	}
 
@@ -456,11 +592,8 @@ static bool copy_file(const char *from, const char *to) {
 	if (fclose(out) != 0) {
 		ok = false;
 	}
-	// A half-written copy is worse than none: it looks like a file and plays
-	// like a corrupt one.
-	if (!ok) {
-		unlink(to);
-	}
+	// Preserve a failed ordinary copy: without a live ownership check,
+	// unlinking its pathname could delete another operation's replacement.
 	return ok;
 }
 
@@ -473,7 +606,7 @@ static bool copy_tree(const char *from, const char *to) {
 		return copy_file(from, to);
 	}
 
-	if (mkdir(to, 0777) != 0) {
+	if (!guarded_mkdir(to)) {
 		return false;
 	}
 
@@ -487,6 +620,8 @@ static bool copy_tree(const char *from, const char *to) {
 		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) {
 			continue;
 		}
+		if (!strncasecmp(de->d_name, FP_JOURNAL, sizeof(FP_JOURNAL) - 1))
+			continue;
 		char child_from[PATH_MAX_LEN + NAME_MAX + 2];
 		char child_to[PATH_MAX_LEN + NAME_MAX + 2];
 		int a = snprintf(child_from, sizeof(child_from), "%s/%s", from, de->d_name);
@@ -519,7 +654,12 @@ static void op_progress_cb(lv_timer_t *timer) {
 	pthread_mutex_lock(&op_lock);
 	uint64_t total = op_total_bytes;
 	uint64_t done = op_done_bytes;
+	bool complete = op_complete;
 	pthread_mutex_unlock(&op_lock);
+	if (complete) {
+		op_finished(NULL);
+		return;
+	}
 
 	// Nothing to show until the walk has a total: a rename never gets one, and
 	// a bar at nought over a job that has already finished is a lie.
@@ -535,73 +675,94 @@ static void op_progress_stop(void) {
 
 static void op_finished(void *user) {
 	(void)user;
-
+	pthread_mutex_lock(&op_lock);
+	bool complete = op_complete;
+	op_complete = false;
+	bool ok = op_ok;
+	pthread_mutex_unlock(&op_lock);
+	if (!complete)
+		return;
 	op_progress_stop();
 	gui_modal_hide();
-	if (op_ok) {
-		toast_success(pending_op == OP_MOVE ? "files_moved" : "files_copied");
+	if (ok) {
+		if (pending_op == OP_MOVE)
+			toast_success("files_moved");
+		else if (pending_op == OP_COPY)
+			toast_success("files_copied");
+		else if (pending_op == OP_DELETE)
+			toast_success("files_deleted");
 	} else {
-		gui_notify_popup(pending_op == OP_MOVE ? "files_could_not_move_it" : "files_could_not_copy_it");
+		const char *reason = pending_op == OP_MOVE ? "files_could_not_move_it" : pending_op == OP_COPY ? "files_could_not_copy_it" : pending_op == OP_DELETE ? "files_could_not_delete_it" : pending_op == OP_RENAME ? "files_could_not_rename_it" : "files_create_failed";
+		gui_notify_popup(reason);
 	}
 	pending_op = OP_NONE;
-	storage_card_files_recheck(); // a database may have been moved away
+	storage_card_files_recheck();
 	rebuild();
 }
 
 static void *op_worker(void *arg) {
 	(void)arg;
 	thread_be_background("filesop");
-
-	if (pending_op == OP_MOVE) {
-		// Within one card a move is a rename and costs nothing. Across a
-		// boundary the kernel says EXDEV and there is no shortcut: it becomes a
-		// copy and then a delete, in that order, so a failure halfway leaves the
-		// original where it was.
-		op_ok = rename(op_source, op_target) == 0;
-		if (!op_ok) {
-			// Only now is there anything to count, and the count is worth its
-			// own walk of the tree: without it the bar has no scale, and a walk
-			// costs one stat per file against a read and a write of every byte.
+	bool ok = false;
+	int lease = fp_card_local_begin(op_epoch);
+	if (lease == -1)
+		goto done;
+	if (pending_op == OP_DELETE) {
+		ok = remove_tree(op_source);
+		const char *gone[] = {op_source};
+		if (ok)
+			library_forget_deleted(gone, 1);
+	} else if (pending_op == OP_MKDIR) {
+		ok = guarded_mkdir(op_target);
+	} else if (pending_op == OP_RENAME) {
+		ok = guarded_rename(op_source, op_target, true);
+	} else {
+		int admission = fp_mutation_begin(op_source, op_target, true);
+		bool eligible = admission >= 0;
+		fp_admission_end(admission);
+		if (eligible && pending_op == OP_MOVE) {
+			ok = guarded_rename(op_source, op_target, false);
+			eligible = !ok && errno == EXDEV;
+		}
+		if (eligible && !ok) {
 			uint64_t total = tree_bytes(op_source);
 			pthread_mutex_lock(&op_lock);
 			op_total_bytes = total;
 			pthread_mutex_unlock(&op_lock);
-
-			op_ok = copy_tree(op_source, op_target) && remove_tree(op_source);
+			ok = copy_tree(op_source, op_target);
+			if (ok && pending_op == OP_MOVE)
+				ok = remove_tree(op_source);
 		}
-	} else {
-		uint64_t total = tree_bytes(op_source);
-		pthread_mutex_lock(&op_lock);
-		op_total_bytes = total;
-		pthread_mutex_unlock(&op_lock);
-
-		op_ok = copy_tree(op_source, op_target);
 	}
-
-	if (!gui_post(op_finished, NULL)) {
-		// The queue was full, which leaves the modal up over a finished job.
-		// Nothing else can take it down, so it is taken down from here and the
-		// list is left to the next thing that rebuilds it.
-		op_ok = false;
-		pending_op = OP_NONE;
-	}
+done:
+	fp_card_end(lease);
+	work_activity_end(&op_activity);
+	pthread_mutex_lock(&op_lock);
+	op_ok = ok;
+	op_complete = true;
+	pthread_mutex_unlock(&op_lock);
+	gui_post_signal(op_finished, NULL);
 	return NULL;
 }
 
 static void op_start(void) {
+	op_epoch = entries_epoch;
 	pthread_mutex_lock(&op_lock);
 	op_total_bytes = 0;
 	op_done_bytes = 0;
+	op_complete = false;
 	pthread_mutex_unlock(&op_lock);
 
-	gui_modal_show(NULL, theme()->accent, pending_op == OP_MOVE ? "moving" : "copying", NULL);
+	gui_modal_show(NULL, theme()->accent, pending_op == OP_MOVE ? "moving" : pending_op == OP_COPY ? "copying" : "loading", NULL);
 
 	pthread_t thread;
-	if (pthread_create(&thread, NULL, op_worker, NULL) != 0) {
-		// No thread to be had: do it here rather than not at all, and accept
-		// the pause. No timer either: nothing would run it, since the interface
-		// thread is the one inside the copy.
-		op_worker(NULL);
+	if (!work_activity_begin(&op_activity, WORK_JOB | WORK_STORAGE) || pthread_create(&thread, NULL, op_worker, NULL) != 0) {
+		work_activity_end(&op_activity);
+		pthread_mutex_lock(&op_lock);
+		op_ok = false;
+		op_complete = true;
+		pthread_mutex_unlock(&op_lock);
+		op_finished(NULL);
 		return;
 	}
 	pthread_detach(thread);
@@ -612,33 +773,11 @@ static void op_start(void) {
 
 static void delete_confirmed(void *user) {
 	(void)user;
-	if (!acting_on[0]) {
+	if (!acting_on[0] || pending_op != OP_NONE || !child_path(acting_on, op_source, sizeof(op_source)))
 		return;
-	}
-
-	char full[PATH_MAX_LEN + NAME_MAX + 2];
-	bool named = child_path(acting_on, full, sizeof(full));
-	bool ok = named && remove_tree(full);
-	acting_on[0] = '\0';
-
-	// Music that was in the library leaves it with the files, at once, rather
-	// than at the next look for changes. Asked even after a failure: what did
-	// go, went. Only tracks the index holds are touched, which means only what
-	// is in the folders chosen for the scan.
-	if (named) {
-		const char *const gone[] = {full};
-		library_forget_deleted(gone, 1);
-	}
-
-	if (ok) {
-		toast_success("files_deleted");
-	} else {
-		gui_notify_popup("files_could_not_delete_it");
-	}
-	// Whatever was deleted, if it was one of the player's databases -- or the
-	// folder holding them -- the open copy has to let go of it.
-	storage_card_files_recheck();
-	rebuild();
+	acting_on[0] = 0;
+	pending_op = OP_DELETE;
+	op_start();
 }
 
 static void menu_delete_action(void *user) {
@@ -876,34 +1015,14 @@ static void name_accept_cb(lv_event_t *e) {
 		return;
 	}
 
-	// Neither a rename nor a new folder may quietly take the place of something
-	// that is already there, which for a rename would be a file deleted by
-	// typing.
-	struct stat st;
-	if (lstat(target, &st) == 0) {
-		gui_notify_popup("files_name_taken");
+	if (pending_op != OP_NONE)
 		return;
-	}
-
-	bool ok;
-	if (naming_new_folder) {
-		ok = mkdir(target, 0777) == 0;
-		if (!ok) {
-			gui_notify_popup("files_create_failed");
-		}
-	} else {
-		char from[PATH_MAX_LEN + NAME_MAX + 2];
-		ok = child_path(acting_on, from, sizeof(from)) && rename(from, target) == 0;
-		if (!ok) {
-			gui_notify_popup("files_could_not_rename_it");
-		}
-	}
-
+	snprintf(op_target, sizeof(op_target), "%s", target);
+	if (!naming_new_folder && !child_path(acting_on, op_source, sizeof(op_source)))
+		return;
+	pending_op = naming_new_folder ? OP_MKDIR : OP_RENAME;
 	name_layer_hide();
-	if (ok) {
-		storage_card_files_recheck(); // a renamed database is a missing one
-		rebuild();
-	}
+	op_start();
 }
 
 static void name_cancel_cb(lv_event_t *e) {
@@ -1003,18 +1122,13 @@ static void build_row(int index) {
 	lv_obj_add_style(label, &theme_style_text, 0);
 	lv_obj_set_style_text_font(label, &font_ui_22, 0);
 
-	// The size, asked of the card only for the rows that are really built.
 	if (!entry->dir) {
-		char full[PATH_MAX_LEN + NAME_MAX + 2];
-		struct stat st;
-		if (child_path(entry->name, full, sizeof(full)) && stat(full, &st) == 0) {
-			char text[24];
-			human_size((long long)st.st_size, text, sizeof(text));
-			lv_obj_t *size_label = lv_label_create(row);
-			lv_label_set_text(size_label, text);
-			lv_obj_add_style(size_label, &theme_style_text_dim, 0);
-			lv_obj_set_style_text_font(size_label, &font_ui_18, 0);
-		}
+		char text[24];
+		human_size((long long)entry->bytes, text, sizeof(text));
+		lv_obj_t *size_label = lv_label_create(row);
+		lv_label_set_text(size_label, text);
+		lv_obj_add_style(size_label, &theme_style_text_dim, 0);
+		lv_obj_set_style_text_font(size_label, &font_ui_18, 0);
 	}
 
 	lv_obj_t *dots = lv_btn_create(row);
@@ -1077,28 +1191,88 @@ static void title_refresh(void) {
 	lv_label_set_text(title_label, slash ? slash + 1 : path);
 }
 
-static void rebuild(void) {
+static void folder_deliver(void *unused) {
+	(void)unused;
+	pthread_mutex_lock(&folder_lock);
+	folder_job_t *job = folder_result;
+	folder_result = NULL;
+	pthread_mutex_unlock(&folder_lock);
+	if (!job)
+		return;
+	if (!fp_card_local_current(job->card_epoch) || job->visit != folder_visit || strcmp(job->path, path) || !lv_obj_is_valid(file_list) || lv_screen_active() != filespage_screen) {
+		folder_free(job);
+		return;
+	}
 	rebuilding = true;
 	lv_obj_clean(file_list);
 	empty_label = NULL;
-
-	read_folder();
-	title_refresh();
-	rebuilding = false;
-
-	if (entry_count == 0) {
+	entries_free();
+	entries_epoch = job->card_epoch;
+	entries = job->entries;
+	entry_count = job->count;
+	skipped = job->skipped;
+	job->entries = NULL;
+	job->count = 0;
+	if (!entry_count) {
 		empty_label = lv_label_create(file_list);
-		lv_label_set_text(empty_label, tr("files_this_folder_is_empty"));
+		lv_label_set_text(empty_label, tr(job->failed ? "files_text_unreadable" : "files_this_folder_is_empty"));
 		lv_obj_set_style_text_align(empty_label, LV_TEXT_ALIGN_CENTER, 0);
 		lv_obj_set_width(empty_label, lv_pct(100));
 		lv_obj_add_style(empty_label, &theme_style_text_dim, 0);
 		lv_obj_set_style_text_font(empty_label, &font_ui_22, 0);
 		lv_obj_set_style_pad_top(empty_label, ui_px(80), 0);
-		return;
+	} else {
+		rows_add(ROWS_FIRST);
 	}
-
-	rows_add(ROWS_FIRST);
-	rows_fill();
+	rebuilding = false;
+	if (entry_count)
+		rows_fill();
+	folder_free(job);
+}
+static void folder_retired(lv_event_t *e) {
+	(void)e;
+	folder_visit++;
+	pthread_mutex_lock(&folder_lock);
+	folder_free(folder_pending);
+	folder_pending = NULL;
+	folder_free(folder_result);
+	folder_result = NULL;
+	pthread_mutex_unlock(&folder_lock);
+}
+static void rebuild(void) {
+	rebuilding = true;
+	lv_obj_clean(file_list);
+	entries_free();
+	title_refresh();
+	empty_label = lv_label_create(file_list);
+	lv_label_set_text(empty_label, tr("loading"));
+	folder_visit++;
+	folder_job_t *job = calloc(1, sizeof(*job));
+	bool started = false;
+	if (job) {
+		job->visit = folder_visit;
+		job->card_epoch = fp_card_epoch();
+		snprintf(job->path, sizeof(job->path), "%s", path);
+		pthread_mutex_lock(&folder_lock);
+		folder_free(folder_pending);
+		folder_pending = job;
+		started = folder_busy;
+		if (!started) {
+			pthread_t worker;
+			started = pthread_create(&worker, NULL, folder_worker, NULL) == 0;
+			if (started) {
+				folder_busy = true;
+				pthread_detach(worker);
+			} else {
+				folder_free(folder_pending);
+				folder_pending = NULL;
+			}
+		}
+		pthread_mutex_unlock(&folder_lock);
+	}
+	if (!started)
+		lv_label_set_text(empty_label, tr("files_text_unreadable"));
+	rebuilding = false;
 }
 
 // The chevron goes up a folder while there is one to go up to, and off the page
@@ -1257,6 +1431,8 @@ void filespage_init(gui_config_t *cfg) {
 	lv_obj_set_hidden(pick_layer, true);
 
 	lv_obj_add_event_cb(filespage_screen, loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+	lv_obj_add_event_cb(filespage_screen, folder_retired, LV_EVENT_SCREEN_UNLOAD_START, NULL);
+	lv_obj_add_event_cb(filespage_screen, folder_retired, LV_EVENT_DELETE, NULL);
 	switcher_attach_back_gesture(file_list);
 	switcher_set_back_guard(filespage_screen, back_guard);
 	switcher_set_back_guard_peek(filespage_screen, back_guard_peek);

@@ -1,5 +1,6 @@
 #include "decode.h"
 #include "src/system/core/diagnostic.h"
+#include "src/system/library/filepublication.h"
 
 #include "src/system/library/cue.h"
 
@@ -2019,7 +2020,7 @@ decoder_t *decoder_open_info(const char *filepath, decode_format_t format) {
 	return decoder;
 }
 
-static decoder_t *decoder_open_file(const char *filepath, decode_format_t format) {
+static decoder_t *decoder_open_file_unprotected(const char *filepath, decode_format_t format) {
 	decoder_t *dec = calloc(1, sizeof(decoder_t));
 	if (!dec)
 		return NULL;
@@ -2368,6 +2369,25 @@ static decoder_t *decoder_open_file(const char *filepath, decode_format_t format
 	}
 
 	return dec;
+}
+
+static decoder_t *decoder_open_file(const char *filepath, decode_format_t format) {
+	// Growing streams are privately registered by the transport and can wait
+	// for network bytes in decoder setup. Permanent originals are not growing
+	// streams; hold read admission only through their physical decoder open.
+	int admission = growfile_is_growing(filepath) ? -2 : fp_read_begin(filepath);
+	if (admission == -1)
+		return NULL;
+	decoder_t *dec = decoder_open_file_unprotected(filepath, format);
+	fp_admission_end(admission);
+	return dec;
+}
+
+decoder_t *decoder_open_info_owned_staging(const char *filepath, decode_format_t format) {
+	const char *leaf = filepath ? strrchr(filepath, '/') : NULL;
+	if (!leaf || strncmp(leaf + 1, ".nd-", 4))
+		return NULL;
+	return decoder_open_file_unprotected(filepath, format);
 }
 
 int decoder_channels(const decoder_t *dec) { return dec->channels; }

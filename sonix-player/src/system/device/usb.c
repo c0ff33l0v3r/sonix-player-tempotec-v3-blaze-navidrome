@@ -27,9 +27,9 @@
 #include "src/gui/library/browser.h"
 #include "src/gui/shell/gui.h"
 #include "src/system/audio/audio.h"
+#include "src/system/library/filepublicationcard.h"
 #include "src/system/playback/device_state.h"
 #include "src/system/streaming/navidrome.h"
-
 
 // The ADB init script (S440adb) builds its own gadget under this directory
 // and binds it to the device's one USB controller. That matters here: with
@@ -705,6 +705,25 @@ static bool host_ejected(void) {
 	return ejected;
 }
 
+// Storage worker only; also restores access when an export is refused.
+static void storage_reopen_local(void) {
+	bool mounted = mount_still_up();
+	if (!fp_card_set_root(mounted ? sd_mount : NULL)) {
+		fprintf(stderr, "usb: local file lifetime unavailable\n");
+		mounted = false;
+	}
+	if (mounted) {
+		char db_path[512];
+		snprintf(db_path, sizeof(db_path), "%s/.local/library.db", sd_mount);
+		library_open(db_path);
+		snprintf(db_path, sizeof(db_path), "%s/.local/audiobooks.db", sd_mount);
+		audiobookdb_open(db_path);
+		logging_resume_after_usb();
+		btlog_card_attach(sd_mount);
+	}
+	navidrome_set_root(mounted ? sd_mount : NULL);
+}
+
 // Hands the card to the host. Ordering is what the stock player does: stop
 // touching the filesystem, unmount, then export the raw device.
 static void storage_export(void) {
@@ -722,6 +741,11 @@ static void storage_export(void) {
 	// and the player write to the same medium, and the player reads a stale
 	// snapshot of the filesystem.
 	storage_active = true;
+	if (!fp_card_set_root(NULL)) {
+		fprintf(stderr, "usb: local file operations did not drain; export refused\n");
+		storage_active = false;
+		return;
+	}
 
 	// Playback reads from the card; the library and the audiobook index hold
 	// open databases on it; the log usually *is* on it -- and an open
@@ -748,15 +772,14 @@ static void storage_export(void) {
 
 	// Handing the raw device to a PC while the card is still mounted here would
 	// corrupt the filesystem. If the first unmount did not take (a straggler
-	// still holding a file), escalate: plain, forced, then lazy.
+	// still holding a file), retry ordinary unmount and refuse export if busy.
 	//
 	// The loop also gives up if DAC mode takes the controller meanwhile:
 	// carrying on would insert the medium into what is by then the audio
 	// gadget, and the card would appear on the PC in DAC mode.
 	for (int attempt = 0; attempt < 3 && mount_still_up() && !dac_owns_usb; attempt++) {
-		const char *flags = (attempt == 0) ? "" : (attempt == 1) ? "-f " : "-l ";
 		char cmd[512];
-		snprintf(cmd, sizeof(cmd), "umount %s%s", flags, sd_mount);
+		snprintf(cmd, sizeof(cmd), "umount %s", sd_mount);
 		fprintf(stderr, "usb: card still mounted, retrying: %s\n", cmd);
 		int urc = system(cmd);
 		(void)urc;
@@ -764,11 +787,15 @@ static void storage_export(void) {
 	}
 	if (dac_owns_usb) {
 		fprintf(stderr, "usb: DAC mode took the controller; export abandoned\n");
+		storage_reopen_local();
 		storage_active = false; // the supervisor is wanted again
 		return;
 	}
 	if (mount_still_up()) {
-		fprintf(stderr, "usb: could not unmount %s; exporting anyway (read-mostly card)\n", sd_mount);
+		fprintf(stderr, "usb: card still mounted; export refused\n");
+		storage_reopen_local();
+		storage_active = false;
+		return;
 	}
 
 	// With ADB holding the USB controller its gadget must carry the storage
@@ -824,10 +851,8 @@ static void storage_restore(void) {
 	// The kernel cached that filesystem's metadata before handing the raw
 	// device to the host; everything the PC wrote since is invisible through
 	// it. Usually there is nothing left mounted, because the export unmounted
-	// it -- but not always, since the export gives up after three attempts and
-	// exports anyway. The loop below would then find the mount point "already
-	// up" and leave it alone, and the player would carry on reading a directory
-	// that no longer describes the card.
+	// it. A mount restored externally during export must also be discarded
+	// before the player resumes reading the card.
 	//
 	// So: drop it first, then mount. Unmounting a mount point that reads fine
 	// costs a syscall; reading a card through a stale one costs the user their
@@ -870,15 +895,7 @@ static void storage_restore(void) {
 	}
 	fprintf(stderr, "usb: card remounted on %s: %s\n", sd_mount, mount_still_up() ? "yes" : "NO");
 
-	// The databases and the log live on the card that just came back.
-	char db_path[512];
-	snprintf(db_path, sizeof(db_path), "%s/.local/library.db", sd_mount);
-	library_open(db_path);
-	snprintf(db_path, sizeof(db_path), "%s/.local/audiobooks.db", sd_mount);
-	audiobookdb_open(db_path);
-	logging_resume_after_usb();
-	btlog_card_attach(sd_mount);
-	navidrome_set_root(mount_still_up() ? sd_mount : NULL);
+	storage_reopen_local();
 
 	storage_active = false;
 

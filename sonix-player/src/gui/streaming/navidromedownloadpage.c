@@ -290,7 +290,7 @@ static void manager_paint(void) {
 	lv_obj_set_state(clear_history, LV_STATE_DISABLED, unavailable || readonly || clearing);
 	lv_obj_set_style_pad_bottom(job_list, history || clearing ? ui_px(84) : 0, 0);
 	lv_obj_set_state(header_actions[0], LV_STATE_DISABLED, unavailable || readonly || clearing || (selected_tab == 2 ? !result.counts[NDDL_FAILED] : !result.counts[NDDL_PAUSED]));
-	lv_obj_set_state(header_actions[1], LV_STATE_DISABLED, unavailable || readonly || clearing || !(result.counts[NDDL_QUEUED] + result.counts[NDDL_RUNNING] + result.counts[NDDL_VALIDATING] + result.counts[NDDL_WAITING]));
+	lv_obj_set_state(header_actions[1], LV_STATE_DISABLED, unavailable || readonly || clearing || !(result.counts[NDDL_QUEUED] + result.counts[NDDL_RUNNING] + result.counts[NDDL_VALIDATING] + result.counts[NDDL_INTENT] + result.counts[NDDL_WAITING]));
 	lv_obj_set_state(header_actions[2], LV_STATE_DISABLED, unavailable || readonly || clearing || !(totals[0] + result.counts[NDDL_FAILED]));
 	bool matching = result.filter == (nd_dl_filter_t)(selected_tab + 1);
 	lv_label_set_text(job_status, result.error[0] ? tr(result.error) : readonly ? tr("nd_dl_readonly") : !matching ? tr("nd_working") : !result.total ? tr("nd_library_empty") : "");

@@ -1,5 +1,11 @@
 #include "trackmenu.h"
+#include "src/gui/shell/gui.h"
 #include "src/gui/streaming/navidromediagnostic.h"
+#include "src/system/device/workactivity.h"
+#include "src/system/library/cue.h"
+#include "src/system/library/filepublication.h"
+#include "src/system/library/filepublicationcard.h"
+#include <pthread.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -1529,9 +1535,7 @@ static void details_add_gain(const char *name, float gain_db, float peak) {
 
 // `playing` adds what the player is applying to this file right now, which
 // only exists for the track being played.
-static void details_fill(const char *file, const song_metadata_t *tags, int bits, double sample_rate,
-						 int channels, double duration_secs, const char *codec, int kbps, bool lossy,
-						 int dsd_multiple, bool playing) {
+static void details_fill(const char *file, const song_metadata_t *tags, int bits, double sample_rate, int channels, double duration_secs, const char *codec, int kbps, bool lossy, int dsd_multiple, bool playing, const struct stat *known_size) {
 	char buffer[64];
 
 	const char *slash = strrchr(file, '/');
@@ -1613,7 +1617,9 @@ static void details_fill(const char *file, const song_metadata_t *tags, int bits
 	// which may still be downloading -- a number that grows on screen by itself
 	// and describes the download, not the track.
 	struct stat st;
-	if (!nd_audio_source(file) && !qobuzcache_owns(file) && !tidalcache_owns(file) && stat(file, &st) == 0) {
+	if (known_size)
+		st = *known_size;
+	if (!nd_audio_source(file) && !qobuzcache_owns(file) && !tidalcache_owns(file) && (known_size || (playing && stat(file, &st) == 0))) {
 		snprintf(buffer, sizeof(buffer), "%.1f MB", st.st_size / (1024.0 * 1024.0));
 		details_add_row("trackmenu_size", buffer);
 	}
@@ -1632,51 +1638,163 @@ static void details_fill(const char *file, const song_metadata_t *tags, int bits
 	}
 }
 
+typedef struct {
+	char path[512], codec[16];
+	unsigned visit;
+	uint64_t card_epoch;
+	song_metadata_t tags;
+	int bits, channels, kbps, dsd;
+	double rate, duration;
+	bool lossy, ok, size_known;
+	struct stat size;
+} details_job_t;
+static unsigned details_visit;
+static pthread_mutex_t details_lock = PTHREAD_MUTEX_INITIALIZER;
+static details_job_t *details_pending, *details_result;
+static bool details_busy;
+static void details_done(void *data) {
+	details_job_t *job = data;
+	if (fp_card_local_current(job->card_epoch) && job->visit == details_visit && lv_obj_is_valid(details_screen) && lv_screen_active() == details_screen && !strcmp(job->path, details_path)) {
+		lv_obj_clean(details_card);
+		if (job->ok)
+			details_fill(job->path, &job->tags, job->bits, job->rate, job->channels, job->duration, job->codec, job->kbps, job->lossy, job->dsd, false, job->size_known ? &job->size : NULL);
+		else
+			details_add_row("trackmenu_state", tr("files_text_unreadable"));
+	}
+	free(job);
+}
+static void details_flush(void *unused) {
+	(void)unused;
+	pthread_mutex_lock(&details_lock);
+	details_job_t *job = details_result;
+	details_result = NULL;
+	pthread_mutex_unlock(&details_lock);
+	if (job)
+		details_done(job);
+}
+static void *details_worker(void *data) {
+	(void)data;
+	thread_be_background("track details");
+	for (;;) {
+		pthread_mutex_lock(&details_lock);
+		details_job_t *job = details_pending;
+		details_pending = NULL;
+		if (!job)
+			details_busy = false;
+		pthread_mutex_unlock(&details_lock);
+		if (!job)
+			return NULL;
+		char sheet[512];
+		const char *physical = cue_split_path(job->path, sheet, sizeof(sheet)) > 0 ? sheet : job->path;
+		work_activity_t activity = {0};
+		int lease = work_activity_begin(&activity, WORK_STORAGE) ? fp_card_local_begin(job->card_epoch) : -1;
+		int admission = lease != -1 ? fp_read_begin(physical) : -1;
+		if (admission >= 0) {
+			// An arbitrary library track: tags read from the file itself, format
+			// from the decoder's header (opened and closed without decoding).
+			song_metadata_t tags;
+			metadata_read(job->path, &tags);
+
+			int bits = 0, channels = 0;
+			double sample_rate = 0;
+			decode_format_t format = decode_detect_format(job->path);
+			double duration_secs = 0;
+			char codec[16] = "";
+			int kbps = 0;
+			bool lossy = false;
+			int dsd_multiple = 0;
+			decoder_t *dec = format != DECODE_FORMAT_UNKNOWN ? decoder_open_info(job->path, format) : NULL;
+			if (dec) {
+				bits = decoder_source_bits(dec);
+				channels = decoder_channels(dec);
+				sample_rate = decoder_sample_rate(dec);
+				snprintf(codec, sizeof(codec), "%s", decoder_codec_name(dec));
+				kbps = decoder_bitrate_kbps(dec);
+				lossy = decoder_is_lossy(dec);
+				dsd_multiple = decoder_dsd_multiple(dec);
+				uint64_t frames = decoder_total_pcm_frames(dec);
+				if (sample_rate > 0 && frames > 0) {
+					duration_secs = (double)frames / sample_rate;
+				}
+				decoder_close(dec);
+			}
+
+			// A lossy file that declares no bitrate: use the real average, which can
+			// be computed here because the whole file is present (streamed tracks
+			// never reach this branch).
+			if (lossy && kbps <= 0 && duration_secs > 0.5) {
+				struct stat st_lossy;
+				if (stat(job->path, &st_lossy) == 0 && st_lossy.st_size > 0) {
+					kbps = (int)((double)st_lossy.st_size * 8.0 / duration_secs / 1000.0 + 0.5);
+				}
+			}
+
+			job->tags = tags;
+			job->bits = bits;
+			job->channels = channels;
+			job->rate = sample_rate;
+			job->duration = duration_secs;
+			job->kbps = kbps;
+			job->lossy = lossy;
+			job->dsd = dsd_multiple;
+			snprintf(job->codec, sizeof(job->codec), "%s", codec);
+			job->size_known = !stat(job->path, &job->size);
+			job->ok = format == DECODE_FORMAT_UNKNOWN || sample_rate > 0;
+
+			fp_admission_end(admission);
+		}
+		fp_card_end(lease);
+		work_activity_end(&activity);
+		pthread_mutex_lock(&details_lock);
+		free(details_result);
+		details_result = job;
+		pthread_mutex_unlock(&details_lock);
+		gui_post_signal(details_flush, NULL);
+	}
+}
+static void details_retired(lv_event_t *e) {
+	(void)e;
+	details_visit++;
+	pthread_mutex_lock(&details_lock);
+	free(details_pending);
+	details_pending = NULL;
+	free(details_result);
+	details_result = NULL;
+	pthread_mutex_unlock(&details_lock);
+}
+
 static void details_rebuild(void) {
 	lv_obj_clean(details_card);
 
+	details_visit++;
 	if (details_path[0]) {
-		// An arbitrary library track: tags read from the file itself, format
-		// from the decoder's header (opened and closed without decoding).
-		song_metadata_t tags;
-		metadata_read(details_path, &tags);
-
-		int bits = 0, channels = 0;
-		double sample_rate = 0;
-		decode_format_t format = decode_detect_format(details_path);
-		double duration_secs = 0;
-		char codec[16] = "";
-		int kbps = 0;
-		bool lossy = false;
-		int dsd_multiple = 0;
-		decoder_t *dec = format != DECODE_FORMAT_UNKNOWN ? decoder_open_info(details_path, format) : NULL;
-		if (dec) {
-			bits = decoder_source_bits(dec);
-			channels = decoder_channels(dec);
-			sample_rate = decoder_sample_rate(dec);
-			snprintf(codec, sizeof(codec), "%s", decoder_codec_name(dec));
-			kbps = decoder_bitrate_kbps(dec);
-			lossy = decoder_is_lossy(dec);
-			dsd_multiple = decoder_dsd_multiple(dec);
-			uint64_t frames = decoder_total_pcm_frames(dec);
-			if (sample_rate > 0 && frames > 0) {
-				duration_secs = (double)frames / sample_rate;
+		details_add_row("trackmenu_state", tr("loading"));
+		details_job_t *job = calloc(1, sizeof(*job));
+		if (job) {
+			job->visit = details_visit;
+			job->card_epoch = fp_card_epoch();
+			snprintf(job->path, sizeof(job->path), "%s", details_path);
+			pthread_mutex_lock(&details_lock);
+			free(details_pending);
+			details_pending = job;
+			bool started = details_busy;
+			if (!started) {
+				pthread_t worker;
+				started = pthread_create(&worker, NULL, details_worker, NULL) == 0;
+				if (started) {
+					details_busy = true;
+					pthread_detach(worker);
+				} else {
+					free(details_pending);
+					details_pending = NULL;
+				}
 			}
-			decoder_close(dec);
+			pthread_mutex_unlock(&details_lock);
+			if (started)
+				return;
 		}
-
-		// A lossy file that declares no bitrate: use the real average, which can
-		// be computed here because the whole file is present (streamed tracks
-		// never reach this branch).
-		if (lossy && kbps <= 0 && duration_secs > 0.5) {
-			struct stat st_lossy;
-			if (stat(details_path, &st_lossy) == 0 && st_lossy.st_size > 0) {
-				kbps = (int)((double)st_lossy.st_size * 8.0 / duration_secs / 1000.0 + 0.5);
-			}
-		}
-
-		details_fill(details_path, &tags, bits, sample_rate, channels, duration_secs, codec, kbps, lossy,
-					 dsd_multiple, false);
+		lv_obj_clean(details_card);
+		details_add_row("trackmenu_state", tr("files_text_unreadable"));
 		return;
 	}
 
@@ -1705,8 +1823,7 @@ static void details_rebuild(void) {
 		}
 	}
 
-	details_fill(state.current_file, &state.metadata, audio_get_stream_bits(), state.stream_sample_rate,
-				 state.stream_channels, state.progress_total_secs, codec, kbps, lossy, audio_get_dsd_multiple(), true);
+	details_fill(state.current_file, &state.metadata, audio_get_stream_bits(), state.stream_sample_rate, state.stream_channels, state.progress_total_secs, codec, kbps, lossy, audio_get_dsd_multiple(), true, NULL);
 }
 
 static void details_loaded_cb(lv_event_t *e) {
@@ -1726,6 +1843,8 @@ static void details_loaded_cb(lv_event_t *e) {
 }
 
 static void build_details_page(gui_config_t *cfg) {
+	lv_obj_add_event_cb(details_screen, details_retired, LV_EVENT_SCREEN_UNLOAD_START, NULL);
+	lv_obj_add_event_cb(details_screen, details_retired, LV_EVENT_DELETE, NULL);
 	lv_obj_add_style(details_screen, &theme_style_screen, 0);
 	settingsrow_title(details_screen, cfg, "details");
 
