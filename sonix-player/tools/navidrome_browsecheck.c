@@ -27,7 +27,23 @@ static bool delayed_trace_query(nd_store_t *store, int64_t generation, const nd_
 }
 #define nd_store_query_cached delayed_trace_query
 #endif
+#ifdef NAVIDROME_VIEWPORT_PROGRESS_CHECK
+static atomic_bool viewport_hold, viewport_entered, viewport_release;
+static bool viewport_query(nd_store_t *store, int64_t generation, const nd_query_t *query,
+	int offset, nd_row_t rows[ND_WINDOW], int *count, int *total, bool writable) {
+	if (atomic_load(&viewport_hold)) {
+		atomic_store(&viewport_entered, true);
+		while (!atomic_load(&viewport_release)) usleep(1000);
+	}
+	return nd_store_query_cached(store, generation, query, offset, rows, count, total, writable);
+}
+#define nd_store_query_cached viewport_query
+#endif
+#include "src/gui/streaming/navidromethumb.c"
 #include NAVIDROME_BROWSE_SOURCE
+#ifdef NAVIDROME_VIEWPORT_PROGRESS_CHECK
+#undef nd_store_query_cached
+#endif
 #ifdef NAVIDROME_TRACE_QUERY_DELAY
 #undef nd_store_query_cached
 #endif
@@ -166,6 +182,7 @@ void player_sheet_attach_drag(lv_obj_t *object, bool opening) {
 void switch_screen(lv_obj_t *screen) { lv_screen_load(screen); }
 void switch_screen_return_to(lv_obj_t *screen) { lv_screen_load(screen); }
 void thread_be_background(const char *name) { (void)name; }
+void thread_be_low_priority(const char *name) { (void)name; }
 int settingsrow_content_top(gui_config_t *cfg) {
 	(void)cfg;
 	return 65;
@@ -240,11 +257,11 @@ static struct {
 	void *data;
 } posts[64];
 static unsigned post_read, post_write;
-#if defined(NAVIDROME_COORDINATOR_TEST) || defined(NAVIDROME_STAR_UI) || defined(NAVIDROME_PLAYLIST_UI) || defined(NAVIDROME_SEARCH_ACTION_UI)
+#if defined(NAVIDROME_COORDINATOR_TEST) || defined(NAVIDROME_STAR_UI) || defined(NAVIDROME_PLAYLIST_UI) || defined(NAVIDROME_SEARCH_ACTION_UI) || defined(NAVIDROME_VIEWPORT_PROGRESS_CHECK)
 static atomic_bool fixture_reject_posts;
 #endif
 bool gui_post(void (*cb)(void *), void *data) {
-#if defined(NAVIDROME_COORDINATOR_TEST) || defined(NAVIDROME_STAR_UI) || defined(NAVIDROME_PLAYLIST_UI) || defined(NAVIDROME_SEARCH_ACTION_UI)
+#if defined(NAVIDROME_COORDINATOR_TEST) || defined(NAVIDROME_STAR_UI) || defined(NAVIDROME_PLAYLIST_UI) || defined(NAVIDROME_SEARCH_ACTION_UI) || defined(NAVIDROME_VIEWPORT_PROGRESS_CHECK)
 	if (atomic_load(&fixture_reject_posts))
 		return false;
 #endif
@@ -349,6 +366,48 @@ static void seed(const nd_library_t *library) {
 #if !defined(NAVIDROME_COORDINATOR_TEST) && !defined(NAVIDROME_PLAYLIST_UI) && !defined(NAVIDROME_STAR_UI) && !defined(NAVIDROME_BROWSE_FIXTURE_ONLY)
 #include "navidrome_artistfilter_uifixture.h"
 
+#ifdef NAVIDROME_VIEWPORT_PROGRESS_CHECK
+static void viewport_checks(void) {
+	browse_page_t *p = &pages[0];
+	for (int episode = 0; episode < 2; episode++) {
+		viewport_hold = true; viewport_release = false; viewport_entered = false;
+		submit_window(p);
+		for (int i = 0; !viewport_entered && i < 10000; i++) usleep(1000);
+		assert(viewport_entered);
+		unsigned serial = p->serial;
+		for (int step = 0; step < 20; step++) {
+			int ordinal = episode ? 100 + (step % 2 ? 10 : -10) : step % 7;
+			lv_obj_scroll_to_y(p->list, ordinal * pitch, LV_ANIM_OFF);
+			lv_obj_update_layout(p->screen);
+			lv_obj_send_event(p->list, LV_EVENT_SCROLL, NULL);
+		}
+		lv_tick_inc(3000); navidromebrowse_refresh();
+		bool retained = p->serial == serial;
+		viewport_hold = false; viewport_release = true;
+		assert(retained && "viewport motion and slow-read observation must not supersede a useful active query");
+		window_wait(0);
+		assert(nd_row_covered(p->list, p->first, p->count, p->total, pitch, 0));
+		for (int i = 0; i < p->count; i++) {
+			char id[64]; snprintf(id, sizeof(id), "song-%05d", p->first + i);
+			assert(!strcmp(p->data[i].id, id));
+		}
+	}
+#ifndef NAVIDROME_VIEWPORT_BASELINE
+	viewport_hold = true; viewport_entered = false; viewport_release = false;
+	submit_window(p);
+	for (int i = 0; !viewport_entered && i < 10000; i++) usleep(1000);
+	assert(viewport_entered); fixture_reject_posts = true;
+	viewport_hold = false; viewport_release = true;
+	for (int i = 0; atomic_load(&failed_delivery[0]) != p->serial && i < 10000; i++) usleep(1000);
+	assert(atomic_load(&failed_delivery[0]) == p->serial);
+	fixture_reject_posts = false; lv_tick_inc(2600); navidromebrowse_refresh(); window_wait(0);
+#endif
+	lv_obj_scroll_to_y(p->list, 0, LV_ANIM_OFF);
+	lv_obj_send_event(p->list, LV_EVENT_SCROLL, NULL); window_wait(0);
+	puts("delayed production viewport reads: continuing offsets, timeout observation, far-fling reversal, exact rows and rejected-post recovery passed");
+}
+#endif
+
 int main(void) {
 	alarm(60);
 	setvbuf(stdout, NULL, _IONBF, 0);
@@ -374,7 +433,7 @@ int main(void) {
 	font_ui_24 = font_ui_28 = font_ui_24_bold = font_ui_14 = font_ui_18 = font_ui_20 = font_ui_64_bold = lv_font_unscii_8;
 	int width = getenv("SONIX_CHECK_WIDTH") ? atoi(getenv("SONIX_CHECK_WIDTH")) : 320;
 	assert(width == 320 || width == 480);
-	int height = width == 320 ? 480 : 800;
+	int height = getenv("SONIX_CHECK_HEIGHT") ? atoi(getenv("SONIX_CHECK_HEIGHT")) : width == 320 ? 480 : 800;
 	ui_panel_width = width;
 	lv_display_t *display = lv_display_create(width, height);
 	navidrome_screen = lv_obj_create(NULL);
@@ -398,7 +457,15 @@ int main(void) {
 	assert(control.x1 >= 0 && control.x2 < width && title.x2 < control.x1);
 	assert(icon.x1 >= control.x1 && icon.x2 <= control.x2 && icon.y1 >= control.y1 && icon.y2 <= control.y2);
 #endif
+#ifdef NAVIDROME_VIEWPORT_BASELINE
 	assert(lv_obj_get_width(pages[0].images[0]) == ui_px(ND_ART_THUMB_SIZE));
+#else
+	assert(lv_obj_get_width(pages[0].thumbs[0].frame) == ui_px(ND_ART_THUMB_SIZE));
+	assert(lv_obj_get_width(pages[0].images[0]) == ui_px(32));
+#endif
+#ifdef NAVIDROME_VIEWPORT_PROGRESS_CHECK
+	viewport_checks();
+#endif
 	assert(lv_image_get_inner_align(pages[0].images[0]) == LV_IMAGE_ALIGN_CONTAIN);
 	lv_area_t art_bounds, row_bounds, name_bounds;
 	lv_obj_get_coords(pages[0].images[0], &art_bounds);

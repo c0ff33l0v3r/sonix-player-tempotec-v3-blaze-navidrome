@@ -34,6 +34,8 @@ static bool network_wanted;
 static char protected_paths[3][512];
 static char copy_path[512];
 static char source_path[512];
+static char artwork_head_path[512];
+static unsigned artwork_head_token;
 static nd_audio_original_resolver original_resolver;
 static char failed_path[512];
 static pthread_once_t once = PTHREAD_ONCE_INIT;
@@ -42,6 +44,14 @@ static bool registered;
 void nd_audio_cancel(void) {
 	pthread_mutex_lock(&lock);
 	cancelled++;
+	artwork_head_path[0] = 0;
+	if (streamturn_artwork_urgent) streamturn_artwork_urgent();
+	pthread_mutex_unlock(&lock);
+}
+void nd_audio_artwork_headroom(const char *path, int milliseconds) {
+	pthread_mutex_lock(&lock);
+	if (path && artwork_head_path[0] && !strcmp(path, artwork_head_path) && streamturn_artwork_headroom)
+		streamturn_artwork_headroom(artwork_head_token, milliseconds);
 	pthread_mutex_unlock(&lock);
 }
 static void register_cache(void) { registered = streamturn_register_abandon(nd_audio_cancel); }
@@ -574,6 +584,12 @@ static const char *fetch_audio(const nd_library_t *lib, const nd_context_t *ctx,
 						snprintf(space.current, sizeof(space.current), "%s", path);
 						growfile_announce(path, length_known ? content_length : 0);
 						announced = true;
+						pthread_mutex_lock(&lock);
+						if (generation == cancelled) {
+							snprintf(artwork_head_path, sizeof(artwork_head_path), "%s", path);
+							artwork_head_token = streamturn_playback_token ? streamturn_playback_token() : 0;
+						}
+						pthread_mutex_unlock(&lock);
 					}
 				}
 				if (!error && fd < 0)
@@ -678,6 +694,10 @@ static const char *fetch_audio(const nd_library_t *lib, const nd_context_t *ctx,
 		ready(path, user);
 	if (error && (!strcmp(error, "nd_network_error") || !strcmp(error, "nd_auth_error")))
 		navidrome_network_failed(ctx);
+	pthread_mutex_lock(&lock);
+	artwork_head_path[0] = 0;
+	if (streamturn_artwork_urgent) streamturn_artwork_urgent();
+	pthread_mutex_unlock(&lock);
 	streamturn_release();
 	return error;
 }

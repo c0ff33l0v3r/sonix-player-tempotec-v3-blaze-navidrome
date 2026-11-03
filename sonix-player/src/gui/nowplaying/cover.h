@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "lvgl/lvgl.h"
 
@@ -22,6 +23,13 @@ typedef struct {
 	int16_t tone_luma;	 // its brightness as a whole,
 	bool tone_light;	 // and whether a page in it is a light one
 } cover_image_t;
+
+// Prepared RGB565 pixel I/O shared by Music and scoped service caches. The
+// caller validates its own envelope/identity, owns FILE and publication, and
+// keeps storage off the GUI thread. Never reads beyond the bounded image.
+bool cover_read_pixels(FILE *file, int w, int h, cover_image_t *out);
+bool cover_write_pixels(FILE *file, const cover_image_t *image);
+unsigned cover_render_policy(void);
 
 // How bright a sleeve has to be for a page in its colour to be a light one,
 // written in dark ink. The colour kept with a picture is worked out at this

@@ -1,3 +1,4 @@
+#include "navidromethumb.h"
 #include "navidromediscovery.h"
 #include "navidromealbum.h"
 #include "navidromediagnostic.h"
@@ -34,16 +35,14 @@ typedef struct {
 	nd_view_diagnostic_t diagnostic_view;
 	lv_obj_t *screen, *list, *extent, *status, *reason, *title;
 	lv_obj_t *rows[ND_WINDOW], *names[ND_WINDOW], *details[ND_WINDOW], *images[ND_WINDOW];
-	cover_image_t art[ND_WINDOW];
+	nd_thumb_t thumbs[ND_WINDOW];
 	lv_obj_t *numbers[ND_WINDOW], *durations[ND_WINDOW], *marks[ND_WINDOW], *menus[ND_WINDOW];
-	int art_slots[ND_WINDOW];
-	bool art_bound[ND_WINDOW];
 	nd_album_view_t album_view;
 	nd_off_badges_t offline;
 	nd_album_membership_t *members;
 	char anchor[ND_ID_MAX];
 	int anchor_delta;
-	bool art_done[ND_WINDOW], loading, populated, action_busy;
+	bool loading, populated, action_busy;
 	nd_search_result_t data;
 	nd_kind_t kind;
 	int scroll[3], requested_first, status_top;
@@ -93,29 +92,21 @@ static int discovery_active_page(void) {
 
 static void discovery_art_release(discovery_page_t *p) {
 	for (int i = 0; i < ND_WINDOW; i++) {
-		navidromeart_release(p->art_slots[i]);
+		navidromethumb_release(&p->thumbs[i]);
 		lv_obj_set_hidden(p->images[i], true);
-		lv_image_set_src(p->images[i], &icon_music_note);
-		lv_image_set_inner_align(p->images[i], LV_IMAGE_ALIGN_CONTAIN);
-		lv_obj_add_style(p->images[i], &theme_style_icon, 0);
-		cover_free(&p->art[i]);
-		p->art_done[i] = true;
-		p->art_bound[i] = false;
 	}
 }
 static void discovery_art_remap(discovery_page_t *p, const nd_search_result_t *next) {
 	int map[ND_WINDOW];
 	bool claimed[ND_WINDOW] = {0};
-	bool keep[ND_WINDOW] = {0};
 	bool same = p->populated && p->data.source == next->source && p->data.kind == next->kind && p->data.library.epoch == next->library.epoch && p->data.library.card_epoch == next->library.card_epoch && p->data.library.generation == next->library.generation && !strcmp(p->data.library.scope, next->library.scope);
 	for (int i = 0; i < ND_WINDOW; i++) {
 		map[i] = -1;
 		if (same && i < next->count)
 			for (int j = 0; j < p->data.count; j++)
-				if (!claimed[j] && next->rows[i].id[0] && p->art_bound[j] && !strcmp(p->data.rows[j].id, next->rows[i].id) && !strcmp(p->data.rows[j].cover, next->rows[i].cover)) {
+				if (!claimed[j] && next->rows[i].id[0] && p->thumbs[j].bound && !strcmp(p->data.rows[j].id, next->rows[i].id) && !strcmp(p->data.rows[j].cover, next->rows[i].cover)) {
 					map[i] = j;
 					claimed[j] = true;
-					keep[i] = true;
 					break;
 				}
 	}
@@ -124,25 +115,15 @@ static void discovery_art_remap(discovery_page_t *p, const nd_search_result_t *n
 	ND_ROW_REORDER(p->names, map);
 	ND_ROW_REORDER(p->details, map);
 	ND_ROW_REORDER(p->images, map);
+	ND_ROW_REORDER(p->thumbs, map);
 	ND_ROW_REORDER(p->numbers, map);
 	ND_ROW_REORDER(p->marks, map);
 	ND_ROW_REORDER(p->menus, map);
 	ND_ROW_REORDER(p->durations, map);
-	ND_ROW_REORDER(p->art, map);
-	ND_ROW_REORDER(p->art_done, map);
-	ND_ROW_REORDER(p->art_bound, map);
-	ND_ROW_REORDER(p->art_slots, map);
 	ND_ROW_REORDER(p->offline.icons, map);
 	for (int i = 0; i < ND_WINDOW; i++) {
-		if (keep[i] && p->art[i].pixels)
-			lv_image_set_src(p->images[i], &p->art[i].dsc);
-		if (!keep[i] && p->art_bound[i]) {
-			lv_image_set_src(p->images[i], &icon_music_note);
-			cover_free(&p->art[i]);
-			navidromeart_release(p->art_slots[i]);
-			p->art_bound[i] = false;
-			p->art_done[i] = true;
-		}
+		navidromethumb_repaint(&p->thumbs[i]);
+		if (i >= next->count) navidromethumb_release(&p->thumbs[i]);
 	}
 }
 static void discovery_rows_hide(discovery_page_t *p) {
@@ -198,15 +179,7 @@ static void discovery_paint_rows(discovery_page_t *p) {
 		lv_label_set_text(p->details[i], row->artist);
 		lv_obj_set_hidden(p->rows[i], false);
 		playmark_show(p->marks[i], navidromeplay_matches(&p->data.library, p->kind, row->id));
-		if (!p->art_bound[i]) {
-			lv_image_set_src(p->images[i], &icon_music_note);
-			lv_image_set_inner_align(p->images[i], LV_IMAGE_ALIGN_CONTAIN);
-			lv_obj_add_style(p->images[i], &theme_style_icon, 0);
-			p->art_bound[i] = true;
-			p->art_done[i] = p->album_view.active || !*row->cover;
-			if (*row->cover && !p->album_view.active)
-				navidromeart_request(p->art_slots[i], &p->data.library, row->cover, ui_px(ND_ART_THUMB_SIZE));
-		}
+		navidromethumb_bind(&p->thumbs[i], &p->data.library, 0, p->album_view.active ? "" : row->cover);
 		lv_obj_set_hidden(p->images[i], false);
 		navidromealbum_row(&p->album_view, p->rows[i], p->names[i], p->details[i], p->numbers[i], p->images[i], row, p->album_view.active && p->data.album.heading[i]);
 	}
@@ -624,11 +597,7 @@ void navidromediscovery_refresh(void) {
 	navidromedownloads_poll();
 	for (int i = 0; i < p->data.count; i++) {
 		playmark_show(p->marks[i], navidromeplay_matches(&p->data.library, p->kind, p->data.rows[i].id));
-		if (!p->art_done[i] && navidromeart_take(p->art_slots[i], &p->art[i], &p->art_done[i])) {
-			lv_obj_remove_style(p->images[i], &theme_style_icon, 0);
-			lv_image_set_src(p->images[i], &p->art[i].dsc);
-			lv_obj_set_hidden(p->images[i], false);
-		}
+		navidromethumb_tick(&p->thumbs[i]);
 	}
 }
 static void discovery_tick(lv_timer_t *timer) {
@@ -773,7 +742,7 @@ void navidromediscovery_init(gui_config_t *cfg) {
 			p->details[i] = row.detail;
 			p->durations[i] = row.duration;
 			p->numbers[i] = row.number;
-			p->art_slots[i] = ND_ART_DISCOVERY_SLOT + level * ND_WINDOW + i;
+			navidromethumb_adopt(&p->thumbs[i], p->images[i], ND_ART_DISCOVERY_SLOT + level * ND_WINDOW + i, false);
 			p->marks[i] = playmark_create(p->rows[i]);
 			if (!level) {
 				p->menus[i] = nd_row_menu_create(p->rows[i]);

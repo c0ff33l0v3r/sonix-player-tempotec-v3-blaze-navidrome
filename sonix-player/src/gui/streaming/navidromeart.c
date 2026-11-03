@@ -31,7 +31,7 @@ typedef struct {
 	bool local_only, staged, waiting;
 	unsigned age;
 	char source_key[33];
-	unsigned profile_epoch, maintenance_epoch;
+	unsigned profile_epoch, maintenance_epoch, render_policy;
 	nd_library_t library;
 	char id[ND_ID_MAX];
 	int size;
@@ -58,6 +58,7 @@ static void artwork_wake(void) {
 	errno = saved_errno;
 }
 static unsigned playback_pressure(bool *idle) { return streamturn_observe_playback ? streamturn_observe_playback(idle) : streamturn_observe(idle); }
+static unsigned artwork_eligibility(bool player, bool *eligible) { return streamturn_observe_artwork ? streamturn_observe_artwork(player, eligible) : playback_pressure(eligible); }
 static uint64_t art_now_ms(void) {
 	struct timespec t;
 	clock_gettime(CLOCK_MONOTONIC, &t);
@@ -88,7 +89,13 @@ static struct {
 } failures[ND_WINDOW];
 static unsigned failed_next;
 
-static bool cache_name(const char *name) { return strlen(name) == 36 && strspn(name, "0123456789abcdef") == 32 && !strcmp(name + 32, ".img"); }
+static bool cache_name(const char *name) { return (strlen(name) == 36 || strlen(name) == 40) && strspn(name, "0123456789abcdef") == 32 && (!strcmp(name + 32, ".img") || !strcmp(name + 32, ".img.tmp")); }
+static void touch_read(const char *path) {
+	// Keep source mtime a content revision; recency must not invalidate every
+	// prepared derivative whenever another size reads the same encoding.
+	const struct timespec times[2] = {{.tv_nsec = UTIME_NOW}, {.tv_nsec = UTIME_OMIT}};
+	(void)utimensat(AT_FDCWD, path, times, AT_SYMLINK_NOFOLLOW);
+}
 
 static bool trim(const char *dir, const char *destination, size_t incoming) {
 	for (;;) {
@@ -106,14 +113,12 @@ static bool trim(const char *dir, const char *destination, size_t incoming) {
 			struct stat st;
 			if (snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name) >= (int)sizeof(path) || lstat(path, &st) || !S_ISREG(st.st_mode))
 				continue;
-			if (!strcmp(path, destination))
-				continue; // Count replacement once, never evict the old destination.
 			if ((uint64_t)st.st_size > ART_BUDGET || used > ART_BUDGET - (size_t)st.st_size)
 				used = ART_BUDGET + 1;
 			else
 				used += st.st_size;
-			if (!*victim || st.st_mtime < oldest) {
-				oldest = st.st_mtime;
+			if (strcmp(path, destination) && (!*victim || st.st_atime < oldest)) {
+				oldest = st.st_atime;
 				snprintf(victim, sizeof(victim), "%s", path);
 			}
 		}
@@ -139,6 +144,7 @@ typedef struct {
 // Worker-owned, single-entry encoded cache also coalesces reads when publication
 // fails (e.g. full storage). No consumer ever references this buffer directly.
 static art_source_t hot_source;
+static bool hot_published;
 static char hot_path[1200];
 static unsigned hot_profile, hot_card, hot_maintenance;
 
@@ -157,6 +163,7 @@ static void cache_key(const art_slot_t *job, int size, char key[33]) {
 }
 
 static bool job_current(const art_slot_t *job, const nd_context_t *context, bool online) {
+	if (job->player && job->render_policy && job->render_policy != cover_render_policy()) return false;
 	if (!nd_cache_io_current(job->maintenance_epoch) || !(job->playback ? navidrome_playback_current(context, online) : navidrome_context_current(context, online)))
 		return false;
 	bool live = false;
@@ -234,7 +241,7 @@ typedef struct {
 static bool request_current(void *arg) {
 	art_request_t *request = arg;
 	bool idle;
-	playback_pressure(&idle);
+	artwork_eligibility(request->job->player, &idle);
 	request->audio_interrupted |= !idle;
 	bool player = false;
 	if (request->job->staged && !request->job->player) {
@@ -288,7 +295,7 @@ static bool source_read(const art_slot_t *job, const nd_context_t *context, cons
 	if (fd >= 0)
 		close(fd);
 	if (ok && job->library.writable)
-		utime(path, NULL);
+		touch_read(path);
 	navidrome_cache_end();
 	ok = ok && source_info(source, legacy);
 	if (ok && !legacy) {
@@ -408,15 +415,18 @@ static bool load(const art_slot_t *job, cover_image_t *out, bool *audio_interrup
 	cache_key(job, 0, key);
 	snprintf(path, sizeof(path), "%s/%s.img", dir, key);
 	art_source_t source = {0};
-	bool canonical = false, dirty = false;
+	bool canonical = false, dirty = false, published = false;
 	if (!strcmp(hot_path, path) && hot_profile == context.profile_epoch && hot_card == context.card_epoch && hot_maintenance == job->maintenance_epoch) {
 		source = hot_source;
 		memset(&hot_source, 0, sizeof(hot_source));
 		canonical = true;
+		published = hot_published;
 	} else
 		source_free(&hot_source);
-	if (!source.bytes)
+	if (!source.bytes) {
 		canonical = source_read(job, &context, path, false, &source);
+		published = canonical;
+	}
 	bool found = source.bytes && source_decode(job, &context, &source, out);
 	DIAG(_diagnostic_scope.context, found ? D_CACHE_HIT : D_CACHE_MISS, found ? D_OK : D_PENDING);
 	if (!found) {
@@ -529,10 +539,13 @@ static bool load(const art_slot_t *job, cover_image_t *out, bool *audio_interrup
 	}
 	valid = job_current(job, &context, false);
 	if (found && valid) {
-		if (dirty && online && source_publish(job, &context, dir, path, &source) && source.state != ART_PENDING)
-			prune_legacy(job, &context, dir);
+		if (dirty) {
+			published = online && source_publish(job, &context, dir, path, &source);
+			if (published && source.state != ART_PENDING) prune_legacy(job, &context, dir);
+		}
 		nd_log("navidrome: artwork target_px=%d source_w=%d source_h=%d state=%d attempted=%d\n", job->size, source.w, source.h, source.state, attempted);
 		hot_source = source;
+		hot_published = published;
 		memset(&source, 0, sizeof(source));
 		snprintf(hot_path, sizeof(hot_path), "%s", path);
 		hot_profile = context.profile_epoch;
@@ -549,14 +562,124 @@ static bool load(const art_slot_t *job, cover_image_t *out, bool *audio_interrup
 
 // One remote request at a time. Its eventfd wake cannot recurse into a
 // streaming/service mutex, and retained counters prevent lost notifications.
+// A prepared record stays in the same bounded/cleared art directory as its
+// encoded source. Music owns the reusable pixel I/O; this adapter owns scoped
+// identity, source revision, read-only policy and publication admission.
+#define PREP_HEADER 96
+static uint64_t get_u64(const unsigned char *p) { return (uint64_t)get_u32(p) | (uint64_t)get_u32(p + 4) << 32; }
+static void put_u64(unsigned char *p, uint64_t value) { put_u32(p, (unsigned)value); put_u32(p + 4, (unsigned)(value >> 32)); }
+static uint32_t prepared_checksum(const cover_image_t *image, const cover_image_t *backdrop) {
+	uint32_t hash = 2166136261u;
+	const cover_image_t *images[] = {image, backdrop};
+	for (int i = 0; i < 2; i++)
+		for (uint32_t j = 0; j < images[i]->dsc.data_size; j++)
+			hash = (hash ^ images[i]->pixels[j]) * 16777619u;
+	return hash;
+}
+static bool prepared_names(const art_slot_t *job, char source[1200], char path[1200], char dir[1100]) {
+	snprintf(dir, 1100, "%s", job->library.path);
+	char *slash = strrchr(dir, '/');
+	if (!slash) return false;
+	strcpy(slash, "/art");
+	char key[33], input[200];
+	cache_key(job, 0, key);
+	if (snprintf(source, 1200, "%s/%s.img", dir, key) >= 1200) return false;
+	unsigned policy = job->render_policy ? job->render_policy : cover_render_policy();
+	snprintf(input, sizeof(input), "prepared:1:%s:%d:%d:%d:%u", key, job->size, job->backdrop_w, job->backdrop_h, policy);
+	md5_hex(input, strlen(input), key);
+	return snprintf(path, 1200, "%s/%s.img", dir, key) < 1200;
+}
+static bool prepared_revision(const char *path, struct stat *st) {
+	unsigned char header[ART_HEADER];
+	int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+	bool ok = fd >= 0 && !fstat(fd, st) && S_ISREG(st->st_mode) && st->st_size > ART_HEADER && st->st_size <= ART_HEADER + ART_BYTES &&
+		read(fd, header, sizeof(header)) == sizeof(header) && !memcmp(header, "NDART2\0\0", 8) &&
+		get_u32(header + 8) == st->st_size - ART_HEADER && get_u32(header + 20) > ART_PENDING && get_u32(header + 20) <= ART_CAPPED;
+	if (fd >= 0) close(fd);
+	return ok;
+}
+static bool prepared_directory(char *dir) {
+	// Match source-publication guards before any derivative read/eviction/write.
+	for (char *p = dir + 1;; p++) {
+		if (*p && *p != '/') continue;
+		char saved = *p; *p = 0;
+		struct stat st;
+		bool ok = !lstat(dir, &st) && S_ISDIR(st.st_mode);
+		*p = saved;
+		if (!ok || !saved) return ok;
+	}
+}
+static bool prepared(const art_slot_t *job, cover_image_t *image, cover_image_t *backdrop, bool store) {
+	nd_context_t context;
+	if (!navidrome_context(&context, false)) return false;
+	bool current = context.profile_epoch == job->profile_epoch && context.card_epoch == job->library.card_epoch && job_current(job, &context, false);
+	bool leased = current && (!store || job->library.writable) && (job->playback ? navidrome_playback_begin(&context) : navidrome_cache_begin(context.epoch, context.card_epoch));
+	char source[1200], path[1200], dir[1100], temp[1240];
+	struct stat revision, st;
+	bool ok = leased && prepared_names(job, source, path, dir) && prepared_directory(dir) && prepared_revision(source, &revision);
+	// A valid in-memory fallback may come from an acquisition whose atomic
+	// source publication failed. Never tag those pixels with an older file's
+	// revision merely because a canonical source still exists at that path.
+	if (ok && store && (!hot_published || strcmp(hot_path, source))) ok = false;
+	int bw = job->player ? job->backdrop_w : 0, bh = job->player ? job->backdrop_h : 0;
+	if (bw < 0 || bw > 512 || bh < 0 || bh > 1024 || (!!bw != !!bh)) ok = false;
+	unsigned char header[PREP_HEADER] = "NDPIX1\0\0";
+	unsigned policy = job->render_policy ? job->render_policy : cover_render_policy();
+	FILE *file = NULL;
+	if (ok) {
+		if (store) {
+			ok = image->pixels && image->dsc.header.cf == LV_COLOR_FORMAT_RGB565 && (!bw || (backdrop->pixels && backdrop->dsc.header.cf == LV_COLOR_FORMAT_RGB565)) && trim(dir, path, PREP_HEADER + image->dsc.data_size + backdrop->dsc.data_size);
+			snprintf(temp, sizeof(temp), "%s.tmp", path);
+			int fd = ok ? open(temp, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600) : -1;
+			if (fd >= 0 && !(file = fdopen(fd, "wb"))) close(fd);
+			put_u32(header + 8, policy); put_u32(header + 12, job->size);
+			put_u32(header + 16, bw); put_u32(header + 20, bh);
+			put_u64(header + 24, revision.st_size); put_u64(header + 32, revision.st_mtim.tv_sec);
+			put_u32(header + 40, revision.st_mtim.tv_nsec); put_u64(header + 44, revision.st_ino); put_u64(header + 52, revision.st_dev);
+			put_u32(header + 60, image->tone); put_u32(header + 64, image->has_tone | (image->tone_light << 1));
+			put_u32(header + 68, (uint32_t)(int32_t)image->tone_luma); put_u32(header + 72, prepared_checksum(image, backdrop));
+			put_u32(header + 76, image->dsc.header.w); put_u32(header + 80, image->dsc.header.h);
+			ok = file && fwrite(header, 1, sizeof(header), file) == sizeof(header) && cover_write_pixels(file, image) && (!bw || cover_write_pixels(file, backdrop));
+			if (file && fclose(file)) ok = false;
+			if (ok && job_current(job, &context, false))
+				ok = job->playback ? navidrome_playback_publish(&context, temp, path) : navidrome_context_publish(&context, temp, path);
+			else ok = false;
+			if (fd >= 0) unlink(temp);
+		} else {
+			int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+			ok = fd >= 0 && !fstat(fd, &st) && S_ISREG(st.st_mode) && st.st_size >= PREP_HEADER && st.st_size <= PREP_HEADER + 512 * 512 * 2 + 512 * 1024 * 2;
+			if (ok) file = fdopen(fd, "rb");
+			if (!file && fd >= 0) close(fd);
+			ok = ok && file && fread(header, 1, sizeof(header), file) == sizeof(header) && !memcmp(header, "NDPIX1\0\0", 8) &&
+				get_u32(header + 8) == policy && get_u32(header + 12) == (unsigned)job->size && get_u32(header + 16) == (unsigned)bw && get_u32(header + 20) == (unsigned)bh &&
+				get_u64(header + 24) == (uint64_t)revision.st_size && get_u64(header + 32) == (uint64_t)revision.st_mtim.tv_sec && get_u32(header + 40) == (unsigned)revision.st_mtim.tv_nsec &&
+				get_u64(header + 44) == (uint64_t)revision.st_ino && get_u64(header + 52) == (uint64_t)revision.st_dev && get_u32(header + 64) <= 3;
+			unsigned cw = get_u32(header + 76), ch = get_u32(header + 80);
+			ok = ok && cw && cw <= (unsigned)job->size && ch && ch <= (unsigned)job->size && st.st_size == PREP_HEADER + (int64_t)cw * ch * 2 + (int64_t)bw * bh * 2 && get_u32(header + 60) <= 0xffffff && get_u32(header + 68) <= 255;
+			for (int i = 84; ok && i < PREP_HEADER; i++) ok = !header[i];
+			ok = ok && cover_read_pixels(file, (int)cw, (int)ch, image) && (!bw || cover_read_pixels(file, bw, bh, backdrop));
+			if (ok) ok = prepared_checksum(image, backdrop) == get_u32(header + 72) && job_current(job, &context, false);
+			if (file) fclose(file);
+			if (ok) {
+				image->tone = get_u32(header + 60); image->has_tone = get_u32(header + 64) & 1;
+				image->tone_light = (get_u32(header + 64) & 2) != 0; image->tone_luma = (int16_t)(int32_t)get_u32(header + 68);
+				if (job->library.writable) { touch_read(path); touch_read(source); }
+			} else { cover_free(image); cover_free(backdrop); }
+		}
+	}
+	if (leased) navidrome_cache_end();
+	nd_wipe(&context, sizeof(context));
+	return ok;
+}
+
 static void *art_network_worker(void *unused) {
 	(void)unused;
-	thread_be_background("navidrome art net");
+	thread_be_low_priority("navidrome art net");
 	unsigned observed = 0;
 	uint64_t quiet_until = 0;
 	for (;;) {
 		bool idle;
-		unsigned epoch = playback_pressure(&idle);
+		unsigned epoch = artwork_eligibility(true, &idle);
 		uint64_t now = art_now_ms();
 		if (epoch != observed) {
 			observed = epoch;
@@ -592,7 +715,9 @@ static void *art_network_worker(void *unused) {
 				peer = p;
 			}
 		}
-		if (selected >= 0 && idle && now >= quiet_until && !local_candidate && !ready) {
+		bool eligible = false;
+		if (selected >= 0) artwork_eligibility(slots[peer].player, &eligible);
+		if (selected >= 0 && eligible && now >= quiet_until && !local_candidate && !ready) {
 			art_slot_t job = slots[peer];
 			job.staged = true;
 			art_network_t *n = &network[selected];
@@ -666,7 +791,7 @@ static void *art_network_worker(void *unused) {
 
 static void *art_worker(void *unused) {
 	(void)unused;
-	thread_be_background("navidrome art");
+	thread_be_low_priority("navidrome art");
 	pthread_mutex_lock(&art_lock);
 	for (;;) {
 		int i = -1;
@@ -694,16 +819,18 @@ static void *art_worker(void *unused) {
 		cover_image_t image = {0}, backdrop = {0};
 		bool admitted = nd_cache_io_begin(job.maintenance_epoch);
 		bool audio_interrupted = false;
-		bool found = admitted && load(&job, &image, &audio_interrupted);
-		if (admitted)
-			nd_cache_io_end();
-		if (found && job.album) {
+		bool ready = admitted && prepared(&job, &image, &backdrop, false);
+		if (ready) DIAG(job.diagnostic, D_CACHE_HIT, D_OK, DV(D_KIND, 1));
+		bool found = ready || (admitted && load(&job, &image, &audio_interrupted));
+		if (found && !ready) {
 			int luma;
 			image.has_tone = cover_page_tone(&image, COVER_PAGE_LIGHT_FROM, &image.tone, &luma, &image.tone_light);
 			image.tone_luma = image.has_tone ? luma : 0;
 		}
-		if (found && job.player && job.backdrop_w > 0 && job.backdrop_w <= 512 && job.backdrop_h > 0 && job.backdrop_h <= 1024)
+		if (found && !ready && job.player && job.backdrop_w > 0 && job.backdrop_w <= 512 && job.backdrop_h > 0 && job.backdrop_h <= 1024)
 			cover_blur_fill(&image, job.backdrop_w, job.backdrop_h, &backdrop);
+		if (found && !ready) prepared(&job, &image, &backdrop, true);
+		if (admitted) nd_cache_io_end();
 		pthread_mutex_lock(&art_lock);
 		local_busy = local_candidate = false;
 		pthread_cond_broadcast(&wake);
@@ -820,6 +947,7 @@ static void request(int i, const nd_library_t *library, const char *id, int size
 	slot->library = *library;
 	slot->maintenance_epoch = nd_cache_epoch();
 	slot->player = i == ND_WINDOW;
+	slot->render_policy = cover_render_policy() & (slot->player ? ~0u : ~3u);
 	slot->playback = slot->player || i >= ND_ART_QUEUE_SLOT;
 	slot->album = i == ND_ART_ALBUM_SLOT || i == ND_ART_SEARCH_ALBUM_SLOT || i == ND_ART_DISCOVERY_ALBUM_SLOT;
 	nd_context_t context;
@@ -873,7 +1001,7 @@ bool navidromeart_take(int i, cover_image_t *out, bool *finished) {
 	pthread_mutex_lock(&art_lock);
 	art_slot_t *slot = &slots[i];
 	nd_context_t context;
-	bool current = nd_cache_io_current(slot->maintenance_epoch) && navidrome_context(&context, false) && context.card_epoch == slot->library.card_epoch && (slot->playback ? context.profile_epoch == slot->profile_epoch : context.epoch == slot->library.epoch);
+	bool current = (!slot->player || slot->render_policy == cover_render_policy()) && nd_cache_io_current(slot->maintenance_epoch) && navidrome_context(&context, false) && context.card_epoch == slot->library.card_epoch && (slot->playback ? context.profile_epoch == slot->profile_epoch : context.epoch == slot->library.epoch);
 	nd_wipe(&context, sizeof(context));
 	if (!current) {
 		slot->pending = slot->waiting = false;

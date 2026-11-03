@@ -70,22 +70,31 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError): pass
 
 def main():
-    a = argparse.ArgumentParser(); a.add_argument('--baseline', action='store_true'); args = a.parse_args()
+    a = argparse.ArgumentParser(); a.add_argument('--baseline', action='store_true'); a.add_argument('--followup-baseline', action='store_true'); a.add_argument('--mode', action='append'); a.add_argument('--pcm', action='store_true'); args = a.parse_args()
     player = Path(__file__).resolve().parents[1]; os.chdir(player)
     objects = Path(os.environ.get('SONIX_LVGL_OBJECTS', 'build_host/lvgl')).resolve()
     if not (objects / 'src/lv_init.o').exists():
         raise SystemExit('Requires existing host LVGL objects; set SONIX_LVGL_OBJECTS. No full build is run.')
     with tempfile.TemporaryDirectory(prefix='sonix-artscheduler-') as tmp:
         t = Path(tmp); extra = []
+        environment = os.environ.copy()
+        if args.pcm:
+            probe = shlex.split(os.environ.get('CC', 'cc')) + ['-std=gnu11', '-O1', '-g', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-fPIC', '-fvisibility=hidden', '-ffunction-sections', '-fdata-sections', '-DHOST_BUILD', '-DLV_CONF_INCLUDE_SIMPLE', '-I.', '-Ilvgl']
+            probe += shlex.split(os.environ.get('NAVIDROME_CHECK_FLAGS', ''))
+            probe += shlex.split(subprocess.check_output(['pkg-config', '--cflags', 'alsa', 'freetype2', 'sdl2'], text=True))
+            probe += ['tools/navidrome_artpcmprobe.c', '-shared', '-Wl,-Bsymbolic,--gc-sections', '-pthread', '-lm', '-lasound', '-o', str(t/'pcm.so')]
+            subprocess.run(probe, check=True)
+            environment['SONIX_ART_PCM_PROBE'] = str(t/'pcm.so')
         stream = 'src/system/streaming/streamturn.c'
-        if args.baseline:
+        if args.baseline or args.followup_baseline:
+            revision = 'a19cd44' if args.followup_baseline else 'ef4a4e6'
             for name in ['navidromeart.c', 'navidromeart.h']:
-                data = subprocess.check_output(['git', 'show', 'ef4a4e6:sonix-player/src/gui/streaming/' + name])
+                data = subprocess.check_output(['git', 'show', revision + ':sonix-player/src/gui/streaming/' + name])
                 (t/name).write_bytes(data)
-            (t/'streamturn.c').write_bytes(subprocess.check_output(['git', 'show', 'ef4a4e6:sonix-player/src/system/streaming/streamturn.c']))
-            (t/'streamturn.h').write_bytes(subprocess.check_output(['git', 'show', 'ef4a4e6:sonix-player/src/system/streaming/streamturn.h']))
+            (t/'streamturn.c').write_bytes(subprocess.check_output(['git', 'show', revision + ':sonix-player/src/system/streaming/streamturn.c']))
+            (t/'streamturn.h').write_bytes(subprocess.check_output(['git', 'show', revision + ':sonix-player/src/system/streaming/streamturn.h']))
             stream = str(t/'streamturn.c')
-            extra = ['-DNAVIDROME_ART_BASELINE', '-DNAVIDROME_ART_IMPLEMENTATION="' + str(t/'navidromeart.c') + '"']
+            extra = ([] if args.followup_baseline else ['-DNAVIDROME_ART_BASELINE']) + ['-DNAVIDROME_ART_IMPLEMENTATION="' + str(t/'navidromeart.c') + '"']
         sources = ['lvgl/src/font/lv_font_unscii_8.c', 'tools/navidrome_artschedulercheck.c', 'src/gui/streaming/navidromethumb.c', 'src/gui/shell/icons.c',
                    'src/gui/nowplaying/cover.c', 'src/system/image/stb_image_impl.c', 'src/system/image/jpeg_scaled.c',
                    'src/system/image/png_scaled.c', 'src/system/image/art_shrink.c', 'src/gb/miniz/miniz.c',
@@ -96,6 +105,7 @@ def main():
                    '-Wno-unused-function', '-Wno-missing-field-initializers', '-ffunction-sections', '-fdata-sections',
                    '-DHOST_BUILD', '-DLV_FONT_UNSCII_8=1', '-DLV_CONF_INCLUDE_SIMPLE', '-I.', '-Ilvgl']
         command += shlex.split(os.environ.get('NAVIDROME_CHECK_FLAGS', '')) + extra + sources
+        if not args.baseline and not args.followup_baseline: command += ['-DNAVIDROME_ART_FOLLOWUP']
         command += [str(p) for p in objects.rglob('*.o')]
         command += ['-Wl,--gc-sections,--wrap=cover_load_image_memory,--wrap=malloc,--wrap=write,--wrap=getaddrinfo,--wrap=pthread_create,--wrap=nd_api_artwork_source,--wrap=poll',
                     '-lm', '-pthread', '-ldl', '-lresolv']
@@ -105,6 +115,9 @@ def main():
         if build.returncode: raise SystemExit(build.stderr[-6000:])
         modes = ['cached', 'priority', 'recovery']
         if not args.baseline: modes += ['preempt', 'coalesce', 'cached-pressure', 'background', 'stale', 'offline', 'quality', 'failure', 'repeated', 'fair', 'player-ui', 'thread-fail-net', 'thread-fail-local', 'clear', 'observers', 'resources', 'publication', 'allocation', 'retire-lock', 'retire-profile', 'retire-card', 'clear-decode', 'withheld', 'stale-decode', 'clear-handoff', 'shutdown']
+        if args.followup_baseline: modes = ['warm', 'buffered']
+        elif not args.baseline: modes += ['warm', 'buffered', 'buffered-preempt', 'headroom-boundaries', 'prepared-corrupt', 'prepared-revision', 'prepared-readonly', 'prepared-render', 'prepared-publication', 'prepared-unpublished', 'prepared-budget', 'binding-ui']
+        if args.mode: modes = args.mode
         for mode in modes:
             for width, height in ([(320, 480)] if args.baseline else [(320, 480), (480, 800), (480, 720)]):
                 state = State()
@@ -113,11 +126,11 @@ def main():
                     thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
                     try:
                         result = subprocess.run([str(t/'check'), f'http://127.0.0.1:{server.server_port}', card, mode, str(width), str(height)],
-                                                capture_output=True, text=True, timeout=18)
+                                                capture_output=True, text=True, timeout=18, env=environment)
                     finally: state.release.set(); server.shutdown(); thread.join()
-                    if args.baseline:
+                    if args.baseline or args.followup_baseline:
                         assert result.returncode != 0, f'{mode}: expected baseline defect was not reproduced'
-                        expected = {'cached': 'cached player must finish', 'priority': 'scheduler_control', 'recovery': 'preempted visible thumbnail must recover'}[mode]
+                        expected = {'cached': 'cached player must finish', 'priority': 'scheduler_control', 'recovery': 'preempted visible thumbnail must recover', 'warm': 'prepared hit must not decode', 'buffered': 'buffered player cover must finish'}[mode]
                         assert expected in result.stderr, f'{mode}: baseline failed for an unrelated reason'
                         print(f'{mode}: baseline defect reproduced (exit {result.returncode})')
                     else:
@@ -134,4 +147,7 @@ def main():
                         assert not any(secret in result.stderr for secret in ['art-fixture-secret', 'art-fixture-user', '&t='])
                         print(f'{mode} {width}x{height}: passed; request counts {sorted(state.counts.values())}', flush=True)
                         if mode == 'resources': print(result.stdout, end='', flush=True)
+                        if args.pcm and mode in ['buffered', 'buffered-preempt']:
+                            assert 'production PCM continuity' in result.stdout
+                            print(result.stdout, end='', flush=True)
 if __name__ == '__main__': main()

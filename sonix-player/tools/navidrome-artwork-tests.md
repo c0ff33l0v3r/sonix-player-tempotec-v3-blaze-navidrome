@@ -14,7 +14,7 @@ scheduler runner. Do not run a full build just to satisfy missing prerequisites.
 ```sh
 python3 sonix-player/tools/navidrome_artschedulercheck.py --baseline
 python3 sonix-player/tools/navidrome_artschedulercheck.py
-NAVIDROME_CHECK_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer -no-pie' python3 sonix-player/tools/navidrome_artschedulercheck.py
+NAVIDROME_CHECK_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie -no-pie' python3 sonix-player/tools/navidrome_artschedulercheck.py
 sh sonix-player/tools/navidrome_artworkcheck.sh
 sh sonix-player/tools/navidrome_playerartuicheck.sh
 ```
@@ -56,7 +56,7 @@ Watchdogs detect stalled tests and are not device latency targets.
   frees candidates/unclaimed images while keeping its fixed workers dormant.
 - Wrappers assert one active decoder and acquisition, eventfd idle waits have no
   polling deadline, and repeated acquisitions do not leak descriptors. The two
-  worker stacks are fixed at 256 KiB each. No new persistent format is needed.
+  worker stacks are fixed at 256 KiB each. Prepared NDPIX1 records share the existing 32-MiB artwork budget.
 
 Existing source-quality/fault tests and player pixel tests provide additional
 legacy migration, invalid image, real decoder, geometry, transition and lifecycle
@@ -77,3 +77,53 @@ placeholder fails acceptance. Host watchdogs and sanitizer success do not establ
 Blaze performance, stack headroom, total memory, TLS overhead or audio safety.
 Keep complete logs private and credentials out of evidence. ExFAT publication and
 the cause of the original audio cuts are outside this fix.
+
+## Follow-up checks
+
+```sh
+python3 sonix-player/tools/navidrome_artschedulercheck.py --followup-baseline
+python3 sonix-player/tools/navidrome_threadpolicycheck.py --baseline
+python3 sonix-player/tools/navidrome_threadpolicycheck.py
+python3 sonix-player/tools/navidrome_scrollcheck.py --baseline
+python3 sonix-player/tools/navidrome_scrollcheck.py
+python3 sonix-player/tools/navidrome_musiccachecheck.py
+python3 sonix-player/tools/navidrome_artschedulercheck.py --pcm --mode buffered --mode buffered-preempt
+```
+
+The follow-up baseline extracts `a19cd44` and expects repeated warm decoding and
+buffered-player admission failures. The scroll baseline expects active-read
+supersession. Current scrolling checks cover all three sizes, held reads, flings,
+reversal, exact actionable row identity and rejected delivery. Thread-policy
+checks execute each extracted production entry-policy call through the real OS
+helper on one permitted CPU under contention; they do not execute whole workers.
+Missing affinity support is reported rather than counted as success.
+
+The scheduler matrix adds warm zero-decode/zero-HTTP prepared hits, source/render
+revision, corrupt/checksummed records, read-only access, failed source and prepared
+publication, stale staging eviction and aggregate disk budget. Binding checks use
+real workers/LVGL for compatible repaint retention, same-cover action replacement,
+independent pixels, descriptor remapping, delayed rebind and Clear no-refill.
+Library/Favorites, Search, Discovery and playlist detail now use the same thumbnail
+component as Downloads; production page runners exercise their own actions and
+navigation. Headers and Now Playing retain specialized bindings.
+
+Music’s isolated cache runner round-trips its real RGB565 cover/backdrop writer
+and reader at both widths in normal/Studio, checking independent ownership and
+render keys. It does not touch a Music database or test local media extraction.
+`NAVIDROME_CHECK_FLAGS` enables ASan/UBSan in these compiled application harnesses.
+
+Headroom policy admits a current player acquisition at 8000 ms, revokes at
+4000 ms, and expires after 500 ms without an observation. Unknown timing,
+nonmatching/prefetched sources and paused/stale readers remain deferred. Boundary
+fixtures cover transfer tokens, hysteresis, urgent commands and expiry. The `--pcm`
+probe runs production PCM write/recovery with inert ALSA and controlled sample
+progress beside real artwork HTTP; it asserts sample order/count, not hardware
+deadlines, decoder estimate accuracy or audible continuity on the Blaze.
+
+Before device comparisons, build the intended target revision, extract the
+executable from the actual packaged image and compare its SHA-256 with that
+target binary. Check for the new `NDPIX1` format marker as supplemental evidence;
+a marker or timestamp alone cannot establish identity. Record the package/binary
+hashes and build revision. Run no-playback cold/warm scrolling separately from
+active-playback artwork cases, then the five-repetition paired matrix above.
+The previous user-built package predates this follow-up and cannot validate it.

@@ -6,6 +6,19 @@
 #include <stdlib.h>
 #include <string.h>
 
+// These service fixtures deliberately exercise encoded-source ownership with
+// ARGB stb images, not the prepared RGB565/Music pipeline. The dedicated
+// artwork scheduler runner links real cover.c for prepared-record coverage.
+unsigned cover_render_policy(void) { return 1u << 16; }
+bool cover_read_pixels(FILE *file, int w, int h, cover_image_t *out) {
+	(void)file; (void)w; (void)h; (void)out;
+	return false;
+}
+bool cover_write_pixels(FILE *file, const cover_image_t *image) {
+	(void)file; (void)image;
+	return false;
+}
+
 bool cover_load_image_memory(const void *data, size_t size, int width, int height, cover_fit_t fit, cover_image_t *out) {
 	(void)width;
 	(void)height;

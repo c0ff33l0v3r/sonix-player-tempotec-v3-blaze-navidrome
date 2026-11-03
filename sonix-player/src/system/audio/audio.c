@@ -14,6 +14,8 @@
 #include "src/system/decode/sndfile.h"
 #include "src/system/device/power.h"
 #include "src/system/library/filepublication.h"
+#include "src/system/streaming/navidromeaudio.h"
+#include "src/system/streaming/streamturn.h"
 
 #include "src/system/core/diagnostic.h"
 #include <errno.h>
@@ -2964,6 +2966,7 @@ static void rebuffer_if_starved(decoder_t *dec, int sample_rate, uint64_t at_fra
 // duration, both known), and does not resume before REBUFFER_HIGH_SECS
 // seconds of file are in hand beyond that point.
 static void rebuffer_after_short_read(decoder_t *dec, int sample_rate, uint64_t at_frame) {
+	if (streamturn_artwork_urgent) streamturn_artwork_urgent();
 	long done = 0, total = 0;
 	if (!decoder_grow_span(dec, &done, &total) || total <= 0) {
 		return; // not growing (any more): nothing to wait for
@@ -4166,6 +4169,13 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		//
 		// A streaming app instead stops, refills, and resumes. So does this.
 		if (decoder_is_growing(dec)) {
+			if (nd_audio_artwork_headroom) {
+				double head = growing_headroom_secs(dec, sample_rate, bytes_played / (uint64_t)frame_bytes);
+				pthread_mutex_lock(&audio_mutex);
+				bool urgent = audio_command != AUDIO_CMD_PLAY || play_request || stop_thread || seek_request;
+				nd_audio_artwork_headroom(filepath, urgent || head < 0 ? -1 : head >= 3600 ? 3600000 : (int)(head * 1000));
+				pthread_mutex_unlock(&audio_mutex);
+			}
 			rebuffer_if_starved(dec, sample_rate, bytes_played / (uint64_t)frame_bytes);
 		}
 
@@ -4749,6 +4759,7 @@ int audio_play(const char *filepath) {
 	// The playback thread routes at track start, the stock engine's way.
 
 	pthread_mutex_lock(&audio_mutex);
+	if (streamturn_artwork_urgent) streamturn_artwork_urgent();
 	observation_serial++;
 	requested_diagnostic = diagnostic_begin(D_AUDIO, diagnostic_current().id);
 	DIAG(requested_diagnostic, D_INTENT, D_PENDING, DV(D_SOURCE, diagnostic_current().component == D_PLAY && diagnostic_current().id ? 1 : 0));
@@ -4794,6 +4805,7 @@ static int play_at(const char *filepath, double start_secs, bool continuation) {
 	fprintf(stderr, "audio[%ld]: play requested from %.1f s\n", log_ms(), start_secs);
 
 	pthread_mutex_lock(&audio_mutex);
+	if (streamturn_artwork_urgent) streamturn_artwork_urgent();
 	if (!continuation) observation_serial++;
 	requested_diagnostic = diagnostic_begin(D_AUDIO, diagnostic_current().id);
 	DIAG(requested_diagnostic, D_INTENT, D_PENDING, DV(D_SOURCE, diagnostic_current().component == D_PLAY && diagnostic_current().id ? 1 : 0));
@@ -4825,6 +4837,7 @@ int audio_play_paused(const char *filepath, double start_secs) {
 	fprintf(stderr, "audio[%ld]: restore requested at %.1f s (paused)\n", log_ms(), start_secs);
 
 	pthread_mutex_lock(&audio_mutex);
+	if (streamturn_artwork_urgent) streamturn_artwork_urgent();
 	observation_serial++;
 	requested_diagnostic = diagnostic_begin(D_AUDIO, diagnostic_current().id);
 	DIAG(requested_diagnostic, D_INTENT, D_PENDING, DV(D_SOURCE, diagnostic_current().component == D_PLAY && diagnostic_current().id ? 1 : 0));
@@ -4984,6 +4997,7 @@ void audio_pause(void) { audio_pause_reason(AUDIO_PAUSE_UNKNOWN); }
 void audio_pause_reason(audio_pause_reason_t reason) {
 	printf("pausing\n");
 	pthread_mutex_lock(&audio_mutex);
+	if (streamturn_artwork_urgent) streamturn_artwork_urgent();
 	DIAG(requested_diagnostic, D_PAUSE, D_OK, DV(D_REASON, reason));
 	observation_discontinuity++;
 	audio_command = AUDIO_CMD_PAUSE;
@@ -5036,6 +5050,7 @@ void audio_stop(void) { audio_stop_reason(AUDIO_STOP_UNKNOWN); }
 void audio_stop_reason(audio_stop_reason_t reason) {
 	printf("stopping\n");
 	pthread_mutex_lock(&audio_mutex);
+	if (streamturn_artwork_urgent) streamturn_artwork_urgent();
 	DIAG(requested_diagnostic, D_STOP, reason == AUDIO_STOP_FAILURE ? D_FAILED : D_CANCELLED, DV(D_REASON, reason));
 	observation_discontinuity++;
 	audio_command = AUDIO_CMD_STOP;
@@ -5164,6 +5179,7 @@ void audio_seek(double seconds) {
 	printf("seeking to %.2f seconds\n", seconds);
 
 	pthread_mutex_lock(&audio_mutex);
+	if (streamturn_artwork_urgent) streamturn_artwork_urgent();
 	observation_discontinuity++;
 	progress_current_secs = seconds; // the bar follows the finger, not the decoder
 	progress_floor_secs = -1.0;		// and a deliberate jump outranks the pause floor

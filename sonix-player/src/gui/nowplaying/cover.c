@@ -2,6 +2,7 @@
 
 #include <dirent.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,8 +40,8 @@
 // theme) so the text on top of it stays readable. 100 = untouched.
 #define BACKDROP_BRIGHTNESS_PCT 42
 
-static bool backdrop_light;
-static bool backdrop_upright;
+static atomic_bool backdrop_light;
+static atomic_bool backdrop_upright;
 
 void cover_set_backdrop_light(bool light) { backdrop_light = light; }
 
@@ -721,6 +722,7 @@ static bool make_scaled(const raw_image_t *src, int box_w, int box_h, cover_fit_
 // The blur is a shrink, box-blur passes, then an interpolated stretch: visually
 // a soft gaussian-like smear for a few hundred kilobytes of work.
 static bool make_backdrop(const raw_image_t *src, int box_w, int box_h, bool from_bottom, cover_image_t *out) {
+	bool light = backdrop_light;
 	memset(out, 0, sizeof(*out));
 	if (box_w < 1 || box_h < 1)
 		return false;
@@ -769,7 +771,7 @@ static bool make_backdrop(const raw_image_t *src, int box_w, int box_h, bool fro
 	// Push the backdrop away from the text colour: whatever the cover happens to
 	// be, the title has to stay readable on top of it.
 	for (int i = 0; i < box_w * box_h * 3; i++) {
-		if (backdrop_light) {
+		if (light) {
 			rgb[i] = (uint8_t)(255 - ((255 - rgb[i]) * BACKDROP_BRIGHTNESS_PCT) / 100);
 		} else {
 			rgb[i] = (uint8_t)((rgb[i] * BACKDROP_BRIGHTNESS_PCT) / 100);
@@ -1184,6 +1186,7 @@ bool cover_blur_copy(const cover_image_t *src, cover_image_t *out) {
 }
 
 bool cover_blur_fill(const cover_image_t *src, int out_w, int out_h, cover_image_t *out) {
+	bool light = backdrop_light;
 	if (!out) {
 		return false;
 	}
@@ -1236,7 +1239,7 @@ bool cover_blur_fill(const cover_image_t *src, int out_w, int out_h, cover_image
 	}
 
 	for (int i = 0; i < out_w * out_h * 3; i++) {
-		if (backdrop_light) {
+		if (light) {
 			big[i] = (uint8_t)(255 - ((255 - big[i]) * BACKDROP_BRIGHTNESS_PCT) / 100);
 		} else {
 			big[i] = (uint8_t)((big[i] * BACKDROP_BRIGHTNESS_PCT) / 100);
@@ -2306,8 +2309,8 @@ static bool playerart_file(const char *key, char *out, size_t out_size) {
 	return ok;
 }
 
-static bool playerart_read_image(FILE *f, int w, int h, cover_image_t *out) {
-	if (w <= 0 || h <= 0) {
+bool cover_read_pixels(FILE *f, int w, int h, cover_image_t *out) {
+	if (!f || !out || w <= 0 || h <= 0 || w > 512 || h > 1024) {
 		return false;
 	}
 	size_t bytes = (size_t)w * h * 2;
@@ -2328,6 +2331,16 @@ static bool playerart_read_image(FILE *f, int w, int h, cover_image_t *out) {
 	return true;
 }
 
+bool cover_write_pixels(FILE *f, const cover_image_t *image) {
+	if (!f || !image || !image->pixels || image->dsc.header.cf != LV_COLOR_FORMAT_RGB565 ||
+		!image->dsc.header.w || image->dsc.header.w > 512 || !image->dsc.header.h || image->dsc.header.h > 1024 ||
+		image->dsc.header.stride != image->dsc.header.w * 2 || image->dsc.data_size != image->dsc.header.w * image->dsc.header.h * 2)
+		return false;
+	return fwrite(image->pixels, 1, image->dsc.data_size, f) == image->dsc.data_size;
+}
+
+unsigned cover_render_policy(void) { return 1u << 16 | (backdrop_light ? 1u : 0u) | (backdrop_upright ? 2u : 0u); }
+
 static bool playerart_load(const char *key, cover_image_t *cover, cover_image_t *backdrop) {
 	char path[600];
 	if (!playerart_file(key, path, sizeof(path))) {
@@ -2339,8 +2352,8 @@ static bool playerart_load(const char *key, cover_image_t *cover, cover_image_t 
 	}
 	playerart_header_t hdr;
 	bool hit = fread(&hdr, sizeof(hdr), 1, f) == 1 && hdr.magic == PLAYERART_MAGIC &&
-			   playerart_read_image(f, hdr.cw, hdr.ch, cover);
-	if (hit && !playerart_read_image(f, hdr.bw, hdr.bh, backdrop)) {
+			   cover_read_pixels(f, hdr.cw, hdr.ch, cover);
+	if (hit && !cover_read_pixels(f, hdr.bw, hdr.bh, backdrop)) {
 		cover_free(cover);
 		hit = false;
 	}
@@ -2422,8 +2435,7 @@ static void playerart_store(const char *key, const cover_image_t *cover, const c
 		return;
 	}
 	bool ok = fwrite(&hdr, sizeof(hdr), 1, f) == 1 &&
-			  fwrite(cover->pixels, 1, (size_t)hdr.cw * hdr.ch * 2, f) == (size_t)hdr.cw * hdr.ch * 2 &&
-			  fwrite(backdrop->pixels, 1, (size_t)hdr.bw * hdr.bh * 2, f) == (size_t)hdr.bw * hdr.bh * 2;
+			  cover_write_pixels(f, cover) && cover_write_pixels(f, backdrop);
 	ok = fclose(f) == 0 && ok;
 	if (!ok || rename(tmp, path) != 0) {
 		unlink(tmp); // a failure only costs a future decode

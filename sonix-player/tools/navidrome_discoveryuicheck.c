@@ -122,7 +122,7 @@ static void discovery_green_pixels(lv_obj_t *image) {
 }
 static void discovery_retained_pixels(void) {
 	discovery_page_t *p = &discovery_pages[0];
-	cover_image_t *art = &p->art[1];
+	cover_image_t *art = &p->thumbs[1].cover;
 	art->pixels = calloc(16 * 16, 4);
 	assert(art->pixels);
 	for (int i = 0; i < 16 * 16; i++) {
@@ -130,7 +130,7 @@ static void discovery_retained_pixels(void) {
 		art->pixels[4 * i + 3] = 255;
 	}
 	art->dsc = (lv_image_dsc_t){.header = {.magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_ARGB8888, .w = 16, .h = 16, .stride = 64}, .data = art->pixels, .data_size = 16 * 16 * 4};
-	p->art_done[1] = true;
+	p->thumbs[1].finished = true;
 	lv_obj_remove_style(p->images[1], &theme_style_icon, 0);
 	lv_image_set_src(p->images[1], &art->dsc);
 	lv_obj_t *widget = p->rows[1];
@@ -145,7 +145,7 @@ static void discovery_retained_pixels(void) {
 	p->data = *next;
 	free(next);
 	discovery_paint_rows(p);
-	assert(p->rows[0] == widget && p->art[0].pixels == retained);
+	assert(p->rows[0] == widget && p->thumbs[0].cover.pixels == retained);
 	discovery_green_pixels(p->images[0]);
 	assert(lv_obj_is_hidden(p->offline.icons[0]) && p->offline.state[0] == ND_OFF_UNKNOWN);
 	unsigned serial = p->serial;
@@ -153,7 +153,7 @@ static void discovery_retained_pixels(void) {
 		discovery_paint_rows(p);
 		discovery_green_pixels(p->images[0]);
 	}
-	assert(p->serial == serial && p->art[0].pixels == retained);
+	assert(p->serial == serial && p->thumbs[0].cover.pixels == retained);
 	discovery_send(p, 0, NULL, false);
 	discovery_wait(0);
 }

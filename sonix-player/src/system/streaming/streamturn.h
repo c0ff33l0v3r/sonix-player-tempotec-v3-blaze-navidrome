@@ -36,6 +36,14 @@ unsigned streamturn_observe(bool *idle);
 // a separate nonblocking observer and never replaces the report observer.
 unsigned streamturn_observe_playback(bool *idle) __attribute__((weak));
 void streamturn_set_artwork_observer(void (*changed)(void)) __attribute__((weak));
+// Current-player exception only: a Navidrome reader reports milliseconds of
+// seekable media ahead under its active transfer token. Unknown is -1.
+// Admit >=8 s, revoke <=4 s, expire after 500 ms without a reader sample.
+// Policy boundaries require paired Blaze acceptance; not a safety measurement.
+unsigned streamturn_playback_token(void) __attribute__((weak));
+void streamturn_artwork_headroom(unsigned token, int milliseconds) __attribute__((weak));
+void streamturn_artwork_urgent(void) __attribute__((weak));
+unsigned streamturn_observe_artwork(bool player, bool *eligible) __attribute__((weak));
 void streamturn_set_observer(void (*changed)(void)) __attribute__((weak));
 
 // ---------------------------------------------------------------------------

@@ -182,3 +182,4 @@ __attribute__((weak)) void power_slow_in_standby(lv_timer_t *timer, uint32_t per
 }
 
 __attribute__((weak)) bool power_screen_is_on(void) { return true; }
+__attribute__((weak)) void thread_be_low_priority(const char *name) { (void)name; }

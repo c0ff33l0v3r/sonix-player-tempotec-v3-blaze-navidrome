@@ -1,6 +1,7 @@
 #include "navidromebrowse.h"
 #include "navidromealbum.h"
 #include "navidromeart.h"
+#include "navidromethumb.h"
 #include "navidromediagnostic.h"
 #include "navidromefavorites.h"
 #include "navidromeofflinebadge.h"
@@ -43,14 +44,13 @@ typedef struct {
 	lv_obj_t *rows[ND_WINDOW], *names[ND_WINDOW], *details[ND_WINDOW], *images[ND_WINDOW], *checks[ND_WINDOW];
 	lv_obj_t *playmarks[ND_WINDOW];
 	nd_off_badges_t offline;
-	cover_image_t artwork[ND_WINDOW];
+	nd_thumb_t thumbs[ND_WINDOW];
 	lv_obj_t *numbers[ND_WINDOW], *durations[ND_WINDOW];
-	int art_slots[ND_WINDOW];
 	nd_album_view_t album;
 	nd_album_window_t album_window;
 	char anchor[ND_ID_MAX];
 	int anchor_delta;
-	bool art_finished[ND_WINDOW], art_bound[ND_WINDOW], loading, map_ready, map_bound;
+	bool loading, map_ready, map_bound;
 	azindex_t *index;
 	int letters[ND_LETTER_BUCKETS], requested_first;
 	nd_row_t data[ND_WINDOW];
@@ -94,6 +94,7 @@ typedef struct {
 static pthread_mutex_t window_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t window_ready = PTHREAD_COND_INITIALIZER;
 static bool worker_started, pending;
+static atomic_uint failed_delivery[3];
 static window_t request;
 static atomic_uint worker_revision;
 static void submit_window(browse_page_t *page);
@@ -110,12 +111,8 @@ static void browse_snapshot(bool favorites, nd_library_t *out) {
 static bool gesture(void) { return switcher_back_drag_active() || player_sheet_drag_active() || coverflow_drag_active(); }
 
 static void release_art_row(browse_page_t *p, int i) {
-	navidromeart_release(p->art_slots[i]);
+	navidromethumb_release(&p->thumbs[i]);
 	lv_obj_set_hidden(p->images[i], true);
-	lv_image_set_src(p->images[i], &icon_music_note);
-	cover_free(&p->artwork[i]);
-	p->art_finished[i] = true;
-	p->art_bound[i] = false;
 }
 static void release_art(browse_page_t *p) {
 	for (int i = 0; i < ND_WINDOW; i++)
@@ -131,10 +128,28 @@ static void window_done(void *value) {
 	browse_snapshot(result->query.favorites, &current);
 	if (result->layout_revision != navidromealbum_revision() || p->serial != result->serial || lv_screen_active() != p->screen || !current.ready || current.epoch != result->library.epoch || current.card_epoch != result->library.card_epoch || current.generation != result->library.generation) {
 		DIAG(result->diagnostic, D_END, D_SUPERSEDED);
+		bool retry = p->serial == result->serial && lv_screen_active() == p->screen;
 		free(result);
+		if (retry) {
+			p->loading = false;
+			if (current.ready) submit_window(p);
+		}
 		return;
 	}
 	p->loading = false;
+	// Viewport motion does not retire a same-query read. Re-evaluate its
+	// usefulness now; only a query/lifecycle change increments the serial.
+	if (result->ok && p->total && !result->restore && result->count) {
+		int y = LV_MAX(0, nd_row_scroll(p->list, p->album.height + (result->alternate ? result->album.extent : result->total * pitch)) - p->album.height);
+		int start = result->alternate ? result->album.y[0] : result->first * pitch;
+		int end = result->alternate ? result->album.y[result->count - 1] + (result->album.heading[result->count - 1] ? ui_px(ND_ALBUM_DISC_HEIGHT) : pitch) : (result->first + result->count) * pitch;
+		if (end <= y || start >= y + lv_obj_get_content_height(p->list)) {
+			DIAG(result->diagnostic, D_END, D_SUPERSEDED);
+			free(result);
+			submit_window(p);
+			return;
+		}
+	}
 	p->selected = result->selected;
 	p->selecting = p->selected > 0;
 	memcpy(p->chosen, result->chosen, sizeof(p->chosen));
@@ -160,7 +175,6 @@ static void window_done(void *value) {
 	}
 	if (p->query.kind != ND_TRACKS && p->query.kind != ND_ALBUMS)
 		navidromeofflinebadge_release(&p->offline);
-	bool keep_art[ND_WINDOW] = {0};
 	int map[ND_WINDOW];
 	bool claimed[ND_WINDOW] = {0};
 	bool same_library = p->library.epoch == result->library.epoch && p->library.card_epoch == result->library.card_epoch && (p->library.generation == result->library.generation || (p->query.favorites && p->library.base == result->library.base)) && !strcmp(p->library.scope, result->library.scope);
@@ -168,10 +182,9 @@ static void window_done(void *value) {
 		map[i] = -1;
 		if (same_library && i < result->count)
 			for (int j = 0; j < p->count; j++)
-				if (!claimed[j] && p->art_bound[j] && !strcmp(p->data[j].id, result->rows[i].id) && !strcmp(p->data[j].cover, result->rows[i].cover)) {
+				if (!claimed[j] && p->thumbs[j].bound && !strcmp(p->data[j].id, result->rows[i].id) && !strcmp(p->data[j].cover, result->rows[i].cover)) {
 					map[i] = j;
 					claimed[j] = true;
-					keep_art[i] = true;
 					break;
 				}
 	}
@@ -185,16 +198,11 @@ static void window_done(void *value) {
 	ND_ROW_REORDER(p->numbers, map);
 	ND_ROW_REORDER(p->durations, map);
 	ND_ROW_REORDER(p->menus, map);
-	ND_ROW_REORDER(p->artwork, map);
-	ND_ROW_REORDER(p->art_finished, map);
-	ND_ROW_REORDER(p->art_bound, map);
-	ND_ROW_REORDER(p->art_slots, map);
+	ND_ROW_REORDER(p->thumbs, map);
 	ND_ROW_REORDER(p->offline.icons, map);
 	for (int i = 0; i < ND_WINDOW; i++) {
-		if (keep_art[i] && p->artwork[i].pixels)
-			lv_image_set_src(p->images[i], &p->artwork[i].dsc);
-		else if (!keep_art[i] && p->art_bound[i])
-			release_art_row(p, i);
+		navidromethumb_repaint(&p->thumbs[i]);
+		if (i >= result->count) release_art_row(p, i);
 	}
 	p->library = result->library;
 	p->favorite_revision = result->favorite_revision;
@@ -256,18 +264,10 @@ static void window_done(void *value) {
 		if (i >= p->count)
 			continue;
 		nd_row_t *row = &p->data[i];
-		if (!result->alternate && !keep_art[i]) {
-			lv_obj_set_size(p->images[i], ui_px(ND_ART_THUMB_SIZE), ui_px(ND_ART_THUMB_SIZE));
-			lv_image_set_inner_align(p->images[i], LV_IMAGE_ALIGN_CONTAIN);
-			lv_image_set_src(p->images[i], &icon_music_note);
-			lv_obj_add_style(p->images[i], &theme_style_icon, 0);
-			lv_obj_align(p->images[i], LV_ALIGN_LEFT_MID, 0, 0);
+		if (!result->alternate) {
+			navidromethumb_bind(&p->thumbs[i], &p->library, 0, row->cover);
 			lv_obj_set_hidden(p->images[i], false);
-			p->art_bound[i] = true;
-			p->art_finished[i] = !row->cover[0];
-			if (row->cover[0])
-				navidromeart_request(p->art_slots[i], &p->library, row->cover, ui_px(ND_ART_THUMB_SIZE));
-		}
+		} else navidromethumb_release(&p->thumbs[i]);
 		lv_obj_set_y(p->rows[i], p->album.height + (result->alternate ? result->album.y[i] : (p->first + i) * pitch));
 		lv_label_set_text(p->names[i], row->title);
 		lv_label_set_text(p->details[i], row->details ? tr(row->details == 1 && navidrome_star_loading(p->query.kind, row->id) ? "nd_favorites_loading" : "nd_favorites_metadata_error") : row->artist);
@@ -293,6 +293,15 @@ static void window_done(void *value) {
 	DIAG(result->diagnostic, D_BIND, D_OK, DV(D_COUNT, p->count), DV(D_TOTAL, result->total));
 	DIAG(result->diagnostic, D_END, D_OK);
 	free(result);
+	// A partial overlapping result is useful immediately; fill the latest
+	// uncovered viewport afterwards, without waiting for another gesture.
+	bool covered;
+	if (p->album.active) {
+		int y = LV_MAX(0, nd_row_scroll(p->list, p->album.height + p->album_window.extent) - p->album.height);
+		int end = p->count ? p->album_window.y[p->count - 1] + (p->album_window.heading[p->count - 1] ? ui_px(ND_ALBUM_DISC_HEIGHT) : pitch) : 0;
+		covered = !p->count || (y >= p->album_window.offset && (y + lv_obj_get_content_height(p->list) <= end || end >= p->album_window.extent));
+	} else covered = !p->count || nd_row_covered(p->list, p->first, p->count, p->total, pitch, 0);
+	if (!covered) submit_window(p);
 }
 
 static bool window_current(void *data) {
@@ -312,7 +321,7 @@ static bool window_publish(void *data, const char *temp, const char *path) {
 }
 static void *read_windows(void *unused) {
 	(void)unused;
-	thread_be_background("navidrome lists");
+	thread_be_low_priority("navidrome lists");
 	pthread_mutex_lock(&window_lock);
 	for (;;) {
 		while (!pending)
@@ -320,6 +329,7 @@ static void *read_windows(void *unused) {
 		window_t *result = malloc(sizeof(*result));
 		if (!result) {
 			DIAG(request.diagnostic, D_END, D_FAILED, DV(D_REASON, 7));
+			atomic_store(&failed_delivery[request.page], request.serial);
 			pending = false;
 			continue;
 		}
@@ -410,6 +420,7 @@ static void *read_windows(void *unused) {
 		DIAG(result->diagnostic, D_QUERY, result->ok ? D_OK : D_FAILED, DV(D_COUNT, result->count), DV(D_DURATION_US, diagnostic_since(query_started)));
 		if (!gui_post(window_done, result)) {
 			DIAG(result->diagnostic, D_END, D_UNAVAILABLE, DV(D_REASON, 1));
+			atomic_store(&failed_delivery[result->page], result->serial);
 			free(result);
 		}
 		pthread_mutex_lock(&window_lock);
@@ -496,10 +507,8 @@ static void scrolling(lv_event_t *e) {
             submit_window(p);
         return;
     }
-	int wanted = nd_row_first(p->list, p->total, pitch, 0);
 	azindex_flash(p->index);
-	if ((p->loading && wanted != p->requested_first) ||
-		(!p->loading && !nd_row_covered(p->list, p->first, p->count, p->total, pitch, 0)))
+	if (!p->loading && !nd_row_covered(p->list, p->first, p->count, p->total, pitch, 0))
 		submit_window(p);
 }
 
@@ -656,7 +665,7 @@ void navidromebrowse_refresh(void) {
 			if (p->favorite_revision != favorites.generation)
 				submit_window(p);
 		}
-		if (p->loading && lv_tick_elaps(p->submitted) > 2500)
+		if (p->loading && atomic_load(&failed_delivery[p - pages]) == p->serial && lv_tick_elaps(p->submitted) > 2500)
 			submit_window(p); // Recover from a dropped GUI post without a network retry.
 		bool was_tinted = p->album.tinted;
 		navidromealbum_tick(&p->album);
@@ -671,19 +680,8 @@ void navidromebrowse_refresh(void) {
             browse_selection_ui(p);
 		}
 		navidromeofflinebadge_tick(&p->offline);
-		for (int i = 0; i < p->count; i++) {
-			if (p->album.active || p->art_finished[i])
-				continue;
-			if (navidromeart_take(p->art_slots[i], &p->artwork[i], &p->art_finished[i])) {
-				lv_obj_remove_style(p->images[i], &theme_style_icon, 0);
-				lv_obj_set_size(p->images[i], ui_px(ND_ART_THUMB_SIZE), ui_px(ND_ART_THUMB_SIZE));
-				// Keep automatic fitting across the glyph-to-cover transition.
-				lv_image_set_inner_align(p->images[i], LV_IMAGE_ALIGN_CONTAIN);
-				lv_obj_align(p->images[i], LV_ALIGN_LEFT_MID, 0, 0);
-				lv_image_set_src(p->images[i], &p->artwork[i].dsc);
-				lv_obj_set_hidden(p->images[i], false);
-			}
-		}
+		if (!p->album.active)
+			for (int i = 0; i < p->count; i++) navidromethumb_tick(&p->thumbs[i]);
 	}
 }
 
@@ -1232,7 +1230,7 @@ void navidromebrowse_init(gui_config_t *cfg) {
 			p->details[i] = row.detail;
 			p->durations[i] = row.duration;
 			p->numbers[i] = row.number;
-			p->art_slots[i] = i;
+			navidromethumb_adopt(&p->thumbs[i], p->images[i], i, false);
 			p->playmarks[i] = playmark_create(p->rows[i]);
 			lv_obj_add_event_cb(p->rows[i], row_clicked, LV_EVENT_CLICKED, NULL);
 			switcher_attach_back_gesture(p->rows[i]);

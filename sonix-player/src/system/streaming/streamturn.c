@@ -4,12 +4,49 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <time.h>
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
 static bool busy;
 static atomic_uint demand, demand_epoch, foreground, foreground_epoch;
+static atomic_uint headroom_token, headroom_ms_at, artwork_epoch;
+static atomic_bool artwork_buffered;
+static void observe_change(void);
+static unsigned monotonic_ms(void) {
+	struct timespec t;
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	return (unsigned)((uint64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000);
+}
+unsigned streamturn_playback_token(void) { return atomic_load(&foreground) == 1 ? atomic_load(&foreground_epoch) : 0; }
+void streamturn_artwork_urgent(void) {
+	atomic_store(&headroom_ms_at, 0);
+	if (atomic_exchange(&artwork_buffered, false)) {
+		atomic_fetch_add(&artwork_epoch, 1);
+		observe_change();
+	}
+}
+void streamturn_artwork_headroom(unsigned token, int milliseconds) {
+	if (!token || token != streamturn_playback_token()) return;
+	unsigned now = monotonic_ms(), previous = atomic_load(&headroom_ms_at);
+	bool was = atomic_load(&artwork_buffered);
+	bool fresh = previous && now - previous <= 500 && token == atomic_load(&headroom_token);
+	bool eligible = milliseconds >= 8000 || (fresh && was && milliseconds > 4000);
+	atomic_store(&headroom_token, token);
+	atomic_store(&artwork_buffered, eligible);
+	atomic_store(&headroom_ms_at, now);
+	if (eligible != was || (eligible && !fresh)) {
+		atomic_fetch_add(&artwork_epoch, 1);
+		observe_change();
+	}
+}
+unsigned streamturn_observe_artwork(bool player, bool *eligible) {
+	unsigned token = atomic_load(&foreground_epoch), sampled = atomic_load(&headroom_ms_at);
+	*eligible = atomic_load(&foreground) == 0 || (player && atomic_load(&foreground) == 1 &&
+		atomic_load(&headroom_token) == token && atomic_load(&artwork_buffered) && sampled && monotonic_ms() - sampled <= 500);
+	return token + atomic_load(&artwork_epoch);
+}
 static _Atomic(void (*)(void)) observer, artwork_observer;
 void streamturn_set_artwork_observer(void (*changed)(void)) { atomic_store(&artwork_observer, changed); }
 unsigned streamturn_observe_playback(bool *idle) {
@@ -27,6 +64,7 @@ static void observe_change(void) {
 }
 static void demand_begin(bool background) {
 	if (!background) {
+		streamturn_artwork_urgent();
 		atomic_fetch_add(&foreground, 1);
 		atomic_fetch_add(&foreground_epoch, 1);
 	}
