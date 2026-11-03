@@ -424,6 +424,16 @@ Tracks sharing a cover ID reuse the source across lists, album headers, Queue,
 Downloads and Now Playing. Artwork is fetched on visible demand, never in bulk
 during Library Sync.
 
+Now Playing artwork gets priority over queued thumbnails. A separate bounded
+network worker lets cached covers and thumbnails finish while an unrelated
+remote image is slow. Playback can interrupt artwork acquisition; a still-visible
+thumbnail or player request resumes after playback transfer demand settles,
+without scrolling or reopening the page. Genuine failures retain their cooldown.
+Local decoding stays serialized and at low priority. This change does not
+establish a fix for audio cuts; Blaze latency and playback overhead still require
+paired device checks. Focused regression commands and their limits are documented
+in [the artwork test runbook](sonix-player/tools/navidrome-artwork-tests.md).
+
 The baseline is **512 pixels on the shorter side**, preserving aspect ratio.
 A square source is normally 512x512; portrait/landscape sources can be 512x768
 or 768x512. Acquisition requests size 512 first, inspects returned dimensions

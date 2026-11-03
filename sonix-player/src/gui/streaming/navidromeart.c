@@ -10,10 +10,13 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/eventfd.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -25,7 +28,9 @@ typedef struct {
 	bool delivered;
 	unsigned serial;
 	bool pending, done, found, player, playback, album;
-	bool audio_retried, local_only;
+	bool local_only, staged, waiting;
+	unsigned age;
+	char source_key[33];
 	unsigned profile_epoch, maintenance_epoch;
 	nd_library_t library;
 	char id[ND_ID_MAX];
@@ -37,10 +42,45 @@ typedef struct {
 static art_slot_t slots[ART_SLOTS];
 static pthread_mutex_t art_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t wake = PTHREAD_COND_INITIALIZER;
-static bool started;
+static bool started, network_started, local_busy, local_candidate;
+static atomic_int network_wake = -1;
+static void artwork_wake(void) {
+	int saved_errno = errno;
+	int fd = atomic_load(&network_wake);
+	uint64_t value = 1;
+	if (fd >= 0) {
+		ssize_t n;
+		do {
+			n = write(fd, &value, sizeof(value));
+		} while (n < 0 && errno == EINTR);
+		// EAGAIN means a retained wake is already pending.
+	}
+	errno = saved_errno;
+}
+static unsigned playback_pressure(bool *idle) { return streamturn_observe_playback ? streamturn_observe_playback(idle) : streamturn_observe(idle); }
+static uint64_t art_now_ms(void) {
+	struct timespec t;
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	return (uint64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+}
+// This table contains identities/state only. One acquisition or ready handoff
+// owns encoded bytes; no per-consumer network buffers or threads.
+enum { NET_FREE, NET_WAIT, NET_ACTIVE, NET_READY };
+typedef struct {
+	char key[33];
+	unsigned profile, card, maintenance;
+	int state, pixels;
+	bool error;
+	uint64_t due, order, queued_ms;
+	char *bytes;
+	size_t length;
+} art_network_t;
+static art_network_t network[ART_SLOTS];
+static uint64_t network_order;
+static void *art_network_worker(void *unused);
 
-// One worker serializes fetches. Duplicate keys hit the newly completed file;
-// failures share a bounded cooldown table, including when rows are recycled.
+// The local worker alone owns source validation/publication and cooldowns.
+// Preemption remains in the separate network queue and never poisons failures.
 static struct {
 	char key[33];
 	time_t until;
@@ -131,17 +171,80 @@ static bool job_current(const art_slot_t *job, const nd_context_t *context, bool
 	return live;
 }
 
+static bool network_matches(const art_network_t *n, const art_slot_t *s) { return s->id[0] && !s->local_only && !s->done && n->profile == s->profile_epoch && n->card == s->library.card_epoch && n->maintenance == s->maintenance_epoch && !strcmp(n->key, s->source_key); }
+static int slot_priority(const art_slot_t *s) { return s->player ? 3 : s->album ? 2 : 1; }
+// art_lock held. Prefer a live player peer when the initiator has gone away.
+static int network_peer(const art_network_t *n) {
+	int best = -1;
+	for (int i = 0; i < ART_SLOTS; i++)
+		if (network_matches(n, &slots[i]) && (best < 0 || slot_priority(&slots[i]) > slot_priority(&slots[best])))
+			best = i;
+	return best;
+}
+static const char *staged_fetch(const art_slot_t *job, int *pixels, char **bytes, size_t *length, bool *deferred) {
+	pthread_mutex_lock(&art_lock);
+	int empty = -1, match = -1;
+	for (int i = 0; i < ART_SLOTS; i++) {
+		if (!network[i].state)
+			empty = i;
+		else if (network_matches(&network[i], job)) {
+			match = i;
+			break;
+		}
+	}
+	if (match >= 0 && network[match].state == NET_READY) {
+		art_network_t *n = &network[match];
+		*bytes = n->bytes;
+		*length = n->length;
+		*pixels = n->pixels;
+		bool error = n->error;
+		// A cached fallback plus this candidate can own both encoded buffers.
+		// Ordinary one-source local reads may overlap acquisition; this handoff
+		// temporarily prevents starting another acquisition until local completion.
+		local_candidate = true;
+		memset(n, 0, sizeof(*n));
+		pthread_mutex_unlock(&art_lock);
+		artwork_wake();
+		return error ? "nd_response_error" : NULL;
+	}
+	if (match < 0 && empty >= 0 && network_started) {
+		art_network_t *n = &network[empty];
+		snprintf(n->key, sizeof(n->key), "%s", job->source_key);
+		n->profile = job->profile_epoch;
+		n->card = job->library.card_epoch;
+		n->maintenance = job->maintenance_epoch;
+		n->pixels = *pixels;
+		n->state = NET_WAIT;
+		n->order = ++network_order;
+		n->queued_ms = art_now_ms();
+		match = empty;
+	}
+	*deferred = match >= 0;
+	pthread_mutex_unlock(&art_lock);
+	artwork_wake();
+	return *deferred ? "nd_art_deferred" : "nd_json_memory";
+}
+
 typedef struct {
 	const art_slot_t *job;
 	const nd_context_t *context;
 	bool audio_interrupted;
+	bool player_preempted;
 } art_request_t;
 static bool request_current(void *arg) {
 	art_request_t *request = arg;
 	bool idle;
-	streamturn_observe(&idle);
+	playback_pressure(&idle);
 	request->audio_interrupted |= !idle;
-	return idle && job_current(request->job, request->context, true);
+	bool player = false;
+	if (request->job->staged && !request->job->player) {
+		pthread_mutex_lock(&art_lock);
+		const art_slot_t *p = &slots[ND_ART_PLAYER_SLOT];
+		player = p->id[0] && p->waiting && !p->done && !p->local_only && strcmp(p->source_key, request->job->source_key);
+		pthread_mutex_unlock(&art_lock);
+	}
+	request->player_preempted |= player;
+	return idle && !player && job_current(request->job, request->context, true);
 }
 
 static bool source_info(art_source_t *source, bool legacy) {
@@ -199,16 +302,10 @@ static bool source_read(const art_slot_t *job, const nd_context_t *context, cons
 }
 
 static bool source_decode(const art_slot_t *job, const nd_context_t *context, const art_source_t *source, cover_image_t *out) {
-	uint64_t wait_start = diagnostic_clock();
-	bool idle;
-	do {
-		streamturn_observe(&idle);
-		if (!job_current(job, context, false))
-			return false;
-		if (!idle)
-			usleep(10000);
-	} while (!idle);
-	DIAG(job->diagnostic, D_PRIORITY_WAIT, D_OK, DV(D_WAIT_US, diagnostic_since(wait_start)));
+	if (!job_current(job, context, false))
+		return false;
+	// Cached/local preparation never waits for a network transfer to finish.
+	DIAG(job->diagnostic, D_PRIORITY_WAIT, D_OK, DV(D_WAIT_US, 0));
 	uint64_t started = diagnostic_clock();
 	bool ok = cover_load_image_memory(source->bytes, source->length, job->size, job->size, COVER_FIT_COVER, out);
 	DIAG(job->diagnostic, D_DECODE, ok ? D_OK : D_FAILED, DV(D_DURATION_US, diagnostic_since(started)), DV(D_WIDTH, source->w), DV(D_HEIGHT, source->h));
@@ -329,6 +426,8 @@ static bool load(const art_slot_t *job, cover_image_t *out, bool *audio_interrup
 	// All consumers can read the best bounded legacy encoding, including the
 	// player. The exact old geometry covers Studio sizes outside this finite set.
 	static const int sizes[] = {512, 480, 320, 300, 240, 200, 72, 64, 48, 43, 37, 32};
+	char best_legacy[1200] = "";
+	int best_short = 0;
 	for (size_t i = 0; !canonical && i <= sizeof(sizes) / sizeof(*sizes); i++) {
 		int size = i == sizeof(sizes) / sizeof(*sizes) ? job->size : sizes[i];
 		char old_key[33], old_path[1200];
@@ -336,15 +435,19 @@ static bool load(const art_slot_t *job, cover_image_t *out, bool *audio_interrup
 		snprintf(old_path, sizeof(old_path), "%s/%s.img", dir, old_key);
 		art_source_t candidate = {0};
 		cover_image_t image = {0};
-		if (source_read(job, &context, old_path, true, &candidate) && LV_MIN(candidate.w, candidate.h) > LV_MIN(source.w, source.h) && source_decode(job, &context, &candidate, &image)) {
+		if (source_read(job, &context, old_path, true, &candidate) && LV_MIN(candidate.w, candidate.h) > best_short && source_decode(job, &context, &candidate, &image)) {
 			source_free(&source);
 			cover_free(out);
-			source = candidate;
-			memset(&candidate, 0, sizeof(candidate));
+			best_short = LV_MIN(candidate.w, candidate.h);
+			snprintf(best_legacy, sizeof(best_legacy), "%s", old_path);
 			*out = image;
 			found = true;
 		}
 		source_free(&candidate);
+	}
+	if (found && !canonical && !source_read(job, &context, best_legacy, true, &source)) {
+		cover_free(out);
+		found = false;
 	}
 	if (found && !canonical) {
 		source.state = LV_MIN(source.w, source.h) >= ART_BASE ? ART_BASELINE : ART_PENDING;
@@ -363,35 +466,41 @@ static bool load(const art_slot_t *job, cover_image_t *out, bool *audio_interrup
 		int attempts = pixels == ART_BASE ? 2 : 1;
 		for (int step = 0; step < attempts && job_current(job, &context, true); step++) {
 			bool idle;
-			do {
-				streamturn_observe(&idle);
-				if (!job_current(job, &context, true))
-					break;
-				if (!idle)
-					usleep(10000);
-			} while (!idle);
+			if (!job->staged)
+				do {
+					streamturn_observe(&idle);
+					if (!job_current(job, &context, true))
+						break;
+					if (!idle)
+						usleep(10000);
+				} while (!idle);
 			if (!job_current(job, &context, true))
 				break;
 			art_source_t candidate = {0};
 			cover_image_t image = {0};
 			art_request_t request = {.job = job, .context = &context};
 			attempted = true;
-			const char *error = nd_api_artwork_source(context.host, context.user, context.password, job->id, pixels, request_current, &request, &candidate.bytes, &candidate.length);
+			bool deferred = false;
+			const char *error = job->staged ? staged_fetch(job, &pixels, &candidate.bytes, &candidate.length, &deferred) : nd_api_artwork_source(context.host, context.user, context.password, job->id, pixels, request_current, &request, &candidate.bytes, &candidate.length);
+			if (deferred) {
+				if (audio_interrupted)
+					*audio_interrupted = true;
+				break;
+			}
 			bool accepted = !error && source_info(&candidate, false) && job_current(job, &context, true) && source_decode(job, &context, &candidate, &image);
 			if (!accepted) {
 				source_free(&candidate);
 				cover_free(&image);
 				// Audio preemption and retired ownership are cancellations, not
 				// server failures. Later visible demand must be able to retry.
-				failed = !request.audio_interrupted && job_current(job, &context, true);
+				failed = !request.audio_interrupted && !(job->staged && error && !strcmp(error, "nd_json_memory")) && job_current(job, &context, true);
 				if (audio_interrupted && request.audio_interrupted && job_current(job, &context, false))
 					*audio_interrupted = true;
-				nd_log("navidrome: artwork unavailable target_px=%d reason=%s\n", job->size,
-					request.audio_interrupted ? "audio_priority" : !failed ? "retired" : error ? "request" : "image");
+				nd_log("navidrome: artwork unavailable target_px=%d reason=%s\n", job->size, request.audio_interrupted ? "audio_priority" : !failed ? "retired" : error ? "request" : "image");
 				break;
 			}
 			int shorter = LV_MIN(candidate.w, candidate.h), longer = LV_MAX(candidate.w, candidate.h);
-			int state = shorter >= ART_BASE ? ART_BASELINE : candidate.w == candidate.h || step + 1 == attempts ? (pixels == ART_EDGE ? ART_CAPPED : ART_SMALL) : ART_PENDING;
+			int state = shorter >= ART_BASE ? ART_BASELINE : candidate.w == candidate.h || pixels > ART_BASE ? (pixels == ART_EDGE ? ART_CAPPED : ART_SMALL) : ART_PENDING;
 			int next = LV_MIN(ART_EDGE, (int)(((uint64_t)ART_BASE * longer + shorter - 1) / shorter));
 			if (!found || shorter >= LV_MIN(source.w, source.h)) {
 				source_free(&source);
@@ -438,23 +547,150 @@ static bool load(const art_slot_t *job, cover_image_t *out, bool *audio_interrup
 	DIAGNOSTIC_RETURN_BOOL(found);
 }
 
+// One remote request at a time. Its eventfd wake cannot recurse into a
+// streaming/service mutex, and retained counters prevent lost notifications.
+static void *art_network_worker(void *unused) {
+	(void)unused;
+	thread_be_background("navidrome art net");
+	unsigned observed = 0;
+	uint64_t quiet_until = 0;
+	for (;;) {
+		bool idle;
+		unsigned epoch = playback_pressure(&idle);
+		uint64_t now = art_now_ms();
+		if (epoch != observed) {
+			observed = epoch;
+			quiet_until = now + 250;
+		}
+		pthread_mutex_lock(&art_lock);
+		int selected = -1, peer = -1;
+		bool ready = false;
+		uint64_t next = 0;
+		for (int i = 0; i < ART_SLOTS; i++) {
+			art_network_t *n = &network[i];
+			if (!n->state)
+				continue;
+			int p = network_peer(n);
+			if (p < 0) {
+				free(n->bytes);
+				memset(n, 0, sizeof(*n));
+				continue;
+			}
+			if (n->state == NET_READY) {
+				ready = true;
+				continue;
+			}
+			if (n->state != NET_WAIT)
+				continue;
+			if (n->due > now) {
+				if (!next || n->due < next)
+					next = n->due;
+				continue;
+			}
+			if (selected < 0 || slot_priority(&slots[p]) > slot_priority(&slots[peer]) || (slot_priority(&slots[p]) == slot_priority(&slots[peer]) && n->order < network[selected].order)) {
+				selected = i;
+				peer = p;
+			}
+		}
+		if (selected >= 0 && idle && now >= quiet_until && !local_candidate && !ready) {
+			art_slot_t job = slots[peer];
+			job.staged = true;
+			art_network_t *n = &network[selected];
+			int pixels = n->pixels;
+			uint64_t waited_ms = art_now_ms() - n->queued_ms;
+			n->state = NET_ACTIVE;
+			pthread_mutex_unlock(&art_lock);
+			DIAGNOSTIC_ATTACH(job.diagnostic);
+			DIAG(job.diagnostic, D_PRIORITY_WAIT, D_OK, DV(D_KIND, 1), DV(D_WAIT_US, waited_ms * 1000));
+			DIAG(job.diagnostic, D_WORK, D_PENDING, DV(D_KIND, 1));
+			nd_context_t context;
+			bool admitted = nd_cache_io_begin(job.maintenance_epoch);
+			bool current = admitted && navidrome_context(&context, false) && context.profile_epoch == job.profile_epoch && context.card_epoch == job.library.card_epoch && job_current(&job, &context, true);
+			char *bytes = NULL;
+			size_t length = 0;
+			art_request_t request = {.job = &job, .context = &context};
+			const char *error = current ? nd_api_artwork_source(context.host, context.user, context.password, job.id, pixels, request_current, &request, &bytes, &length) : "nd_audio_cancelled";
+			current = current && job_current(&job, &context, true);
+			if (admitted)
+				nd_cache_io_end();
+			nd_wipe(&context, sizeof(context));
+			pthread_mutex_lock(&art_lock);
+			n = &network[selected];
+			if (network_peer(n) < 0 || !current) {
+				// Only this source needs to reconsider its current fallback/eligibility.
+				for (int j = 0; j < ART_SLOTS; j++)
+					if (slots[j].waiting && network_matches(n, &slots[j])) {
+						slots[j].waiting = false;
+						slots[j].pending = true;
+					}
+				free(bytes);
+				memset(n, 0, sizeof(*n));
+			} else if (request.audio_interrupted || request.player_preempted) {
+				free(bytes);
+				n->state = NET_WAIT;
+				n->due = art_now_ms() + 250;
+				n->order = ++network_order;
+				DIAG(job.diagnostic, D_RETRY, D_PENDING, DV(D_REASON, request.audio_interrupted ? 1 : 3), DV(D_RETRIES, 1));
+			} else {
+				n->bytes = bytes;
+				n->length = length;
+				n->error = error != NULL;
+				n->state = NET_READY;
+				for (int j = 0; j < ART_SLOTS; j++)
+					if (network_matches(n, &slots[j])) {
+						slots[j].waiting = false;
+						slots[j].pending = true;
+					}
+			}
+			pthread_cond_broadcast(&wake);
+			pthread_mutex_unlock(&art_lock);
+			continue;
+		}
+		if (selected >= 0 && idle && quiet_until > now && (!next || quiet_until < next))
+			next = quiet_until;
+		pthread_mutex_unlock(&art_lock);
+		int timeout = next ? (int)LV_MIN(next > now ? next - now : 1, 2147483647) : -1;
+		// Standalone legacy fixtures can omit the optional observer implementation.
+		if (!streamturn_set_artwork_observer && timeout < 0)
+			timeout = 100;
+		struct pollfd fd = {.fd = atomic_load(&network_wake), .events = POLLIN};
+		int result = poll(&fd, 1, timeout);
+		if (result > 0) {
+			uint64_t count;
+			ssize_t nread = read(fd.fd, &count, sizeof(count));
+			(void)nread;
+		}
+	}
+	return NULL;
+}
+
 static void *art_worker(void *unused) {
 	(void)unused;
 	thread_be_background("navidrome art");
 	pthread_mutex_lock(&art_lock);
 	for (;;) {
-		int i;
-		for (i = 0; i < ART_SLOTS && !slots[i].pending; i++) {
-		}
-		if (i == ART_SLOTS) {
+		int i = -1;
+		for (int j = 0; j < ART_SLOTS; j++)
+			if (slots[j].pending) {
+				if (slots[j].age < ART_SLOTS + 8)
+					slots[j].age++;
+				int score = slots[j].age > 8 ? 4 : slot_priority(&slots[j]);
+				int best = i < 0 ? -1 : slots[i].age > 8 ? 4 : slot_priority(&slots[i]);
+				if (score > best || (score == best && slots[j].age > slots[i].age))
+					i = j;
+			}
+		if (i < 0) {
 			pthread_cond_wait(&wake, &art_lock);
 			continue;
 		}
 		art_slot_t job = slots[i];
+		job.staged = true;
+		slots[i].age = 0;
+		local_busy = true;
 		slots[i].pending = false;
 		pthread_mutex_unlock(&art_lock);
 		DIAGNOSTIC_ATTACH(job.diagnostic);
-		DIAG(job.diagnostic, D_WORK, D_PENDING, DV(D_RETRIES, job.audio_retried));
+		DIAG(job.diagnostic, D_WORK, D_PENDING, DV(D_KIND, 0));
 		cover_image_t image = {0}, backdrop = {0};
 		bool admitted = nd_cache_io_begin(job.maintenance_epoch);
 		bool audio_interrupted = false;
@@ -469,6 +705,9 @@ static void *art_worker(void *unused) {
 		if (found && job.player && job.backdrop_w > 0 && job.backdrop_w <= 512 && job.backdrop_h > 0 && job.backdrop_h <= 1024)
 			cover_blur_fill(&image, job.backdrop_w, job.backdrop_h, &backdrop);
 		pthread_mutex_lock(&art_lock);
+		local_busy = local_candidate = false;
+		pthread_cond_broadcast(&wake);
+		artwork_wake();
 		if (job.serial != slots[i].serial || !nd_cache_io_current(job.maintenance_epoch)) {
 			DIAG(job.diagnostic, D_RETIRED, D_SUPERSEDED);
 			if (found)
@@ -478,12 +717,16 @@ static void *art_worker(void *unused) {
 				slots[i].done = true;
 				slots[i].found = false;
 			}
-		} else if (!found && job.player && audio_interrupted && !job.audio_retried) {
-			// Resume a current player's canceled miss once after audio yields.
-			// load waits for admission; repeated interruptions terminate.
-			DIAG(job.diagnostic, D_RETRY, D_PENDING, DV(D_RETRIES, 1));
-			slots[i].audio_retried = true;
-			slots[i].pending = true;
+		} else if (audio_interrupted) {
+			// Waiting for an owned source handoff, not a terminal missing image.
+			cover_free(&image);
+			cover_free(&backdrop);
+			slots[i].waiting = true;
+			for (int j = 0; j < ART_SLOTS; j++)
+				if (network[j].state == NET_READY && network_matches(&network[j], &slots[i])) {
+					slots[i].pending = true;
+					slots[i].waiting = false;
+				}
 		} else {
 			DIAG(job.diagnostic, D_DECODE, found ? D_OK : D_FAILED, DV(D_REASON, audio_interrupted ? 1 : !admitted ? 2 : 0));
 			slots[i].image = image;
@@ -505,12 +748,64 @@ void navidromeart_release(int i) {
 	slot->diagnostic = (diagnostic_t){0};
 	slot->serial++;
 	slot->id[0] = 0;
-	slot->pending = slot->done = false;
+	slot->pending = slot->done = slot->waiting = false;
+	artwork_wake();
 	if (slot->found)
 		cover_free(&slot->image);
 	cover_free(&slot->backdrop);
 	slot->found = false;
 	pthread_mutex_unlock(&art_lock);
+}
+
+// Service shutdown retires every consumer before draining. The two fixed
+// workers/eventfd stay dormant for process lifetime (and a later service init),
+// but no request, encoded candidate, unclaimed image or cache lease survives.
+// Invoked outside the service lock; never from an interactive GUI callback.
+static void artwork_shutdown(void) {
+	pthread_mutex_lock(&art_lock);
+	for (int i = 0; i < ART_SLOTS; i++) {
+		slots[i].serial++;
+		slots[i].id[0] = 0;
+		slots[i].pending = slots[i].waiting = false;
+		slots[i].done = true;
+		if (slots[i].found)
+			cover_free(&slots[i].image);
+		cover_free(&slots[i].backdrop);
+		slots[i].found = false;
+	}
+	artwork_wake();
+	pthread_cond_broadcast(&wake);
+	for (;;) {
+		bool busy = local_busy;
+		for (int i = 0; i < ART_SLOTS; i++)
+			busy |= network[i].state == NET_ACTIVE;
+		if (!busy)
+			break;
+		pthread_cond_wait(&wake, &art_lock);
+	}
+	for (int i = 0; i < ART_SLOTS; i++) {
+		free(network[i].bytes);
+		memset(&network[i], 0, sizeof(network[i]));
+	}
+	source_free(&hot_source);
+	hot_path[0] = 0;
+	memset(failures, 0, sizeof(failures));
+	pthread_mutex_unlock(&art_lock);
+}
+
+// Fixed process-lifetime workers, matching existing artwork lifetime. Keep
+// stacks bounded on the device; all large image/HTTP storage remains on heap.
+#define ART_STACK_BYTES (256u * 1024u)
+static bool start_art_thread(void *(*entry)(void *)) {
+	pthread_attr_t attr;
+	if (pthread_attr_init(&attr))
+		return false;
+	pthread_t thread;
+	bool ok = !pthread_attr_setstacksize(&attr, ART_STACK_BYTES) && !pthread_create(&thread, &attr, entry, NULL);
+	pthread_attr_destroy(&attr);
+	if (ok)
+		pthread_detach(thread);
+	return ok;
 }
 
 static void request(int i, const nd_library_t *library, const char *id, int size, int backdrop_w, int backdrop_h, bool local_only) {
@@ -533,23 +828,40 @@ static void request(int i, const nd_library_t *library, const char *id, int size
 	nd_wipe(&context, sizeof(context));
 	snprintf(slot->id, sizeof(slot->id), "%s", id);
 	slot->size = size;
-	slot->audio_retried = false;
 	slot->local_only = local_only;
 	slot->backdrop_w = backdrop_w;
 	slot->backdrop_h = backdrop_h;
+	cache_key(slot, 0, slot->source_key);
+	slot->age = 0;
+	slot->waiting = false;
 	slot->pending = id && *id;
 	slot->done = !slot->pending;
+	if (!network_started) {
+		int fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+		if (fd >= 0) {
+			atomic_store(&network_wake, fd);
+			if (start_art_thread(art_network_worker)) {
+				network_started = true;
+				if (streamturn_set_artwork_observer)
+					streamturn_set_artwork_observer(artwork_wake);
+			} else {
+				atomic_store(&network_wake, -1);
+				close(fd);
+			}
+		}
+	}
 	if (!started) {
-		pthread_t thread;
-		if (pthread_create(&thread, NULL, art_worker, NULL) == 0) {
+		if (start_art_thread(art_worker)) {
 			started = true;
-			pthread_detach(thread);
 		} else {
 			slot->pending = false;
 			slot->done = true;
 		}
 	}
+	if (started || network_started)
+		navidrome_set_artwork_shutdown(artwork_shutdown);
 	pthread_cond_signal(&wake);
+	artwork_wake();
 	pthread_mutex_unlock(&art_lock);
 }
 
@@ -563,6 +875,11 @@ bool navidromeart_take(int i, cover_image_t *out, bool *finished) {
 	nd_context_t context;
 	bool current = nd_cache_io_current(slot->maintenance_epoch) && navidrome_context(&context, false) && context.card_epoch == slot->library.card_epoch && (slot->playback ? context.profile_epoch == slot->profile_epoch : context.epoch == slot->library.epoch);
 	nd_wipe(&context, sizeof(context));
+	if (!current) {
+		slot->pending = slot->waiting = false;
+		slot->done = true;
+		artwork_wake();
+	}
 	if (slot->done && slot->found && !current) {
 		cover_free(&slot->image);
 		cover_free(&slot->backdrop);

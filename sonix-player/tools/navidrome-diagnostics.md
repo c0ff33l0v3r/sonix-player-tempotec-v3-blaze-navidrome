@@ -150,3 +150,18 @@ command builds the full player or opens an audio output device.
 
 Full host/target builds, production simulator acceptance, MIPS ABI and the paired
 Blaze tests remain user-run. A passing host fixture does not establish any of them.
+
+## Artwork scheduling interpretation
+
+Artwork now separates local preparation (`work kind=0`) from remote acquisition
+(`work kind=1`). Network `priority_wait kind=1` reports time since the scoped
+source was queued, including admission/backoff; local decode no longer parks
+behind a full transfer. `retry reason=1` is foreground playback preemption;
+`retry reason=3` is current-player artwork priority over an unrelated row. These
+remain pending states, not terminal image/server failures. Explicit background
+original transfers contribute to aggregate streaming demand but not the new
+foreground-only artwork gate. Existing reporting observation stays independent.
+
+Use [the artwork test runbook](navidrome-artwork-tests.md) for deterministic
+ordering/recovery checks and separate device acceptance. No new whole-device
+latency or audio-cut claim follows from these host fixtures.

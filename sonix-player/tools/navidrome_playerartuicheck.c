@@ -10,7 +10,9 @@ static nd_playrow_t fixture_track;
 static nd_library_t fixture_library;
 static bool resolved = true, preparing = true, delivered, missing;
 static unsigned requests, local_requests;
+#ifndef NAVIDROME_ART_REAL_WORKER
 static int color;
+#endif
 static const char *detailed_file;
 static int detailed_size;
 int32_t ui_panel_width = 320;
@@ -37,6 +39,7 @@ bool navidromeplay_track(const char *path, nd_playrow_t *row, nd_library_t *lib)
 bool navidromeplay_reference(const char *path) { return path && !strncmp(path, "ndq:", 4); }
 bool navidromeplay_preparing(void) { return preparing; }
 bool playlist_has_source(void) { return true; }
+#ifndef NAVIDROME_ART_REAL_WORKER
 void navidromeart_release(int slot) {
 	(void)slot;
 	delivered = false;
@@ -76,6 +79,7 @@ bool navidrome_context(nd_context_t *out, bool network) {
 	return false;
 }
 void nd_wipe(void *data, size_t length) { memset(data, 0, length); }
+#endif
 void settingsrow_title_fit_width(lv_obj_t *title, int width) {
 	(void)title;
 	(void)width;
@@ -114,6 +118,7 @@ static void pixels(cover_image_t *out, int w, int h, int channel) {
 	out->has_tone = true;
 	out->tone = channel == 1 ? 0x00ff00 : channel == 2 ? 0x0000ff : 0xff0000;
 }
+#ifndef NAVIDROME_ART_REAL_WORKER
 bool navidromeart_take_player(cover_image_t *out, cover_image_t *back, bool *finished) {
 	*finished = delivered;
 	if (!delivered || missing || !fixture_track.row.cover[0])
@@ -127,6 +132,7 @@ bool navidromeart_take_player(cover_image_t *out, cover_image_t *back, bool *fin
 	pixels(back, 64, 32, color);
 	return true;
 }
+#endif
 void coverloader_request_player(const char *p, int w, int h, int bw, int bh) {
 	(void)p;
 	(void)w;
@@ -164,6 +170,7 @@ static void displayed_pixels(int channel) {
 	lv_draw_buf_destroy(frame);
 }
 // Keep unrelated lyrics blur creation outside this focused rendering fixture.
+#ifndef NAVIDROME_ART_REAL_WORKER
 int __wrap_pthread_create(pthread_t *t, const pthread_attr_t *a, void *(*f)(void *), void *u) {
 	(void)t;
 	(void)a;
@@ -171,6 +178,7 @@ int __wrap_pthread_create(pthread_t *t, const pthread_attr_t *a, void *(*f)(void
 	(void)u;
 	return EAGAIN;
 }
+#endif
 int main(int argc, char **argv) {
 	alarm(30);
 	ui_panel_width = argc > 1 ? atoi(argv[1]) : 320;
