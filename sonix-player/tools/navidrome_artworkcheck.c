@@ -1,12 +1,19 @@
 // Production source cache, protected HTTP and production crop/decoder integration.
-#include "src/gui/streaming/navidromeart.c"
+#ifndef NAVIDROME_ART_IMPLEMENTATION
+#define NAVIDROME_ART_IMPLEMENTATION "src/gui/streaming/navidromeart.c"
+#endif
+#include NAVIDROME_ART_IMPLEMENTATION
 #include <assert.h>
 #include <netdb.h>
 #include <stdarg.h>
 #include <stdatomic.h>
+static void (*fixture_art_shutdown)(void);
+void navidrome_set_artwork_shutdown(void (*shutdown)(void)) { fixture_art_shutdown = shutdown; }
 static nd_context_t fixture;
-static bool available = true, online = true, publish_ok = true, invalidate_decode;
-static unsigned maintenance = 1;
+static pthread_mutex_t fixture_lock = PTHREAD_MUTEX_INITIALIZER;
+static atomic_bool available = true, online = true, publish_ok = true;
+static bool invalidate_decode;
+static atomic_uint maintenance = 1;
 static int leases;
 static double cancel_at;
 static int cancel_kind, arm_after_decode;
@@ -53,10 +60,12 @@ const char *config_get(const char *section, const char *key, const char *fallbac
 	return fallback;
 }
 void nd_debug_line(const char *line) { (void)line; }
+#ifndef NAVIDROME_ART_SCHEDULER_CHECK
 unsigned streamturn_observe(bool *idle) {
 	*idle = now() < pressure_from || now() >= pressure_until;
 	return 0;
 }
+#endif
 int __real_getaddrinfo(const char *, const char *, const struct addrinfo *, struct addrinfo **);
 int __wrap_getaddrinfo(const char *host, const char *port, const struct addrinfo *hints, struct addrinfo **out) {
 	if (!strcmp(host, "art-dns.invalid")) {
@@ -70,7 +79,15 @@ static bool dns_current(void *arg) {
 	(void)arg;
 	return now() < dns_until;
 }
-void thread_be_background(const char *name) { (void)name; }
+#ifdef NAVIDROME_ART_SCHEDULER_CHECK
+static void scheduler_worker_gate(void);
+#endif
+void thread_be_background(const char *name) {
+	(void)name;
+#ifdef NAVIDROME_ART_SCHEDULER_CHECK
+	scheduler_worker_gate();
+#endif
+}
 const char *navidrome_validate(const char *host, const char *user, const char *password, char normalized[ND_HOST_MAX]) {
 	(void)user;
 	(void)password;
@@ -78,7 +95,9 @@ const char *navidrome_validate(const char *host, const char *user, const char *p
 	return NULL;
 }
 bool navidrome_context(nd_context_t *out, bool network) {
+	pthread_mutex_lock(&fixture_lock);
 	*out = fixture;
+	pthread_mutex_unlock(&fixture_lock);
 	return available && (!network || online);
 }
 bool navidrome_context_current(const nd_context_t *c, bool network) {
@@ -105,11 +124,16 @@ bool navidrome_context_current(const nd_context_t *c, bool network) {
 		}
 		cancel_kind = 0;
 	}
-	return available && c->epoch == fixture.epoch && c->profile_epoch == fixture.profile_epoch && c->card_epoch == fixture.card_epoch && (!network || online);
+	pthread_mutex_lock(&fixture_lock);
+	bool ok = available && c->epoch == fixture.epoch && c->profile_epoch == fixture.profile_epoch && c->card_epoch == fixture.card_epoch && (!network || online);
+	pthread_mutex_unlock(&fixture_lock);
+	return ok;
 }
 bool navidrome_playback_current(const nd_context_t *c, bool network) { return navidrome_context_current(c, network); }
 bool navidrome_cache_begin(unsigned e, unsigned card) {
+	pthread_mutex_lock(&fixture_lock);
 	bool ok = available && e == fixture.epoch && card == fixture.card_epoch;
+	pthread_mutex_unlock(&fixture_lock);
 	if (ok)
 		leases++;
 	return ok;
@@ -126,8 +150,18 @@ bool nd_cache_io_current(unsigned e) { return e == maintenance; }
 bool nd_cache_io_begin(unsigned e) { return nd_cache_io_current(e); }
 void nd_cache_io_end(void) {}
 bool __real_cover_load_image_memory(const void *, size_t, int, int, cover_fit_t, cover_image_t *);
+#ifdef NAVIDROME_ART_SCHEDULER_CHECK
+static void scheduler_decode_gate(void);
+static void scheduler_decode_done(void);
+#endif
 bool __wrap_cover_load_image_memory(const void *bytes, size_t length, int w, int h, cover_fit_t fit, cover_image_t *out) {
+#ifdef NAVIDROME_ART_SCHEDULER_CHECK
+	scheduler_decode_gate();
+#endif
 	bool ok = __real_cover_load_image_memory(bytes, length, w, h, fit, out);
+#ifdef NAVIDROME_ART_SCHEDULER_CHECK
+	scheduler_decode_done();
+#endif
 	if (arm_after_decode) {
 		cancel_kind = arm_after_decode;
 		cancel_at = now() + .05;

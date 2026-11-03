@@ -21,6 +21,8 @@ typedef struct {
 void navidrome_init(void);
 void navidrome_shutdown(void);
 void navidrome_set_lyrics_shutdown(void (*shutdown)(void));
+// Called outside the service lock after profile retirement.
+void navidrome_set_artwork_shutdown(void (*shutdown)(void));
 void navidrome_set_listener(void (*changed)(void)); // listener runs on GUI thread
 void navidrome_snapshot(navidrome_snapshot_t *out);
 bool navidrome_password(char out[ND_SECRET_MAX]);

@@ -32,6 +32,10 @@ void streamturn_release(void);
 void streamturn_wait_idle(void);
 // Advisory only; observers never own the turn or block its participants.
 unsigned streamturn_observe(bool *idle);
+// Playback-only pressure excludes explicit background originals. Artwork owns
+// a separate nonblocking observer and never replaces the report observer.
+unsigned streamturn_observe_playback(bool *idle) __attribute__((weak));
+void streamturn_set_artwork_observer(void (*changed)(void)) __attribute__((weak));
 void streamturn_set_observer(void (*changed)(void)) __attribute__((weak));
 
 // ---------------------------------------------------------------------------

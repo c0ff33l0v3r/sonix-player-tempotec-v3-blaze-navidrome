@@ -22,6 +22,7 @@ CASES = {
     "decoder": ("navidrome_audiocheck.sh", 4),
     "playerart": ("navidrome_playerartuicheck.sh", 5),
     "artwork": ("navidrome_artworkcheck.sh", 5),
+    "artwork-scheduler": ("navidrome_artschedulercheck.py", 5),
     "browse": ("navidrome_browsecheck.sh", 6),
     "playlist": ("navidrome_playlistcheck.sh", 7),
     "search": ("navidrome_searchuicheck.sh", 8),
@@ -64,7 +65,7 @@ with tempfile.TemporaryDirectory(prefix="sonix-observability-") as temp:
         passed = result.returncode == 0 and success > 0 and rejected > 0
         if name == "browse":
             passed = passed and any(row["event"] == 36 and row["duration_max_us"] >= 25000 for row in relevant)
-        if name == "artwork":
+        if name in ("artwork", "artwork-scheduler"):
             passed = passed and any(row["event"] == 21 for row in relevant)
         if name == "mailbox":
             passed = passed and any(row["event"] == 15 and row["duration_max_us"] >= 25000 for row in relevant)
